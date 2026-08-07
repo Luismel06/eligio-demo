@@ -23,9 +23,16 @@ const protectedPrefixes = [
   '/invoices',
   '/inventory',
   '/customers',
+  '/credit-approvals',
   '/quotations',
   '/returns',
+  '/payables',
+  '/purchase-orders',
+  '/receipts',
+  '/receivables',
   '/settings',
+  '/supplier-invoices',
+  '/suppliers',
 ];
 
 export function middleware(request: NextRequest) {
@@ -38,7 +45,11 @@ export function middleware(request: NextRequest) {
   const internalAccessResponse = enforceInternalAccess(request);
 
   if (internalAccessResponse) {
-    return withContentSecurityPolicy(internalAccessResponse, contentSecurityPolicy);
+    return withContentSecurityPolicy(
+      internalAccessResponse,
+      contentSecurityPolicy,
+      request.nextUrl.pathname,
+    );
   }
 
   const { pathname, search } = request.nextUrl;
@@ -48,6 +59,7 @@ export function middleware(request: NextRequest) {
     return withContentSecurityPolicy(
       NextResponse.redirect(new URL('/dashboard', request.url)),
       contentSecurityPolicy,
+      pathname,
     );
   }
 
@@ -63,13 +75,18 @@ export function middleware(request: NextRequest) {
         },
       }),
       contentSecurityPolicy,
+      pathname,
     );
   }
 
   const loginUrl = new URL('/login', request.url);
   loginUrl.searchParams.set('next', `${pathname}${search}`);
 
-  return withContentSecurityPolicy(NextResponse.redirect(loginUrl), contentSecurityPolicy);
+  return withContentSecurityPolicy(
+    NextResponse.redirect(loginUrl),
+    contentSecurityPolicy,
+    pathname,
+  );
 }
 
 export const config = {
@@ -110,12 +127,25 @@ function buildContentSecurityPolicy(nonce: string) {
   ].join('; ');
 }
 
-function withContentSecurityPolicy(response: NextResponse, contentSecurityPolicy: string) {
+function withContentSecurityPolicy(
+  response: NextResponse,
+  contentSecurityPolicy: string,
+  pathname?: string,
+) {
   response.headers.set('Content-Security-Policy', contentSecurityPolicy);
+  if (pathname && isPublicMobileOcrCapturePath(pathname)) {
+    response.headers.set('Cache-Control', 'no-store');
+    response.headers.set('Pragma', 'no-cache');
+    response.headers.set('Referrer-Policy', 'no-referrer');
+  }
   return response;
 }
 
 function enforceInternalAccess(request: NextRequest) {
+  if (isPublicMobileOcrCapturePath(request.nextUrl.pathname)) {
+    return null;
+  }
+
   const rules = parseAllowedIpRules(process.env.INTERNAL_ALLOWED_IPS ?? '');
 
   if (!rules.length || isLocalDevelopmentRequest(request)) {
@@ -131,6 +161,10 @@ function enforceInternalAccess(request: NextRequest) {
   return new NextResponse('Not found', {
     status: 404,
   });
+}
+
+function isPublicMobileOcrCapturePath(pathname: string) {
+  return /^\/ocr\/capture\/[A-Za-z0-9_-]{10,191}\/?$/.test(pathname);
 }
 
 function isLocalDevelopmentRequest(request: NextRequest) {

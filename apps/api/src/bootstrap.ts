@@ -49,7 +49,37 @@ export async function createQorvexApiApp() {
     next();
   });
 
+  app.use((request: Request, response: Response, next: NextFunction) => {
+    if (isPublicMobileOcrCaptureRequest(request)) {
+      response.setHeader('Cache-Control', 'no-store');
+      response.setHeader('Pragma', 'no-cache');
+    }
+    next();
+  });
+
   app.use(createInternalAccessMiddleware(config));
+
+  // A phone can be outside the office IP allowlist while its paired desktop is
+  // inside it. Only the two token-protected handoff routes bypass that
+  // allowlist, and they have a dedicated low rate limit below.
+  const publicMobileOcrCaptureRateLimiter = rateLimit({
+    windowMs: getNumberConfig(config, 'MOBILE_OCR_PUBLIC_RATE_LIMIT_WINDOW_MS', 10 * 60 * 1000),
+    limit: getNumberConfig(config, 'MOBILE_OCR_PUBLIC_RATE_LIMIT_MAX', 30),
+    standardHeaders: 'draft-8',
+    legacyHeaders: false,
+    skip: (request) => request.method === 'OPTIONS',
+    message: {
+      statusCode: 429,
+      message: 'Too many mobile OCR attempts. Try again in a few minutes.',
+    },
+  });
+  app.use((request: Request, response: Response, next: NextFunction) => {
+    if (!isPublicMobileOcrCaptureRequest(request)) {
+      next();
+      return;
+    }
+    publicMobileOcrCaptureRateLimiter(request, response, next);
+  });
 
   app.use(
     rateLimit({
@@ -89,7 +119,7 @@ export async function createQorvexApiApp() {
     origin: getAllowedOrigins(config),
     credentials: true,
     methods: ['GET', 'HEAD', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Authorization', 'x-tenant-id', 'Content-Type'],
+    allowedHeaders: ['Authorization', 'x-tenant-id', 'x-mobile-ocr-token', 'Content-Type'],
   });
 
   app.useGlobalPipes(
@@ -164,6 +194,11 @@ function createInternalAccessMiddleware(config: ConfigService) {
   const rules = parseAllowedIpRules(config.get<string>('INTERNAL_ALLOWED_IPS', ''));
 
   return (request: Request, response: Response, next: NextFunction) => {
+    if (isPublicMobileOcrCaptureRequest(request)) {
+      next();
+      return;
+    }
+
     if (!rules.length) {
       next();
       return;
@@ -183,6 +218,16 @@ function createInternalAccessMiddleware(config: ConfigService) {
       timestamp: new Date().toISOString(),
     });
   };
+}
+
+const publicMobileOcrCapturePath =
+  /^\/mobile-ocr-captures\/[A-Za-z0-9_-]{10,191}\/mobile(?:\/result)?\/?$/;
+
+function isPublicMobileOcrCaptureRequest(request: Request) {
+  return (
+    (request.method === 'GET' || request.method === 'POST' || request.method === 'OPTIONS') &&
+    publicMobileOcrCapturePath.test(request.path)
+  );
 }
 
 function getTrustProxy(config: ConfigService) {

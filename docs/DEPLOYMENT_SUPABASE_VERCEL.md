@@ -78,10 +78,21 @@ Reglas:
 
 ```env
 NEXT_PUBLIC_API_URL="https://YOUR_API_VERCEL_URL"
+# Opcional: URL publica del web para QR de captura OCR. Si se omite, se usa el origen actual.
+NEXT_PUBLIC_APP_URL="https://YOUR_FRONTEND_VERCEL_URL"
 NODE_ENV="production"
 ```
 
 No poner secretos ni variables `NEXT_PUBLIC_SUPABASE_*` en el frontend. El frontend no debe consultar tablas de Supabase ni usar Supabase REST como backend alterno; toda operacion de negocio debe pasar por `NEXT_PUBLIC_API_URL`.
+
+### Captura OCR desde teléfono
+
+La opción **Capturar con el teléfono** genera un QR temporal de 10 minutos. El teléfono hace el OCR en su propio navegador y solo devuelve los datos estructurados para revisión en la computadora; la foto no se sube ni se almacena.
+
+- `CORS_ORIGIN` del API debe incluir exactamente la URL final del web de Vercel.
+- El API ya permite el encabezado técnico `x-mobile-ocr-token`; no se agrega manualmente en Vercel.
+- La cámara exige HTTPS. Para probar desde teléfono no sirve `localhost`: usa un Preview/Production de Vercel o un túnel HTTPS.
+- Si hay allowlist de IP en Vercel Firewall, permite el acceso del teléfono a la URL pública del web y al API. La aplicación limita esta excepción a la sesión QR temporal y al token de un solo uso.
 
 ## 5. DATABASE_URL y DIRECT_URL
 
@@ -99,10 +110,10 @@ DIRECT_URL="postgresql://postgres.ofiajrknxhtquctgrysr:YOUR_URL_ENCODED_PASSWORD
 
 Resumen:
 
-| Variable | Uso | Puerto | PgBouncer |
-| --- | --- | --- | --- |
-| `DATABASE_URL` | Runtime NestJS/Prisma, Vercel serverless | `6543` | Si |
-| `DIRECT_URL` | Prisma migrate/deploy/studio | `5432` | No |
+| Variable       | Uso                                      | Puerto | PgBouncer |
+| -------------- | ---------------------------------------- | ------ | --------- |
+| `DATABASE_URL` | Runtime NestJS/Prisma, Vercel serverless | `6543` | Si        |
+| `DIRECT_URL`   | Prisma migrate/deploy/studio             | `5432` | No        |
 
 ## 6. Prisma
 
@@ -166,17 +177,19 @@ Variables locales Docker:
 DATABASE_URL="postgresql://corestack:corestack@localhost:5432/corestack?schema=public"
 DIRECT_URL="postgresql://corestack:corestack@localhost:5432/corestack?schema=public"
 NEXT_PUBLIC_API_URL="http://localhost:4000"
+# Para probar con un teléfono, reemplazar por una URL HTTPS pública temporal.
+NEXT_PUBLIC_APP_URL=""
 CORS_ORIGIN="http://localhost:3000"
 NODE_ENV="development"
 ```
 
 ## 9. Diferencias entre entornos
 
-| Entorno | DB | Migraciones | Seed | API |
-| --- | --- | --- | --- | --- |
-| Local Docker | Postgres local | `db:migrate` | Permitido | `pnpm dev:api` |
-| Supabase temporal | Supabase Postgres | `db:migrate:deploy` | No recomendado | Local o Vercel |
-| Vercel | Supabase Postgres | Ejecutar antes/deploy controlado | No automatico | Vercel Function |
+| Entorno           | DB                | Migraciones                      | Seed           | API             |
+| ----------------- | ----------------- | -------------------------------- | -------------- | --------------- |
+| Local Docker      | Postgres local    | `db:migrate`                     | Permitido      | `pnpm dev:api`  |
+| Supabase temporal | Supabase Postgres | `db:migrate:deploy`              | No recomendado | Local o Vercel  |
+| Vercel            | Supabase Postgres | Ejecutar antes/deploy controlado | No automatico  | Vercel Function |
 
 ## 10. Vercel monorepo
 
@@ -194,6 +207,7 @@ Variables:
 
 ```text
 NEXT_PUBLIC_API_URL=https://YOUR_API_VERCEL_URL
+NEXT_PUBLIC_APP_URL=https://YOUR_FRONTEND_VERCEL_URL
 NODE_ENV=production
 ```
 
