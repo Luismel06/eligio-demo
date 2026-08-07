@@ -283,7 +283,10 @@ function getAllowedOrigins(config: ConfigService) {
       return;
     }
 
-    callback(new Error(`Origin ${origin} is not allowed by CORS.`), false);
+    // An unknown browser origin must simply receive no CORS permission. Raising
+    // an error here reaches the global HTTP exception filter as a misleading
+    // 500 response instead of letting the browser block the cross-origin call.
+    callback(null, false);
   };
 }
 
