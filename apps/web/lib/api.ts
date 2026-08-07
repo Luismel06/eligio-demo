@@ -855,17 +855,67 @@ export type ImportBatch = {
   invalidRows: number;
   importedRows: number;
   createdAt: string;
+  confirmedAt?: string | null;
+  errorCount?: number;
+  detailedRowCount?: number;
+  hasDetailedRows?: boolean;
+  hasLegacyErrorRows?: boolean;
   createdBy: {
     id: string;
     name: string;
     email: string;
   } | null;
-  errors: Array<{
+  /**
+   * Compatibilidad con lotes históricos. La lista de lotes puede omitirlos
+   * para no descargar todos los errores; el detalle por filas vive en
+   * GET /imports/:id/rows.
+   */
+  errors?: Array<{
     id: string;
     rowNumber: number;
     field: string | null;
     message: string;
   }>;
+  /** Disponible en las importaciones con seguimiento por fila. */
+  rowSummary?: {
+    total?: number;
+    imported?: number;
+    failed?: number;
+    importedRows?: number;
+    failedRows?: number;
+  } | null;
+  _count?: {
+    rows?: number;
+    errors?: number;
+  } | null;
+};
+
+export type ImportBatchRowStatus = 'IMPORTED' | 'FAILED';
+
+export type ImportBatchRowReason = {
+  field?: string | null;
+  message: string;
+};
+
+export type ImportBatchRow = {
+  id: string;
+  rowNumber: number;
+  status: ImportBatchRowStatus;
+  productId?: string | null;
+  productLabel?: string | null;
+  rawData?: Record<string, unknown> | null;
+  reasons: ImportBatchRowReason[];
+};
+
+export type ImportBatchRowsResponse = {
+  batch: ImportBatch;
+  rows: ImportBatchRow[];
+  pagination: {
+    page: number;
+    limit: number;
+    total: number;
+    totalPages: number;
+  };
 };
 
 export type ProductImageUploadResult = {
@@ -2146,6 +2196,34 @@ export function getFiscalSequences(tenantId: string, accessToken: string) {
 
 export function getImportBatches(tenantId: string, accessToken: string) {
   return fetchJson<ImportBatch[]>('/imports', {
+    headers: tenantHeaders(tenantId, accessToken),
+  });
+}
+
+export function getImportBatchRows(
+  tenantId: string,
+  accessToken: string,
+  batchId: string,
+  filters: {
+    status: ImportBatchRowStatus;
+    page?: number;
+    limit?: number;
+  },
+) {
+  const query = new URLSearchParams({
+    status: filters.status,
+    page: String(filters.page ?? 1),
+    limit: String(filters.limit ?? 50),
+  });
+
+  return fetchJson<ImportBatchRowsResponse>(`/imports/${batchId}/rows?${query.toString()}`, {
+    headers: tenantHeaders(tenantId, accessToken),
+  });
+}
+
+export function deleteImportBatch(tenantId: string, accessToken: string, batchId: string) {
+  return fetchJson<{ id: string }>(`/imports/${batchId}`, {
+    method: 'DELETE',
     headers: tenantHeaders(tenantId, accessToken),
   });
 }

@@ -1,8 +1,11 @@
 import {
   BadRequestException,
   Controller,
+  Delete,
   Get,
+  Param,
   Post,
+  Query,
   UploadedFile,
   UseGuards,
   UseInterceptors,
@@ -31,8 +34,21 @@ export class ImportsController {
   constructor(private readonly importsService: ImportsService) {}
 
   @Get()
+  @Roles(Role.SUPER_ADMIN, Role.QORVEX_SUPER_ADMIN, Role.ADMIN)
   findAll(@TenantId() tenantId: string) {
     return this.importsService.findAll(tenantId);
+  }
+
+  @Get(':id/rows')
+  @Roles(Role.SUPER_ADMIN, Role.QORVEX_SUPER_ADMIN, Role.ADMIN)
+  findRows(
+    @TenantId() tenantId: string,
+    @Param('id') id: string,
+    @Query('status') status?: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.importsService.findRows(tenantId, id, { status, page, limit });
   }
 
   @Post('products')
@@ -68,5 +84,15 @@ export class ImportsController {
     @UploadedFile() file: { originalname: string; buffer: Buffer; size: number },
   ) {
     return this.importsService.importProducts(tenantId, user.id, file);
+  }
+
+  @Delete(':id')
+  @Roles(Role.SUPER_ADMIN, Role.QORVEX_SUPER_ADMIN, Role.ADMIN)
+  remove(
+    @TenantId() tenantId: string,
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+  ) {
+    return this.importsService.remove(tenantId, user.id, id);
   }
 }
