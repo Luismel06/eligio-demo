@@ -46,6 +46,15 @@ export type ProductComboboxProps = {
   maxResults?: number;
 };
 
+type SearchableProduct = {
+  product: Product;
+  originalIndex: number;
+  normalizedTerms: string[];
+};
+
+const emptyProducts: Product[] = [];
+const emptySearchableProducts: SearchableProduct[] = [];
+
 function normalizeSearch(value: string) {
   return value
     .normalize('NFD')
@@ -108,41 +117,54 @@ export function ProductCombobox({
 
   const disabledIdsKey = disabledProductIds.join('|');
   const disabledIds = useMemo(() => new Set(disabledProductIds), [disabledIdsKey]);
-  const selectedProduct = useMemo(
-    () => products.find((product) => product.id === value) ?? null,
-    [products, value],
-  );
+  const selectedProduct = useMemo(() => {
+    if (!value) return null;
+    return products.find((product) => product.id === value) ?? null;
+  }, [products, value]);
   const selectedLabel = selectedProduct?.name ?? '';
   const normalizedQuery = normalizeSearch(query.trim());
 
-  const matchingProducts = useMemo(() => {
-    const ranked = products
-      .map((product, originalIndex) => {
-        const terms = productSearchTerms(product, getSearchText);
-        const normalizedTerms = terms.map(normalizeSearch);
-        const exactMatch = normalizedTerms.some((term) => term === normalizedQuery);
-        const startsWithMatch = normalizedTerms.some((term) => term.startsWith(normalizedQuery));
-        const matches =
-          !normalizedQuery || normalizedTerms.some((term) => term.includes(normalizedQuery));
+  // El catálogo puede ser grande y este componente se monta por cada línea de
+  // factura. No creamos índices ni ordenamos nada hasta que la persona abre
+  // realmente ese selector.
+  const searchableProducts = useMemo<SearchableProduct[]>(() => {
+    if (!isOpen) return emptySearchableProducts;
 
-        return { product, originalIndex, exactMatch, startsWithMatch, matches };
-      })
-      .filter((entry) => entry.matches)
-      .sort((left, right) => {
-        if (left.exactMatch !== right.exactMatch) {
-          return left.exactMatch ? -1 : 1;
-        }
-        if (left.startsWithMatch !== right.startsWithMatch) {
-          return left.startsWithMatch ? -1 : 1;
-        }
-        return (
+    return products
+      .map((product, originalIndex) => ({
+        product,
+        originalIndex,
+        normalizedTerms: productSearchTerms(product, getSearchText).map(normalizeSearch),
+      }))
+      .sort(
+        (left, right) =>
           left.product.name.localeCompare(right.product.name, 'es') ||
-          left.originalIndex - right.originalIndex
-        );
-      });
+          left.originalIndex - right.originalIndex,
+      );
+  }, [getSearchText, isOpen, products]);
 
-    return ranked.map((entry) => entry.product);
-  }, [getSearchText, normalizedQuery, products]);
+  const matchingProducts = useMemo(() => {
+    if (!isOpen) return emptyProducts;
+    if (!normalizedQuery) return searchableProducts.map((entry) => entry.product);
+
+    // searchableProducts ya está ordenado alfabéticamente. Al conservar ese
+    // orden dentro de cada grupo evitamos reordenar el catálogo en cada tecla.
+    const exactMatches: Product[] = [];
+    const startsWithMatches: Product[] = [];
+    const includesMatches: Product[] = [];
+
+    for (const entry of searchableProducts) {
+      if (entry.normalizedTerms.some((term) => term === normalizedQuery)) {
+        exactMatches.push(entry.product);
+      } else if (entry.normalizedTerms.some((term) => term.startsWith(normalizedQuery))) {
+        startsWithMatches.push(entry.product);
+      } else if (entry.normalizedTerms.some((term) => term.includes(normalizedQuery))) {
+        includesMatches.push(entry.product);
+      }
+    }
+
+    return [...exactMatches, ...startsWithMatches, ...includesMatches];
+  }, [isOpen, normalizedQuery, searchableProducts]);
 
   const visibleProducts = useMemo(
     () => matchingProducts.slice(0, Math.max(1, maxResults)),
