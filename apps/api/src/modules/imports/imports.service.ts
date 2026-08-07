@@ -1,5 +1,6 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import {
+  ImportRowStatus,
   ImportStatus,
   ImportType,
   Prisma,
@@ -48,6 +49,29 @@ type ImportRowErrorInput = {
   rawData: Prisma.InputJsonObject;
 };
 
+type ImportedProductReference = {
+  id: string;
+  label: string;
+};
+
+type ImportBatchRowInput = {
+  rowNumber: number;
+  status: ImportRowStatus;
+  productId?: string;
+  productLabel?: string;
+  rawData: Prisma.InputJsonObject;
+  reasons?: Prisma.InputJsonArray;
+};
+
+type ImportRowsQuery = {
+  status?: string;
+  page?: string | number;
+  limit?: string | number;
+};
+
+const maxImportRows = 500;
+const importPersistenceChunkSize = 100;
+
 @Injectable()
 export class ImportsService {
   constructor(
@@ -55,16 +79,114 @@ export class ImportsService {
     private readonly productsService: ProductsService,
   ) {}
 
-  findAll(tenantId: string) {
-    return this.prisma.importBatch.findMany({
+  async findAll(tenantId: string) {
+    const batches = await this.prisma.importBatch.findMany({
       where: { tenantId },
-      include: {
+      select: {
+        id: true,
+        type: true,
+        filename: true,
+        status: true,
+        totalRows: true,
+        validRows: true,
+        invalidRows: true,
+        importedRows: true,
+        createdAt: true,
+        confirmedAt: true,
         createdBy: { select: { id: true, name: true, email: true } },
-        errors: true,
+        _count: { select: { rows: true, errors: true } },
       },
       orderBy: { createdAt: 'desc' },
       take: 50,
     });
+
+    return batches.map((batch) => ({
+      ...batch,
+      errorCount: batch._count.errors,
+      detailedRowCount: batch._count.rows,
+    }));
+  }
+
+  async findRows(tenantId: string, id: string, query: ImportRowsQuery) {
+    const status = parseImportRowStatus(query.status);
+    const { page, limit } = parsePagination(query.page, query.limit);
+    const batch = await this.prisma.importBatch.findFirst({
+      where: { id, tenantId },
+      select: {
+        id: true,
+        type: true,
+        filename: true,
+        status: true,
+        totalRows: true,
+        validRows: true,
+        invalidRows: true,
+        importedRows: true,
+        createdAt: true,
+        confirmedAt: true,
+        createdBy: { select: { id: true, name: true, email: true } },
+        _count: { select: { rows: true, errors: true } },
+      },
+    });
+
+    if (!batch) {
+      throw new NotFoundException('No se encontro el lote de importacion.');
+    }
+
+    if (batch._count.rows > 0) {
+      const where = {
+        importBatchId: batch.id,
+        ...(status ? { status } : {}),
+      };
+      const [total, rows] = await this.prisma.$transaction([
+        this.prisma.importBatchRow.count({ where }),
+        this.prisma.importBatchRow.findMany({
+          where,
+          include: {
+            product: {
+              select: { id: true, name: true, sku: true, barcode: true, status: true },
+            },
+          },
+          orderBy: { rowNumber: 'asc' },
+          skip: (page - 1) * limit,
+          take: limit,
+        }),
+      ]);
+
+      return {
+        batch: {
+          ...batch,
+          errorCount: batch._count.errors,
+          detailedRowCount: batch._count.rows,
+          hasDetailedRows: true,
+          hasLegacyErrorRows: false,
+        },
+        rows: rows.map((row) => ({
+          ...row,
+          reasons: normalizeRowReasons(row.reasons),
+        })),
+        pagination: createPagination(page, limit, total),
+      };
+    }
+
+    // Los lotes creados antes de ImportBatchRow solo contienen ImportRowError.
+    // Conservamos esos errores en el detalle sin inventar registros exitosos que
+    // nunca se almacenaron en la version anterior.
+    const legacyResult =
+      status === ImportRowStatus.IMPORTED
+        ? { rows: [], total: 0 }
+        : await this.getLegacyErrorRows(batch.id, page, limit);
+
+    return {
+      batch: {
+        ...batch,
+        errorCount: batch._count.errors,
+        detailedRowCount: batch._count.rows,
+        hasDetailedRows: false,
+        hasLegacyErrorRows: legacyResult.total > 0,
+      },
+      rows: legacyResult.rows,
+      pagination: createPagination(page, limit, legacyResult.total),
+    };
   }
 
   async importProducts(tenantId: string, userId: string, file?: UploadedImportFile) {
@@ -73,6 +195,42 @@ export class ImportsService {
     }
 
     const rows = await readWorkbookRows(file);
+
+    if (rows.length > maxImportRows) {
+      throw new BadRequestException(
+        `El archivo supera el limite de ${maxImportRows} filas por importacion.`,
+      );
+    }
+
+    // El lote se registra antes de tocar productos. Asi, incluso si una fila o
+    // un proceso posterior falla, queda una referencia trazable de la
+    // importacion que la origino.
+    const batch = await this.prisma.importBatch.create({
+      data: {
+        tenantId,
+        type: ImportType.PRODUCTS,
+        filename: file.originalname || 'productos.xlsx',
+        status: ImportStatus.VALIDATING,
+        totalRows: rows.length,
+        createdById: userId,
+      },
+      select: { id: true },
+    });
+
+    try {
+      return await this.processProductRows(batch.id, tenantId, userId, rows);
+    } catch (error) {
+      await this.markBatchAsFailed(batch.id, rows.length);
+      throw error;
+    }
+  }
+
+  private async processProductRows(
+    batchId: string,
+    tenantId: string,
+    userId: string,
+    rows: RawImportRow[],
+  ) {
     const preparedRows: PreparedProductImportRow[] = [];
     const rowErrors: ImportRowErrorInput[] = [];
 
@@ -142,7 +300,7 @@ export class ImportsService {
       });
     }
 
-    let importedRows = 0;
+    const importedProducts = new Map<number, ImportedProductReference>();
     const categoryCache = new Map<string, string>();
 
     for (const row of preparedRows) {
@@ -151,12 +309,15 @@ export class ImportsService {
           ? await this.resolveCategoryId(tenantId, row.categoryName, categoryCache)
           : undefined;
 
-        await this.productsService.create(tenantId, userId, {
+        const product = await this.productsService.create(tenantId, userId, {
           ...row.payload,
           categoryId,
           minStock: row.payload.minStock ?? 0,
         });
-        importedRows += 1;
+        importedProducts.set(row.rowNumber, {
+          id: product.id,
+          label: getProductLabel(product.name, product.sku),
+        });
       } catch (error) {
         rowErrors.push({
           rowNumber: row.rowNumber,
@@ -166,35 +327,241 @@ export class ImportsService {
       }
     }
 
-    const invalidRows = new Set(rowErrors.map((error) => error.rowNumber)).size;
+    const errorsByRow = groupImportErrorsByRow(rowErrors);
+    const importRows: ImportBatchRowInput[] = rows.map((row, index) => {
+      const rowNumber = index + 2;
+      const errors = errorsByRow.get(rowNumber) ?? [];
+      const importedProduct = importedProducts.get(rowNumber);
+
+      return {
+        rowNumber,
+        status: errors.length ? ImportRowStatus.FAILED : ImportRowStatus.IMPORTED,
+        productId: importedProduct?.id,
+        productLabel: importedProduct?.label,
+        rawData: toJsonObject(row),
+        reasons: errors.length ? toImportRowReasons(errors) : undefined,
+      };
+    });
+    const invalidRows = importRows.filter((row) => row.status === ImportRowStatus.FAILED).length;
+    const importedRows = importRows.filter((row) => row.status === ImportRowStatus.IMPORTED).length;
     const validRows = Math.max(rows.length - invalidRows, 0);
 
-    return this.prisma.importBatch.create({
-      data: {
-        tenantId,
-        type: ImportType.PRODUCTS,
-        filename: file.originalname || 'productos.xlsx',
-        status: importedRows > 0 ? ImportStatus.IMPORTED : ImportStatus.FAILED,
-        totalRows: rows.length,
-        validRows,
-        invalidRows,
-        importedRows,
-        createdById: userId,
-        confirmedAt: importedRows > 0 ? new Date() : undefined,
-        errors: {
-          create: rowErrors.map((error) => ({
+    return this.persistImportResults({
+      batchId,
+      totalRows: rows.length,
+      validRows,
+      invalidRows,
+      importedRows,
+      importRows,
+      rowErrors,
+    });
+  }
+
+  private async persistImportResults(data: {
+    batchId: string;
+    totalRows: number;
+    validRows: number;
+    invalidRows: number;
+    importedRows: number;
+    importRows: ImportBatchRowInput[];
+    rowErrors: ImportRowErrorInput[];
+  }) {
+    const status = data.importedRows > 0 ? ImportStatus.IMPORTED : ImportStatus.FAILED;
+    const confirmedAt = data.importedRows > 0 ? new Date() : undefined;
+    const batch = await this.prisma.$transaction(async (tx) => {
+      for (const chunk of chunkItems(data.importRows, importPersistenceChunkSize)) {
+        await tx.importBatchRow.createMany({
+          data: chunk.map((row) => ({
+            importBatchId: data.batchId,
+            rowNumber: row.rowNumber,
+            status: row.status,
+            productId: row.productId,
+            productLabel: row.productLabel,
+            rawData: row.rawData,
+            reasons: row.reasons,
+          })),
+        });
+      }
+
+      for (const chunk of chunkItems(data.rowErrors, importPersistenceChunkSize)) {
+        await tx.importRowError.createMany({
+          data: chunk.map((error) => ({
+            importBatchId: data.batchId,
             rowNumber: error.rowNumber,
             field: error.field,
             message: error.message,
             rawData: error.rawData,
           })),
+        });
+      }
+
+      return tx.importBatch.update({
+        where: { id: data.batchId },
+        data: {
+          status,
+          totalRows: data.totalRows,
+          validRows: data.validRows,
+          invalidRows: data.invalidRows,
+          importedRows: data.importedRows,
+          confirmedAt,
         },
-      },
-      include: {
-        createdBy: { select: { id: true, name: true, email: true } },
-        errors: true,
+        select: {
+          id: true,
+          type: true,
+          filename: true,
+          status: true,
+          totalRows: true,
+          validRows: true,
+          invalidRows: true,
+          importedRows: true,
+          createdAt: true,
+          confirmedAt: true,
+          createdBy: { select: { id: true, name: true, email: true } },
+          _count: { select: { rows: true, errors: true } },
+        },
+      });
+    });
+
+    return {
+      ...batch,
+      errorCount: batch._count.errors,
+      detailedRowCount: batch._count.rows,
+    };
+  }
+
+  private async markBatchAsFailed(batchId: string, totalRows: number) {
+    try {
+      await this.prisma.importBatch.update({
+        where: { id: batchId },
+        data: {
+          status: ImportStatus.FAILED,
+          totalRows,
+        },
+      });
+    } catch {
+      // Preserve the original import error. A second database failure here is
+      // not more useful to the caller and the batch was already created.
+    }
+  }
+
+  async remove(tenantId: string, userId: string, id: string) {
+    const batch = await this.prisma.importBatch.findFirst({
+      where: { id, tenantId },
+      select: {
+        id: true,
+        filename: true,
+        type: true,
+        status: true,
+        totalRows: true,
+        importedRows: true,
+        invalidRows: true,
+        _count: { select: { rows: true, errors: true } },
       },
     });
+
+    if (!batch) {
+      throw new NotFoundException('No se encontro el lote de importacion.');
+    }
+
+    // Solo se elimina el historial del lote. Ningun producto creado por la
+    // importacion se toca; ImportBatchRow usa onDelete: SetNull hacia Product.
+    // El log se escribe dentro de la misma transaccion para que no exista un
+    // borrado exitoso sin trazabilidad de auditoria.
+    await this.prisma.$transaction(async (tx) => {
+      await tx.importBatch.delete({ where: { id: batch.id } });
+      await tx.auditLog.create({
+        data: {
+          tenantId,
+          userId,
+          action: 'IMPORT_BATCH_DELETED',
+          entity: 'ImportBatch',
+          entityId: batch.id,
+          metadata: {
+            filename: batch.filename,
+            type: batch.type,
+            status: batch.status,
+            totalRows: batch.totalRows,
+            importedRows: batch.importedRows,
+            invalidRows: batch.invalidRows,
+            detailedRowsDeleted: batch._count.rows,
+            legacyErrorsDeleted: batch._count.errors,
+            productsDeleted: 0,
+          },
+        },
+      });
+    });
+
+    return {
+      id: batch.id,
+      deleted: true,
+      productsDeleted: 0,
+    };
+  }
+
+  private async getLegacyErrorRows(importBatchId: string, page: number, limit: number) {
+    const offset = (page - 1) * limit;
+    const [countResult, rowNumberResult] = await Promise.all([
+      this.prisma.$queryRaw<Array<{ total: bigint }>>(Prisma.sql`
+        SELECT COUNT(DISTINCT "rowNumber") AS "total"
+        FROM "ImportRowError"
+        WHERE "importBatchId" = ${importBatchId}
+      `),
+      this.prisma.$queryRaw<Array<{ rowNumber: number }>>(Prisma.sql`
+        SELECT DISTINCT "rowNumber"
+        FROM "ImportRowError"
+        WHERE "importBatchId" = ${importBatchId}
+        ORDER BY "rowNumber" ASC
+        LIMIT ${limit}
+        OFFSET ${offset}
+      `),
+    ]);
+    const rowNumbers = rowNumberResult.map((row) => row.rowNumber);
+    const total = Number(countResult[0]?.total ?? 0);
+
+    if (!rowNumbers.length) {
+      return { rows: [], total };
+    }
+
+    const errors = await this.prisma.importRowError.findMany({
+      where: { importBatchId, rowNumber: { in: rowNumbers } },
+      orderBy: [{ rowNumber: 'asc' }, { id: 'asc' }],
+    });
+    const errorsByRow = new Map<number, typeof errors>();
+
+    for (const error of errors) {
+      const rowErrors = errorsByRow.get(error.rowNumber) ?? [];
+      rowErrors.push(error);
+      errorsByRow.set(error.rowNumber, rowErrors);
+    }
+
+    return {
+      total,
+      rows: rowNumbers.flatMap((rowNumber) => {
+        const rowErrors = errorsByRow.get(rowNumber);
+
+        if (!rowErrors?.length) {
+          return [];
+        }
+
+        return [
+          {
+            id: `legacy-${rowErrors[0].id}`,
+            rowNumber,
+            status: ImportRowStatus.FAILED,
+            productId: null,
+            productLabel: null,
+            product: null,
+            rawData: rowErrors[0].rawData ?? {},
+            reasons: rowErrors.map((error) =>
+              error.field
+                ? { field: error.field, message: error.message }
+                : { message: error.message },
+            ),
+            legacy: true,
+          },
+        ];
+      }),
+    };
   }
 
   private async resolveCategoryId(tenantId: string, name: string, cache: Map<string, string>) {
@@ -229,6 +596,110 @@ export class ImportsService {
 
     cache.set(key, created.id);
     return created.id;
+  }
+}
+
+function parseImportRowStatus(value?: string) {
+  if (!value) {
+    return undefined;
+  }
+
+  const normalized = value.trim().toUpperCase();
+
+  if (normalized === ImportRowStatus.IMPORTED || normalized === ImportRowStatus.FAILED) {
+    return normalized as ImportRowStatus;
+  }
+
+  throw new BadRequestException('El estado de fila debe ser IMPORTED o FAILED.');
+}
+
+function parsePagination(pageInput?: string | number, limitInput?: string | number) {
+  const page = parsePositiveInteger(pageInput, 1, 'page');
+  const limit = parsePositiveInteger(limitInput, 50, 'limit');
+
+  if (limit > 100) {
+    throw new BadRequestException('El limite maximo por pagina es 100.');
+  }
+
+  return { page, limit };
+}
+
+function parsePositiveInteger(value: string | number | undefined, fallback: number, label: string) {
+  if (value === undefined || value === '') {
+    return fallback;
+  }
+
+  const parsed = Number(value);
+
+  if (!Number.isInteger(parsed) || parsed < 1) {
+    throw new BadRequestException(`${label} debe ser un entero mayor o igual a 1.`);
+  }
+
+  return parsed;
+}
+
+function createPagination(page: number, limit: number, total: number) {
+  return {
+    page,
+    limit,
+    total,
+    totalPages: total === 0 ? 0 : Math.ceil(total / limit),
+    hasNextPage: page * limit < total,
+    hasPreviousPage: page > 1,
+  };
+}
+
+function groupImportErrorsByRow(errors: ImportRowErrorInput[]) {
+  const errorsByRow = new Map<number, ImportRowErrorInput[]>();
+
+  for (const error of errors) {
+    const rowErrors = errorsByRow.get(error.rowNumber) ?? [];
+    rowErrors.push(error);
+    errorsByRow.set(error.rowNumber, rowErrors);
+  }
+
+  return errorsByRow;
+}
+
+function toImportRowReasons(errors: ImportRowErrorInput[]): Prisma.InputJsonArray {
+  return errors.map((error) =>
+    error.field
+      ? ({ field: error.field, message: error.message } as Prisma.InputJsonObject)
+      : ({ message: error.message } as Prisma.InputJsonObject),
+  );
+}
+
+function normalizeRowReasons(value: Prisma.JsonValue | null) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.flatMap((reason) => {
+    if (!reason || typeof reason !== 'object' || Array.isArray(reason)) {
+      return [];
+    }
+
+    const record = reason as Prisma.JsonObject;
+
+    const message = typeof record.message === 'string' ? record.message : undefined;
+
+    if (!message) {
+      return [];
+    }
+
+    const field = typeof record.field === 'string' ? record.field : undefined;
+
+    return [field ? { field, message } : { message }];
+  });
+}
+
+function getProductLabel(name: string, sku?: string | null) {
+  return sku ? `${name} (${sku})` : name;
+}
+
+function* chunkItems<T>(items: T[], size: number) {
+  for (let index = 0; index < items.length; index += size) {
+    yield items.slice(index, index + size);
   }
 }
 

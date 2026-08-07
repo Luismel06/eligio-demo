@@ -290,6 +290,11 @@ enum ImportStatus {
   CANCELLED
 }
 
+enum ImportRowStatus {
+  IMPORTED
+  FAILED
+}
+
 enum SupplierStatus {
   ACTIVE
   INACTIVE
@@ -630,6 +635,7 @@ model Product {
   purchaseOrderItems     PurchaseOrderItem[]
   supplierInvoiceItems   SupplierInvoiceItem[]
   goodsReceiptItems      GoodsReceiptItem[]
+  importRows             ImportBatchRow[]
 
   @@unique([tenantId, sku])
   @@unique([tenantId, barcode])
@@ -1602,6 +1608,7 @@ model ImportBatch {
   tenant       Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   createdBy    User?            @relation(fields: [createdById], references: [id], onDelete: SetNull)
   errors       ImportRowError[]
+  rows         ImportBatchRow[]
 
   @@index([tenantId])
   @@index([tenantId, type, status])
@@ -1619,6 +1626,24 @@ model ImportRowError {
 
   @@index([importBatchId])
   @@index([rowNumber])
+}
+
+model ImportBatchRow {
+  id            String          @id @default(cuid())
+  importBatchId String
+  rowNumber     Int
+  status        ImportRowStatus
+  productId     String?
+  productLabel  String?
+  rawData       Json
+  reasons       Json?
+  createdAt     DateTime        @default(now())
+  importBatch   ImportBatch     @relation(fields: [importBatchId], references: [id], onDelete: Cascade)
+  product       Product?        @relation(fields: [productId], references: [id], onDelete: SetNull)
+
+  @@unique([importBatchId, rowNumber])
+  @@index([importBatchId, status, rowNumber])
+  @@index([productId])
 }
 
 model AuditLog {
