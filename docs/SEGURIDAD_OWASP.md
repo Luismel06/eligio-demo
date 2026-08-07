@@ -33,6 +33,7 @@ Si la variable esta vacia, no se aplica restriccion por IP. Esto mantiene comodo
 - `X-Robots-Tag: noindex, nofollow` evita indexacion accidental.
 - Rate limit global reduce abuso general del API.
 - Rate limit especifico para `/auth/login` reduce fuerza bruta de credenciales.
+- La captura OCR desde teléfono usa un token opaco de un solo uso, almacenado solo como hash, con vigencia de 10 minutos. Sus dos rutas públicas están limitadas a 30 intentos por IP cada 10 minutos y no aceptan imágenes.
 - CORS solo acepta los origenes configurados en `CORS_ORIGIN`.
 - El body parser tiene limites configurables con `API_JSON_BODY_LIMIT` y `API_FORM_BODY_LIMIT`.
 - Importaciones aceptan solo `.xlsx`, con limite de 10 MB.
@@ -45,6 +46,7 @@ Si la variable esta vacia, no se aplica restriccion por IP. Esto mantiene comodo
 - Se aplica CSP con nonce unico por solicitud, `strict-dynamic`, `X-Frame-Options`, `X-Content-Type-Options`, `Referrer-Policy`, `Permissions-Policy` y `X-Robots-Tag`.
 - `/robots.txt` bloquea indexacion.
 - El middleware valida `INTERNAL_ALLOWED_IPS` antes de resolver login o rutas protegidas.
+- `/ocr/capture/:id` es una excepción deliberada al filtro IP para permitir abrir el QR desde un teléfono. No entrega datos de negocio sin el token efímero que viaja en el fragmento de la URL y se elimina del navegador al leerlo.
 - La cookie indicadora de sesion usa `SameSite=Strict` y `Secure` sobre HTTPS. No contiene el JWT.
 
 ## Sesion actual

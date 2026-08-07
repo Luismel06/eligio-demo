@@ -57,6 +57,7 @@ import { SessionRequired, useCurrentSession } from './session-required';
 import { SupplierInvoiceEntryPanel } from './supplier-invoice-entry-panel';
 import { SupplierInvoiceDialog } from './supplier-invoice-dialog';
 import { SupplierInvoiceOcrCamera } from './supplier-invoice-ocr-camera';
+import { SupplierInvoiceMobileCapturePanel } from './supplier-invoice-mobile-capture-panel';
 import { SupplierQuickCreateDialog } from './supplier-quick-create-dialog';
 import { QuickProductCreateDialog } from './quick-product-create-dialog';
 
@@ -98,6 +99,8 @@ export function SupplierInvoicesView() {
   const [showForm, setShowForm] = useState(false);
   const [createChoiceOpen, setCreateChoiceOpen] = useState(false);
   const [ocrCameraOpen, setOcrCameraOpen] = useState(false);
+  const [mobileCaptureOpen, setMobileCaptureOpen] = useState(false);
+  const [returnToOcrAfterMobileCapture, setReturnToOcrAfterMobileCapture] = useState(false);
   const [quickSupplierOpen, setQuickSupplierOpen] = useState(false);
   const [quickProductItemKey, setQuickProductItemKey] = useState<string | null>(null);
   const [ocrResult, setOcrResult] = useState<SupplierInvoiceOcrResult | null>(null);
@@ -459,11 +462,31 @@ export function SupplierInvoicesView() {
   function openOcrCamera(invoice?: SupplierInvoice) {
     if (invoice && !loadInvoiceIntoForm(invoice)) return;
     setCreateChoiceOpen(false);
+    setMobileCaptureOpen(false);
+    setReturnToOcrAfterMobileCapture(false);
     setOcrCameraOpen(true);
+  }
+
+  function openMobileCaptureFromOcr() {
+    setCreateChoiceOpen(false);
+    setOcrCameraOpen(false);
+    setReturnToOcrAfterMobileCapture(true);
+    setMobileCaptureOpen(true);
   }
 
   function closeOcrCamera() {
     setOcrCameraOpen(false);
+    setReturnToOcrAfterMobileCapture(false);
+    if (!selectedId) setCreateChoiceOpen(true);
+  }
+
+  function closeMobileCapture() {
+    setMobileCaptureOpen(false);
+    if (returnToOcrAfterMobileCapture) {
+      setReturnToOcrAfterMobileCapture(false);
+      setOcrCameraOpen(true);
+      return;
+    }
     if (!selectedId) setCreateChoiceOpen(true);
   }
 
@@ -490,6 +513,8 @@ export function SupplierInvoicesView() {
     if (!supplierId && matchingSupplier) setSupplierId(matchingSupplier.id);
 
     setOcrCameraOpen(false);
+    setMobileCaptureOpen(false);
+    setReturnToOcrAfterMobileCapture(false);
     setShowForm(true);
     toast.success(
       matchingSupplier
@@ -1815,6 +1840,14 @@ export function SupplierInvoicesView() {
         open={ocrCameraOpen}
         onClose={closeOcrCamera}
         onRecognized={applyOcrResult}
+        onUsePhone={openMobileCaptureFromOcr}
+      />
+
+      <SupplierInvoiceMobileCapturePanel
+        open={mobileCaptureOpen}
+        session={session}
+        onClose={closeMobileCapture}
+        onRecognized={applyOcrResult}
       />
 
       {admin ? (
@@ -1923,8 +1956,8 @@ function CaptureMethodChoice({ onManual, onOcr }: { onManual: () => void; onOcr:
         </span>
         <span className="mt-5 block text-base font-semibold">Capturar con OCR</span>
         <span className="mt-1 block text-sm leading-6 text-muted-foreground">
-          Toma una foto con la cámara para sugerir datos. La imagen se procesa localmente y no se
-          guarda.
+          Toma una foto con esta cámara o continúa con tu teléfono mediante un QR. La imagen se
+          procesa localmente y no se guarda.
         </span>
         <span className="mt-4 inline-flex text-sm font-semibold text-accent transition-transform group-hover:translate-x-0.5">
           Usar captura OCR

@@ -1,6 +1,14 @@
 'use client';
 
-import { Camera, ImagePlus, LoaderCircle, RefreshCw, ScanText, Trash2 } from 'lucide-react';
+import {
+  Camera,
+  ImagePlus,
+  LoaderCircle,
+  RefreshCw,
+  ScanText,
+  Smartphone,
+  Trash2,
+} from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import {
@@ -35,6 +43,7 @@ type SupplierInvoiceOcrCameraProps = {
   open: boolean;
   onClose: () => void;
   onRecognized: (result: SupplierInvoiceOcrResult) => void;
+  onUsePhone?: () => void;
 };
 
 const MAX_CAPTURED_PAGES = 10;
@@ -43,6 +52,7 @@ export function SupplierInvoiceOcrCamera({
   open,
   onClose,
   onRecognized,
+  onUsePhone,
 }: SupplierInvoiceOcrCameraProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -392,6 +402,16 @@ export function SupplierInvoiceOcrCamera({
     onClose();
   }
 
+  function usePhone() {
+    if (processing || !onUsePhone) return;
+    stopCamera();
+    clearPages();
+    setCameraError(null);
+    setOcrError(null);
+    setOcrProgress(null);
+    onUsePhone();
+  }
+
   return (
     <SupplierInvoiceDialog
       open={open}
@@ -564,6 +584,12 @@ export function SupplierInvoiceOcrCamera({
           <Button type="button" variant="outline" onClick={close} disabled={processing}>
             Cancelar
           </Button>
+          {onUsePhone ? (
+            <Button type="button" variant="outline" onClick={usePhone} disabled={processing}>
+              <Smartphone className="h-4 w-4" />
+              Capturar con teléfono
+            </Button>
+          ) : null}
           <Button
             type="button"
             variant="outline"

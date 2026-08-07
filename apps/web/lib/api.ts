@@ -1,3 +1,5 @@
+import type { SupplierInvoiceOcrItem, SupplierInvoiceOcrResult } from './supplier-invoice-ocr';
+
 export type Tenant = {
   id: string;
   name: string;
@@ -1164,6 +1166,26 @@ export type SupplierInvoicePayload = {
   }>;
 };
 
+/**
+ * Short-lived OCR suggestion sent by a paired phone. It deliberately omits the
+ * complete text source and any image/file data; individual item labels are
+ * reconstructed server-side from the structured code and description.
+ */
+export type MobileOcrCaptureResult = Omit<SupplierInvoiceOcrResult, 'rawText' | 'items'> & {
+  items: Array<Omit<SupplierInvoiceOcrItem, 'rawText'> & { rawText?: string }>;
+};
+
+export type MobileOcrCaptureStatus = 'PENDING' | 'READY' | 'CONSUMED' | 'EXPIRED' | 'CANCELLED';
+
+export type MobileOcrCapture = {
+  id: string;
+  token: string;
+  expiresAt: string;
+  status: MobileOcrCaptureStatus;
+};
+
+export type MobileOcrCaptureStatusResponse = Pick<MobileOcrCapture, 'id' | 'status' | 'expiresAt'>;
+
 export type PayablesSummary = {
   asOf: string;
   invoiceCount: number;
@@ -1526,8 +1548,7 @@ const apiMessageTranslations: Record<string, string> = {
     'El vencimiento no puede ser anterior a la fecha de emisión.',
   'Supplier invoice NCF validity cannot be before its issue date.':
     'La vigencia fiscal del NCF no puede ser anterior a la fecha de emisión.',
-  'Supplier invoice due date is required.':
-    'La fecha de vencimiento de la factura es obligatoria.',
+  'Supplier invoice due date is required.': 'La fecha de vencimiento de la factura es obligatoria.',
   'Supplier payment not found for this invoice and tenant.':
     'No se encontró el pago de esta factura.',
   'Only completed supplier payments can be cancelled.': 'Solo se pueden anular pagos completados.',
@@ -1547,6 +1568,18 @@ const apiMessageTranslations: Record<string, string> = {
     'Uno o más productos de la factura no pertenecen a esta empresa.',
   'The accounting record changed concurrently. Try the operation again.':
     'El registro cambió mientras se procesaba. Actualiza e inténtalo nuevamente.',
+  'Mobile OCR capture session was not found.':
+    'La sesión temporal de captura ya no está disponible.',
+  'Mobile OCR capture session has expired.':
+    'El código de captura venció. Genera uno nuevo para continuar.',
+  'The mobile OCR result is not ready yet.': 'La lectura del teléfono todavía no está lista.',
+  'The mobile OCR result was already consumed or expired.':
+    'La lectura del teléfono ya fue usada o venció.',
+  'The mobile OCR result was already sent.': 'Esta lectura ya fue enviada a la computadora.',
+  'The mobile OCR capture is no longer available.':
+    'La captura desde el teléfono ya no está disponible.',
+  'Too many mobile OCR attempts. Try again in a few minutes.':
+    'Demasiados intentos de captura. Espera unos minutos e inténtalo de nuevo.',
 };
 
 async function fetchJson<T>(path: string, options?: RequestInit) {
@@ -2411,6 +2444,57 @@ export function cancelSupplierPayment(
       method: 'POST',
       headers: tenantHeaders(tenantId, accessToken),
       body: JSON.stringify({ reason }),
+    },
+  );
+}
+
+export function createMobileOcrCapture(tenantId: string, accessToken: string) {
+  return fetchJson<Omit<MobileOcrCapture, 'status'>>('/mobile-ocr-captures', {
+    method: 'POST',
+    headers: tenantHeaders(tenantId, accessToken),
+  }).then((capture) => ({ ...capture, status: 'PENDING' as const }));
+}
+
+export function getMobileOcrCapture(tenantId: string, accessToken: string, captureId: string) {
+  return fetchJson<MobileOcrCaptureStatusResponse>(`/mobile-ocr-captures/${captureId}`, {
+    headers: tenantHeaders(tenantId, accessToken),
+  });
+}
+
+export function claimMobileOcrCapture(tenantId: string, accessToken: string, captureId: string) {
+  return fetchJson<{ result: MobileOcrCaptureResult }>(
+    `/mobile-ocr-captures/${captureId}/consume`,
+    {
+      method: 'POST',
+      headers: tenantHeaders(tenantId, accessToken),
+    },
+  );
+}
+
+export function cancelMobileOcrCapture(tenantId: string, accessToken: string, captureId: string) {
+  return fetchJson<{ success: boolean }>(`/mobile-ocr-captures/${captureId}/cancel`, {
+    method: 'POST',
+    headers: tenantHeaders(tenantId, accessToken),
+  });
+}
+
+export function getMobileOcrCaptureForPhone(captureId: string, token: string) {
+  return fetchJson<MobileOcrCaptureStatusResponse>(`/mobile-ocr-captures/${captureId}/mobile`, {
+    headers: { 'x-mobile-ocr-token': token },
+  });
+}
+
+export function submitMobileOcrCaptureResult(
+  captureId: string,
+  token: string,
+  result: MobileOcrCaptureResult,
+) {
+  return fetchJson<MobileOcrCaptureStatusResponse>(
+    `/mobile-ocr-captures/${captureId}/mobile/result`,
+    {
+      method: 'POST',
+      headers: { 'x-mobile-ocr-token': token },
+      body: JSON.stringify({ result }),
     },
   );
 }

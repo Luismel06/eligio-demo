@@ -368,6 +368,13 @@ enum OcrStatus {
   CONFIRMED
 }
 
+/// Temporary OCR capture started on a desktop and completed on a phone.
+/// The session is deleted after it is consumed or cancelled.
+enum MobileOcrCaptureStatus {
+  PENDING
+  READY
+}
+
 enum ReceiptPriceDecision {
   KEEP
   RECALCULATE_MARGIN
@@ -422,6 +429,7 @@ model Tenant {
   goodsReceipts              GoodsReceipt[]
   goodsReceiptItems          GoodsReceiptItem[]
   creditSaleApprovals        CreditSaleApproval[]
+  mobileOcrCaptureSessions   MobileOcrCaptureSession[]
 
   @@index([status])
   @@index([createdAt])
@@ -496,6 +504,7 @@ model User {
   creditSaleApprovalsRejected         CreditSaleApproval[]        @relation("CreditSaleApprovalRejectedBy")
   creditSaleApprovalsCancelled        CreditSaleApproval[]        @relation("CreditSaleApprovalCancelledBy")
   paymentsCancelled                   Payment[]                   @relation("PaymentCancelledBy")
+  mobileOcrCaptureSessionsCreated     MobileOcrCaptureSession[]   @relation("MobileOcrCaptureCreatedBy")
 
   @@index([status])
   @@index([createdAt])
@@ -1127,6 +1136,28 @@ model SupplierInvoiceAttachment {
   @@index([tenantId, ocrStatus])
   @@index([uploadedById])
   @@index([confirmedById])
+}
+
+/// One-use handoff for a supplier invoice OCR capture initiated on a desktop
+/// and completed on a mobile device. Only a SHA-256 token digest and the
+/// temporary, structured OCR suggestion are persisted; the invoice image and
+/// complete OCR text never leave the mobile browser.
+model MobileOcrCaptureSession {
+  id          String                 @id @default(cuid())
+  tenantId    String
+  createdById String
+  tokenHash   String                 @unique
+  status      MobileOcrCaptureStatus @default(PENDING)
+  result      Json?
+  expiresAt   DateTime
+  completedAt DateTime?
+  createdAt   DateTime               @default(now())
+  updatedAt   DateTime               @updatedAt
+  tenant      Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  createdBy   User                   @relation("MobileOcrCaptureCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+
+  @@index([tenantId, createdById, expiresAt])
+  @@index([expiresAt])
 }
 
 model SupplierPayment {
