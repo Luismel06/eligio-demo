@@ -30,7 +30,14 @@ export class AuditService {
     return this.prisma.auditLog.findMany({
       where: { tenantId },
       include: {
-        user: true,
+        user: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+            status: true,
+          },
+        },
       },
       orderBy: {
         createdAt: 'desc',

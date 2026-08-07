@@ -75,7 +75,7 @@ export function InventoryView() {
           <CardDescription>Entradas, salidas y ajustes registrados para el tenant.</CardDescription>
         </CardHeader>
         <CardContent>
-          <div className="space-y-3 md:hidden">
+          <div className="surface-scrollbar max-h-[32rem] space-y-3 overflow-y-auto pr-2 md:hidden">
             {(movementsQuery.data ?? []).map((movement) => (
               <div key={movement.id} className="rounded-md border border-border p-3">
                 <div className="flex items-start justify-between gap-3">
@@ -95,32 +95,40 @@ export function InventoryView() {
             ))}
           </div>
 
-          <div className="hidden md:block">
+          <div className="surface-scrollbar hidden max-h-[calc(100vh-22rem)] overflow-auto md:block">
             <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Fecha</TableHead>
-                <TableHead>Producto</TableHead>
-                <TableHead>Tipo</TableHead>
-                <TableHead>Cantidad</TableHead>
-                <TableHead>Referencia</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {(movementsQuery.data ?? []).map((movement) => (
-                <TableRow key={movement.id}>
-                  <TableCell>{formatDate(movement.createdAt)}</TableCell>
-                  <TableCell className="font-medium">{movement.product.name}</TableCell>
-                  <TableCell>
-                    <Badge variant={movement.type === 'OUTBOUND' || movement.type === 'SALE' ? 'warning' : 'success'}>
-                      {translateInventoryMovementType(movement.type)}
-                    </Badge>
-                  </TableCell>
-                  <TableCell>{formatQuantity(movement.quantity)}</TableCell>
-                  <TableCell>{movement.reference ?? movement.reason ?? 'Sin referencia'}</TableCell>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Fecha</TableHead>
+                  <TableHead>Producto</TableHead>
+                  <TableHead>Tipo</TableHead>
+                  <TableHead>Cantidad</TableHead>
+                  <TableHead>Referencia</TableHead>
                 </TableRow>
-              ))}
-            </TableBody>
+              </TableHeader>
+              <TableBody>
+                {(movementsQuery.data ?? []).map((movement) => (
+                  <TableRow key={movement.id}>
+                    <TableCell>{formatDate(movement.createdAt)}</TableCell>
+                    <TableCell className="font-medium">{movement.product.name}</TableCell>
+                    <TableCell>
+                      <Badge
+                        variant={
+                          movement.type === 'OUTBOUND' || movement.type === 'SALE'
+                            ? 'warning'
+                            : 'success'
+                        }
+                      >
+                        {translateInventoryMovementType(movement.type)}
+                      </Badge>
+                    </TableCell>
+                    <TableCell>{formatQuantity(movement.quantity)}</TableCell>
+                    <TableCell>
+                      {movement.reference ?? movement.reason ?? 'Sin referencia'}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
             </Table>
           </div>
         </CardContent>

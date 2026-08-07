@@ -17,6 +17,9 @@ const permissionFields = [
   ['canUsePos', 'Usar caja'],
   ['canOpenCashSession', 'Abrir caja'],
   ['canCloseCashSession', 'Cerrar caja'],
+  ['canApplyDiscount', 'Aplicar descuentos'],
+  ['canCancelInvoice', 'Cancelar facturas'],
+  ['canVoidInvoice', 'Anular facturas'],
   ['canManageProducts', 'Gestionar productos'],
   ['canAdjustInventory', 'Ajustar inventario'],
   ['canManageEmployees', 'Gestionar empleados'],
@@ -52,6 +55,9 @@ const defaultState: EmployeeFormState = {
   canUsePos: true,
   canOpenCashSession: true,
   canCloseCashSession: true,
+  canApplyDiscount: false,
+  canCancelInvoice: false,
+  canVoidInvoice: false,
   canManageProducts: false,
   canAdjustInventory: false,
   canManageEmployees: false,
@@ -72,7 +78,8 @@ export function EmployeeForm({ employeeId }: { employeeId?: string }) {
 
   const employeeQuery = useQuery({
     queryKey: ['employee', employeeId, session?.tenantId],
-    queryFn: () => getEmployee(session?.tenantId ?? '', session?.accessToken ?? '', employeeId ?? ''),
+    queryFn: () =>
+      getEmployee(session?.tenantId ?? '', session?.accessToken ?? '', employeeId ?? ''),
     enabled: Boolean(session && employeeId),
   });
 
@@ -162,7 +169,11 @@ export function EmployeeForm({ employeeId }: { employeeId?: string }) {
         <CardContent>
           <form className="grid gap-4 md:grid-cols-2" onSubmit={onSubmit}>
             <Field label="Nombre">
-              <Input value={form.name} onChange={(event) => setField('name', event.target.value)} required />
+              <Input
+                value={form.name}
+                onChange={(event) => setField('name', event.target.value)}
+                required
+              />
             </Field>
             <Field label="Correo">
               <Input
@@ -173,7 +184,10 @@ export function EmployeeForm({ employeeId }: { employeeId?: string }) {
               />
             </Field>
             <Field label="Telefono">
-              <Input value={form.phone} onChange={(event) => setField('phone', event.target.value)} />
+              <Input
+                value={form.phone}
+                onChange={(event) => setField('phone', event.target.value)}
+              />
             </Field>
             <Field label="Contrasena">
               <Input
@@ -190,6 +204,7 @@ export function EmployeeForm({ employeeId }: { employeeId?: string }) {
                 className="h-10 w-full rounded-md border border-input bg-card px-3 text-sm"
               >
                 <option value="ADMIN">Administrador</option>
+                <option value="ACCOUNTANT">Contador</option>
                 <option value="CASHIER">Cajero</option>
                 <option value="ORDER_TAKER">Ordenanza</option>
               </select>
@@ -207,16 +222,31 @@ export function EmployeeForm({ employeeId }: { employeeId?: string }) {
               </select>
             </Field>
             <Field label="Codigo empleado">
-              <Input value={form.employeeCode} onChange={(event) => setField('employeeCode', event.target.value)} />
+              <Input
+                value={form.employeeCode}
+                onChange={(event) => setField('employeeCode', event.target.value)}
+              />
             </Field>
             <Field label="Cargo">
-              <Input value={form.jobTitle} onChange={(event) => setField('jobTitle', event.target.value)} />
+              <Input
+                value={form.jobTitle}
+                onChange={(event) => setField('jobTitle', event.target.value)}
+              />
             </Field>
             <Field label="Cedula">
-              <Input value={form.documentNumber} onChange={(event) => setField('documentNumber', event.target.value)} />
+              <Input
+                value={form.documentNumber}
+                onChange={(event) => setField('documentNumber', event.target.value)}
+              />
             </Field>
 
             <div className="grid gap-3 rounded-md border border-border p-4 md:col-span-2 sm:grid-cols-2 lg:grid-cols-3">
+              <div className="sm:col-span-2 lg:col-span-3">
+                <p className="text-sm font-semibold">Permisos operativos</p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Los permisos bloqueados se asignan automáticamente según el rol.
+                </p>
+              </div>
               {permissionFields.map(([key, label]) => (
                 <label key={key} className="flex items-center gap-2 text-sm font-medium">
                   <input
@@ -228,6 +258,17 @@ export function EmployeeForm({ employeeId }: { employeeId?: string }) {
                   {label}
                 </label>
               ))}
+              {form.role === 'ACCOUNTANT' ? (
+                <div className="rounded-md border border-primary/20 bg-primary/5 p-3 sm:col-span-2 lg:col-span-3">
+                  <p className="text-sm font-semibold">Acceso contable incluido por el rol</p>
+                  <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                    Consulta facturas de venta, productos, clientes, inventario, suplidores,
+                    cuentas por cobrar, cuentas por pagar y caja. También puede preparar órdenes de
+                    compra y registrar facturas de suplidores, pagos, recepciones y abonos. Las
+                    aprobaciones, cancelaciones y reversiones quedan reservadas al administrador.
+                  </p>
+                </div>
+              ) : null}
             </div>
 
             <div className="md:col-span-2">
@@ -253,10 +294,9 @@ function Field({ label, children }: { label: string; children: ReactNode }) {
   );
 }
 
-function getDefaultPermissionsForRole(role: string): Pick<
-  EmployeeFormState,
-  (typeof permissionFields)[number][0]
-> {
+function getDefaultPermissionsForRole(
+  role: string,
+): Pick<EmployeeFormState, (typeof permissionFields)[number][0]> {
   const permissions = Object.fromEntries(permissionFields.map(([key]) => [key, false])) as Pick<
     EmployeeFormState,
     (typeof permissionFields)[number][0]
@@ -268,6 +308,9 @@ function getDefaultPermissionsForRole(role: string): Pick<
       canUsePos: true,
       canOpenCashSession: true,
       canCloseCashSession: true,
+      canApplyDiscount: true,
+      canCancelInvoice: true,
+      canVoidInvoice: true,
       canManageProducts: true,
       canAdjustInventory: true,
       canManageEmployees: true,
@@ -286,6 +329,15 @@ function getDefaultPermissionsForRole(role: string): Pick<
     };
   }
 
+  if (role === 'ACCOUNTANT') {
+    return {
+      ...permissions,
+      canViewReports: true,
+      canViewCashLogs: true,
+      canReprintReceipt: true,
+    };
+  }
+
   return {
     ...permissions,
     canUsePos: true,
@@ -300,6 +352,10 @@ function isPermissionLocked(role: string, key: (typeof permissionFields)[number]
     return true;
   }
 
+  if (role === 'ACCOUNTANT') {
+    return true;
+  }
+
   if (role === 'CASHIER' && key === 'canTakeOrders') {
     return true;
   }
@@ -311,11 +367,14 @@ function isPermissionLocked(role: string, key: (typeof permissionFields)[number]
   return false;
 }
 
-function getForcedPermissionsForRole(role: string): Partial<Pick<
-  EmployeeFormState,
-  (typeof permissionFields)[number][0]
->> {
+function getForcedPermissionsForRole(
+  role: string,
+): Partial<Pick<EmployeeFormState, (typeof permissionFields)[number][0]>> {
   if (role === 'ORDER_TAKER') {
+    return getDefaultPermissionsForRole(role);
+  }
+
+  if (role === 'ACCOUNTANT') {
     return getDefaultPermissionsForRole(role);
   }
 

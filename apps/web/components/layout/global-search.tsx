@@ -9,7 +9,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { getCustomers, getInvoices, getProducts } from '@/lib/api';
 import type { AuthSession } from '@/lib/auth-session';
-import { isAdminSession } from '@/lib/authorization';
+import { isAccountantSession, isAdminSession } from '@/lib/authorization';
 import { translateDocumentType, translateStatus } from '@/lib/display-labels';
 import { formatCurrency, formatDate } from '@/lib/utils';
 
@@ -29,7 +29,7 @@ const resultIcons = {
 
 export function GlobalSearch({ session }: { session: AuthSession }) {
   const router = useRouter();
-  const canSearchGlobally = isAdminSession(session);
+  const canSearchGlobally = isAdminSession(session) || isAccountantSession(session);
   const [search, setSearch] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [open, setOpen] = useState(false);
@@ -117,13 +117,7 @@ export function GlobalSearch({ session }: { session: AuthSession }) {
       }));
 
     return [...invoices, ...products, ...customers].slice(0, 8);
-  }, [
-    customersQuery.data,
-    debouncedSearch,
-    invoicesQuery.data,
-    productsQuery.data,
-    searchReady,
-  ]);
+  }, [customersQuery.data, debouncedSearch, invoicesQuery.data, productsQuery.data, searchReady]);
 
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -213,15 +207,21 @@ export function GlobalSearch({ session }: { session: AuthSession }) {
                       <Icon className="h-4 w-4" />
                     </span>
                     <span className="min-w-0">
-                      <span className="block truncate font-medium text-zinc-950">{result.title}</span>
-                      <span className="block truncate text-xs text-muted-foreground">{result.subtitle}</span>
+                      <span className="block truncate font-medium text-zinc-950">
+                        {result.title}
+                      </span>
+                      <span className="block truncate text-xs text-muted-foreground">
+                        {result.subtitle}
+                      </span>
                     </span>
                   </Link>
                 );
               })}
             </div>
           ) : (
-            <p className="px-3 py-3 text-sm text-muted-foreground">Sin resultados para esa busqueda.</p>
+            <p className="px-3 py-3 text-sm text-muted-foreground">
+              Sin resultados para esa busqueda.
+            </p>
           )}
         </div>
       ) : null}

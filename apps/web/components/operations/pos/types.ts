@@ -16,6 +16,8 @@ export type PosTotals = {
   discount: number;
   tax: number;
   total: number;
+  requiredPayment: number;
+  remainingBalance: number;
   change: number;
   received: number;
 };

@@ -1,4 +1,9 @@
-import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import {
   CashMovementType,
   CashSessionStatus,
@@ -169,7 +174,9 @@ export class CashService {
     });
 
     if (claimedOrders > 0) {
-      throw new BadRequestException('Close pending claimed sales orders before closing cash session.');
+      throw new BadRequestException(
+        'Close pending claimed sales orders before closing cash session.',
+      );
     }
 
     const movements = await this.prisma.cashMovement.findMany({
@@ -183,7 +190,11 @@ export class CashService {
         method: true,
       },
     });
-    const negativeMovementTypes: CashMovementType[] = [CashMovementType.CASH_OUT, CashMovementType.REFUND];
+    const negativeMovementTypes: CashMovementType[] = [
+      CashMovementType.CASH_OUT,
+      CashMovementType.REFUND,
+      CashMovementType.SUPPLIER_PAYMENT,
+    ];
     const expectedAmount = movements
       .reduce((sum, movement) => {
         if (movement.type === CashMovementType.CLOSING) {
@@ -254,6 +265,12 @@ export class CashService {
   }
 
   async createMovement(tenantId: string, user: AuthenticatedUser, dto: CreateCashMovementDto) {
+    const membership = user.memberships.find((candidate) => candidate.tenantId === tenantId);
+
+    if (membership?.role === Role.ACCOUNTANT) {
+      throw new ForbiddenException('Accountants have read-only access to cash operations.');
+    }
+
     this.requirePermission(tenantId, user, 'canViewCashLogs');
 
     const session = await this.prisma.cashSession.findFirst({
@@ -275,7 +292,9 @@ export class CashService {
     ];
 
     if (!manualMovementTypes.includes(dto.type)) {
-      throw new BadRequestException('Manual cash movements must be cash in, cash out, or adjustment.');
+      throw new BadRequestException(
+        'Manual cash movements must be cash in, cash out, or adjustment.',
+      );
     }
 
     const movement = await this.prisma.cashMovement.create({
@@ -299,7 +318,10 @@ export class CashService {
         tenantId,
         userId: user.id,
         cashSessionId: dto.cashSessionId,
-        action: dto.type === CashMovementType.CASH_OUT ? EmployeeLogAction.CASH_OUT : EmployeeLogAction.CASH_IN,
+        action:
+          dto.type === CashMovementType.CASH_OUT
+            ? EmployeeLogAction.CASH_OUT
+            : EmployeeLogAction.CASH_IN,
         entity: 'CashMovement',
         entityId: movement.id,
         amount: movement.amount,
@@ -323,7 +345,8 @@ export class CashService {
 
     if (
       !membership ||
-      (!membership[permission] && !([Role.ADMIN, Role.SUPER_ADMIN] as Role[]).includes(membership.role))
+      (!membership[permission] &&
+        !([Role.ADMIN, Role.SUPER_ADMIN] as Role[]).includes(membership.role))
     ) {
       throw new ForbiddenException('Employee does not have permission for this cash operation.');
     }
@@ -345,6 +368,7 @@ export class CashService {
     if (
       !membership ||
       (!adminRoles.includes(membership.role) &&
+        membership.role !== Role.ACCOUNTANT &&
         !(membership.canViewCashLogs && membership.role !== Role.CASHIER))
     ) {
       throw new ForbiddenException('Employee does not have permission to view cash logs.');

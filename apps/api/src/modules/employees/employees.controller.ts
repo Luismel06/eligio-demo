@@ -1,14 +1,18 @@
 import { Body, Controller, Get, Param, Patch, Post, UseGuards } from '@nestjs/common';
+import { Role } from '@qorvex/database';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import { Roles } from '../../common/decorators/roles.decorator';
 import { TenantId } from '../../common/decorators/tenant-id.decorator';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
+import { RolesGuard } from '../../common/guards/roles.guard';
 import { TenantMembershipGuard } from '../../common/guards/tenant-membership.guard';
 import { AuthenticatedUser } from '../../common/types/authenticated-request';
 import { CreateEmployeeDto, UpdateEmployeeDto } from './dto/employee.dto';
 import { EmployeesService } from './employees.service';
 
 @Controller('employees')
-@UseGuards(JwtAuthGuard, TenantMembershipGuard)
+@UseGuards(JwtAuthGuard, TenantMembershipGuard, RolesGuard)
+@Roles(Role.SUPER_ADMIN, Role.QORVEX_SUPER_ADMIN, Role.ADMIN)
 export class EmployeesController {
   constructor(private readonly employeesService: EmployeesService) {}
 

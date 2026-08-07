@@ -13,7 +13,7 @@ import { getCurrentCashSession, getDashboardSummary } from '@/lib/api';
 import { translateRole } from '@/lib/display-labels';
 import { cn, formatCurrency } from '@/lib/utils';
 import { GlobalSearch } from './global-search';
-import { getVisibleNavigation, Sidebar } from './sidebar';
+import { MobileNavigation, Sidebar } from './sidebar';
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(true);
@@ -119,7 +119,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       <div
         className={cn(
           'min-h-screen pb-24 transition-[padding] duration-200 lg:pb-0',
-          sidebarCollapsed ? 'lg:pl-20' : 'lg:pl-72',
+          sidebarCollapsed ? 'lg:pl-[4.5rem]' : 'lg:pl-72',
           'print:pb-0 print:pl-0',
         )}
       >
@@ -178,27 +178,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </main>
       </div>
 
-      <nav className="fixed inset-x-0 bottom-0 z-40 border-t border-zinc-200 bg-white/95 pb-2 pt-1 shadow-2xl shadow-slate-950/10 backdrop-blur print:hidden lg:hidden">
-        <div className="flex gap-1 overflow-x-auto px-2 pb-1">
-          {getVisibleNavigation(session).map((item) => {
-            const isActive = pathname === item.href || pathname.startsWith(`${item.href}/`);
-
-            return (
-                <Link
-                  key={item.href}
-                  href={item.href}
-                  className={cn(
-                    'flex min-h-12 w-20 shrink-0 flex-col items-center justify-center gap-1 rounded-md px-1 text-center text-[0.68rem] font-medium text-muted-foreground',
-                    isActive ? 'bg-zinc-950 text-white ring-1 ring-[#f36c10]' : item.primary ? 'text-[#f36c10]' : '',
-                  )}
-                >
-                  <item.icon className="h-5 w-5 shrink-0" />
-                  <span className="w-full truncate">{item.name}</span>
-                </Link>
-            );
-          })}
-        </div>
-      </nav>
+      <MobileNavigation />
     </div>
   );
 }

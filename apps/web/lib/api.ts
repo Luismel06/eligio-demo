@@ -87,6 +87,49 @@ export type DashboardSummary = {
     activeEmployees: number;
     openCashSessions: number;
   };
+  accounting: {
+    receivables: {
+      outstandingBalance: number;
+      overdueBalance: number;
+      overdueCount: number;
+      dueTodayCount: number;
+      dueSoonCount: number;
+      openInvoiceCount: number;
+    };
+    payables: {
+      outstandingBalance: number;
+      overdueBalance: number;
+      overdueCount: number;
+      dueTodayCount: number;
+      dueSoonCount: number;
+      openInvoiceCount: number;
+    };
+    purchaseOrders: {
+      draftCount: number;
+      underReviewCount: number;
+      awaitingInvoiceCount: number;
+      overdueCount: number;
+      partiallyReceivedCount: number;
+      awaitingReceiptCount: number;
+    };
+    receipts: {
+      draftCount: number;
+      itemsWithDifferenceCount: number;
+    };
+    creditApprovals: {
+      pendingCount: number;
+      pendingFinancedAmount: number;
+      exceedsLimitCount: number;
+    };
+  };
+  recentAuditActivity: Array<{
+    id: string;
+    action: string;
+    entity: string;
+    entityId: string | null;
+    userName: string | null;
+    createdAt: string;
+  }>;
   salesSeries: Array<{
     month: string;
     total: number;
@@ -144,6 +187,13 @@ export type Customer = {
   phone: string | null;
   address: string | null;
   status: string;
+  creditEnabled: boolean;
+  creditLimit: string;
+  creditBalance: string;
+  creditTermDays: number;
+  creditStatus: 'ACTIVE' | 'BLOCKED';
+  creditEnabledAt: string | null;
+  creditEnabledById: string | null;
   createdAt: string;
 };
 
@@ -162,6 +212,8 @@ export type Product = {
   price: string;
   salePrice: string;
   cost: string | null;
+  costWithTax?: string | null;
+  margin?: string | null;
   taxRate: string;
   trackInventory: boolean;
   stock: number;
@@ -188,6 +240,8 @@ export type InventoryMovement = {
 
 export type Invoice = {
   id: string;
+  tenantId: string;
+  customerId: string | null;
   invoiceNumber: string;
   documentType: string;
   eNcf: string | null;
@@ -202,7 +256,9 @@ export type Invoice = {
   amountReceived: string;
   changeAmount: string;
   balance: string;
+  paymentMode: 'CASH' | 'CREDIT';
   paymentMethod: string | null;
+  dueDate: string | null;
   issuedAt: string | null;
   createdAt: string;
   tenant?: {
@@ -225,6 +281,10 @@ export type Invoice = {
     method: string;
     amount: string | number;
     status: string;
+    receiptNumber?: string | null;
+    cashSessionId?: string | null;
+    cancelledAt?: string | null;
+    cancelReason?: string | null;
     paidAt: string | null;
     createdAt: string;
   }>;
@@ -281,13 +341,15 @@ export type ReturnInvoiceLookup = Omit<Invoice, 'items'> & {
     orderNumber: string;
     status: string;
   } | null;
-  items: Array<Invoice['items'][number] & {
-    productId: string | null;
-    returnedQuantity: string;
-    remainingQuantity: string;
-    canReturn: boolean;
-    product: Product | null;
-  }>;
+  items: Array<
+    Invoice['items'][number] & {
+      productId: string | null;
+      returnedQuantity: string;
+      remainingQuantity: string;
+      canReturn: boolean;
+      product: Product | null;
+    }
+  >;
 };
 
 export type ReturnRequest = {
@@ -303,6 +365,8 @@ export type ReturnRequest = {
   adminNote: string | null;
   refundMethod: string | null;
   refundAmount: string;
+  creditAppliedAmount: string;
+  cashRefundAmount: string;
   approvedAt: string | null;
   rejectedAt: string | null;
   completedAt: string | null;
@@ -325,10 +389,12 @@ export type ReturnRequest = {
   } | null;
   cashSession?: CashSession | null;
   invoice: Omit<ReturnInvoiceLookup, 'items'> & {
-    items: Array<Invoice['items'][number] & {
-      productId: string | null;
-      product: Product | null;
-    }>;
+    items: Array<
+      Invoice['items'][number] & {
+        productId: string | null;
+        product: Product | null;
+      }
+    >;
   };
   items: Array<{
     id: string;
@@ -360,6 +426,15 @@ export type CreateReturnRequestPayload = {
 };
 
 export type SalesOrderPriceLevel = 'REGULAR' | 'DISCOUNT_10' | 'PREFERRED_18';
+export type SalePaymentMode = 'CASH' | 'CREDIT';
+export type InitialPaymentOption = 'NONE' | 'PERCENT_30' | 'PERCENT_50' | 'PERCENT_70';
+export type CreditTermOption =
+  | 'CUSTOMER_DEFAULT'
+  | 'DAYS_15'
+  | 'DAYS_30'
+  | 'DAYS_45'
+  | 'CUSTOM_DATE';
+export type CreditApprovalStatus = 'PENDING' | 'APPROVED' | 'REJECTED' | 'EXPIRED' | 'CANCELLED';
 
 export type SalesOrder = {
   id: string;
@@ -377,6 +452,14 @@ export type SalesOrder = {
   taxTotal: string;
   discountTotal: string;
   total: string;
+  paymentMode: SalePaymentMode;
+  initialPaymentOption: InitialPaymentOption | null;
+  initialPaymentRate: string;
+  initialPaymentAmount: string;
+  creditTermOption: CreditTermOption | null;
+  creditTermDays: number | null;
+  dueDate: string | null;
+  creditRequestNote: string | null;
   notes: string | null;
   createdById: string;
   completedById: string | null;
@@ -421,6 +504,7 @@ export type SalesOrder = {
     invoiceNumber: string;
     total: string;
   } | null;
+  creditApproval: CreditSaleApproval | null;
   items: Array<{
     id: string;
     salesOrderId: string;
@@ -445,6 +529,11 @@ export type CreateSalesOrderPayload = {
   clientName?: string;
   customerId?: string;
   priceLevel?: SalesOrderPriceLevel;
+  paymentMode?: SalePaymentMode;
+  initialPaymentOption?: InitialPaymentOption;
+  creditTermOption?: CreditTermOption;
+  customDueDate?: string;
+  creditRequestNote?: string;
   quotationDocumentType?: 'RNC' | 'CEDULA';
   quotationDocumentNumber?: string;
   notes?: string;
@@ -452,6 +541,145 @@ export type CreateSalesOrderPayload = {
     productId: string;
     quantity: number;
   }>;
+};
+
+export type CreditSaleApproval = {
+  id: string;
+  tenantId: string;
+  salesOrderId: string;
+  customerId: string;
+  status: CreditApprovalStatus;
+  initialPaymentOption: InitialPaymentOption;
+  creditTermOption: CreditTermOption;
+  requestedTotal: string;
+  initialPaymentAmount: string;
+  financedAmount: string;
+  customerBalanceSnapshot: string;
+  creditLimitSnapshot: string;
+  exceedsCreditLimit: boolean;
+  dueDate: string;
+  requestNote: string | null;
+  decisionNote: string | null;
+  requestedAt: string;
+  approvedAt: string | null;
+  rejectedAt: string | null;
+  cancelledAt: string | null;
+  expiresAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+  customer: Customer;
+  requestedBy: {
+    id: string;
+    name: string;
+    email: string;
+  };
+  approvedBy: {
+    id: string;
+    name: string;
+    email: string;
+  } | null;
+  rejectedBy: {
+    id: string;
+    name: string;
+    email: string;
+  } | null;
+  salesOrder: {
+    id: string;
+    orderNumber: string;
+    status: string;
+    clientName: string | null;
+    total: string;
+    createdBy: {
+      id: string;
+      name: string;
+      email: string;
+    };
+    items: SalesOrder['items'];
+  };
+};
+
+export type ReceivableDueBucket = 'OVERDUE' | 'TODAY' | 'DUE_SOON' | 'CURRENT' | 'PAID';
+
+export type ReceivableInvoice = Invoice & {
+  dueBucket: ReceivableDueBucket;
+  issuedBy?: {
+    id: string;
+    name: string;
+    email: string;
+  } | null;
+  salesOrder?: {
+    id: string;
+    orderNumber: string;
+    initialPaymentOption: InitialPaymentOption | null;
+    creditTermOption: CreditTermOption | null;
+  } | null;
+  payments?: Array<
+    NonNullable<Invoice['payments']>[number] & {
+      user?: {
+        id: string;
+        name: string;
+        email: string;
+      } | null;
+      cashSession?: CashSession | null;
+      cancelledBy?: {
+        id: string;
+        name: string;
+        email: string;
+      } | null;
+    }
+  >;
+};
+
+export type ReceivableCustomerSummary = {
+  id: string;
+  name: string;
+  documentType: string;
+  documentNumber: string | null;
+  creditEnabled: boolean;
+  creditStatus: 'ACTIVE' | 'BLOCKED';
+  creditLimit: string;
+  creditTermDays: number;
+  outstanding: string;
+  overdue: string;
+  invoiceCount: number;
+};
+
+export type CustomerStatement = {
+  customer: Customer;
+  generatedAt: string;
+  totals: {
+    total: string;
+    paid: string;
+    balance: string;
+  };
+  invoices: ReceivableInvoice[];
+};
+
+export type ReceivablePayment = {
+  id: string;
+  tenantId: string;
+  invoiceId: string;
+  method: 'CASH';
+  amount: string;
+  status: string;
+  receiptNumber: string | null;
+  cashSessionId: string | null;
+  paidAt: string | null;
+  cancelledAt: string | null;
+  cancelReason: string | null;
+  createdAt: string;
+  invoice: Invoice;
+  user?: {
+    id: string;
+    name: string;
+    email: string;
+  } | null;
+  cashSession?: CashSession | null;
+  cancelledBy?: {
+    id: string;
+    name: string;
+    email: string;
+  } | null;
 };
 
 export type Employee = {
@@ -581,6 +809,29 @@ export type EmployeeLog = {
   };
 };
 
+export type OperationalLogCategory = 'ORDER_TAKING' | 'QUOTATION' | 'POS_SALE';
+
+export type OperationalLog = {
+  id: string;
+  category: OperationalLogCategory;
+  action: string;
+  entity: string;
+  entityId: string | null;
+  amount: number | string | null;
+  createdAt: string;
+  user: {
+    id: string;
+    name: string;
+    email: string;
+  } | null;
+  documentNumber: string | null;
+  customerName: string | null;
+  status: string | null;
+  paymentMethod: string | null;
+  cashRegisterName: string | null;
+  detail: string | null;
+};
+
 export type FiscalSequence = {
   id: string;
   documentType: string;
@@ -621,10 +872,441 @@ export type ProductImageUploadResult = {
   bucket: string;
 };
 
+export type SupplierStatus = 'ACTIVE' | 'INACTIVE';
+
+export type SupplierProduct = {
+  id: string;
+  supplierId: string;
+  productId: string;
+  supplierSku: string | null;
+  lastCostNet: string | null;
+  lastCostWithTax: string | null;
+  leadTimeDays: number | null;
+  isPrimary: boolean;
+  active: boolean;
+  product: Pick<
+    Product,
+    'id' | 'name' | 'sku' | 'barcode' | 'status' | 'cost' | 'price' | 'salePrice' | 'taxRate'
+  >;
+};
+
+export type Supplier = {
+  id: string;
+  tenantId: string;
+  commercialName: string;
+  legalName: string | null;
+  documentType: 'RNC' | 'CEDULA';
+  documentNumber: string;
+  phone: string | null;
+  email: string | null;
+  contactName: string | null;
+  contactPhone: string | null;
+  contactEmail: string | null;
+  address: string | null;
+  paymentTerms: string | null;
+  creditDays: number;
+  notes: string | null;
+  status: SupplierStatus;
+  deactivatedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+  products?: SupplierProduct[];
+  _count?: {
+    products: number;
+  };
+};
+
+export type SupplierPayload = {
+  commercialName: string;
+  legalName?: string;
+  documentType: 'RNC' | 'CEDULA';
+  documentNumber: string;
+  phone?: string;
+  email?: string;
+  address?: string;
+  contactName?: string;
+  contactPhone?: string;
+  contactEmail?: string;
+  paymentTerms?: string;
+  creditDays?: number;
+  notes?: string;
+  status?: SupplierStatus;
+};
+
+export type PurchaseOrderStatus =
+  | 'DRAFT'
+  | 'REQUESTED'
+  | 'UNDER_REVIEW'
+  | 'APPROVED'
+  | 'ISSUED'
+  | 'PARTIALLY_RECEIVED'
+  | 'RECEIVED'
+  | 'PAUSED'
+  | 'CANCELLED';
+
+export type PurchaseOrderItem = {
+  id: string;
+  productId: string;
+  supplierProductId: string | null;
+  skuSnapshot: string | null;
+  barcodeSnapshot: string | null;
+  descriptionSnapshot: string;
+  unitSnapshot: string;
+  supplierSkuSnapshot: string | null;
+  quantity: string;
+  receivedQuantity: string;
+  unitCostNet: string;
+  unitCostWithTax: string;
+  discountTotal: string;
+  taxRate: string;
+  taxTotal: string;
+  subtotal: string;
+  total: string;
+  product: Product;
+  supplierProduct: SupplierProduct | null;
+};
+
+export type PurchaseOrder = {
+  id: string;
+  tenantId: string;
+  supplierId: string;
+  orderNumber: string;
+  status: PurchaseOrderStatus;
+  displayStatus: PurchaseOrderStatus | 'OVERDUE';
+  isOverdue: boolean;
+  currency: 'DOP';
+  requestDate: string | null;
+  expectedDeliveryDate: string | null;
+  subtotal: string;
+  taxTotal: string;
+  discountTotal: string;
+  total: string;
+  notes: string | null;
+  supplierNameSnapshot: string;
+  supplierDocumentTypeSnapshot: 'RNC' | 'CEDULA';
+  supplierDocumentNumberSnapshot: string;
+  supplierContactSnapshot: string | null;
+  supplierAddressSnapshot: string | null;
+  requestedAt: string | null;
+  reviewedAt: string | null;
+  approvedAt: string | null;
+  issuedAt: string | null;
+  pausedAt: string | null;
+  cancelledAt: string | null;
+  pauseReason: string | null;
+  cancelReason: string | null;
+  createdAt: string;
+  updatedAt: string;
+  supplier: Supplier;
+  items: PurchaseOrderItem[];
+  events: Array<{
+    id: string;
+    fromStatus: PurchaseOrderStatus | null;
+    toStatus: PurchaseOrderStatus;
+    note: string | null;
+    createdAt: string;
+    createdBy: { id: string; name: string; email: string };
+  }>;
+  createdBy: { id: string; name: string; email: string };
+  requestedBy: { id: string; name: string; email: string } | null;
+  reviewedBy: { id: string; name: string; email: string } | null;
+  approvedBy: { id: string; name: string; email: string } | null;
+  issuedBy: { id: string; name: string; email: string } | null;
+  supplierInvoice: { id: string; invoiceNumber: string; status: string } | null;
+  goodsReceipts: Array<{ id: string; receiptNumber: string; status: string }>;
+};
+
+export type PurchaseOrderPayload = {
+  supplierId: string;
+  expectedDeliveryDate?: string;
+  notes?: string;
+  items: Array<{
+    productId: string;
+    quantity: number;
+    unitCostNet: number;
+    taxRate?: number;
+    discountTotal?: number;
+  }>;
+};
+
+export type SupplierInvoiceStatus = 'DRAFT' | 'PENDING' | 'PARTIALLY_PAID' | 'PAID' | 'CANCELLED';
+
+export type SupplierInvoiceItem = {
+  id: string;
+  supplierInvoiceId: string;
+  purchaseOrderItemId: string | null;
+  productId: string;
+  skuSnapshot: string | null;
+  barcodeSnapshot: string | null;
+  descriptionSnapshot: string;
+  unitSnapshot: string;
+  quantity: string;
+  unitCostNet: string;
+  unitCostWithTax: string;
+  discountTotal: string;
+  taxRate: string;
+  taxTotal: string;
+  subtotal: string;
+  total: string;
+  product: Pick<Product, 'id' | 'name' | 'sku' | 'barcode' | 'unit' | 'status'>;
+  purchaseOrderItem: {
+    id: string;
+    quantity: string;
+    receivedQuantity: string;
+    productId: string;
+  } | null;
+};
+
+export type SupplierPayment = {
+  id: string;
+  paymentNumber: string;
+  method: 'CASH' | 'TRANSFER' | 'CHECK';
+  amount: string;
+  tenderedAmount: string;
+  changeAmount: string;
+  status: string;
+  cashSessionId: string | null;
+  reference: string | null;
+  notes: string | null;
+  paidAt: string;
+  cancelledAt: string | null;
+  cancelReason: string | null;
+  createdBy: { id: string; name: string; email: string };
+  cancelledBy: { id: string; name: string; email: string } | null;
+  cashSession: {
+    id: string;
+    status: string;
+    openedAt: string;
+    closedAt: string | null;
+    cashRegister: { id: string; name: string };
+  } | null;
+};
+
+export type SupplierInvoice = {
+  id: string;
+  tenantId: string;
+  supplierId: string;
+  purchaseOrderId: string | null;
+  invoiceNumber: string;
+  ncf: string | null;
+  issueDate: string;
+  dueDate: string | null;
+  ncfValidUntil: string | null;
+  paymentCondition: string | null;
+  currency: 'DOP';
+  status: SupplierInvoiceStatus;
+  displayStatus: SupplierInvoiceStatus | 'OVERDUE';
+  isOverdue: boolean;
+  subtotal: string;
+  taxTotal: string;
+  discountTotal: string;
+  total: string;
+  paidAmount: string;
+  balance: string;
+  notes: string | null;
+  supplierNameSnapshot: string;
+  supplierDocumentTypeSnapshot: 'RNC' | 'CEDULA';
+  supplierDocumentNumberSnapshot: string;
+  supplierAddressSnapshot: string | null;
+  cancelledAt: string | null;
+  cancelReason: string | null;
+  createdAt: string;
+  updatedAt: string;
+  supplier: Supplier;
+  purchaseOrder: {
+    id: string;
+    orderNumber: string;
+    status: PurchaseOrderStatus;
+    expectedDeliveryDate?: string | null;
+  } | null;
+  items?: SupplierInvoiceItem[];
+  payments?: SupplierPayment[];
+  goodsReceipts?: Array<{
+    id: string;
+    receiptNumber: string;
+    status: string;
+    confirmedAt: string | null;
+    createdAt: string;
+  }>;
+  createdBy: { id: string; name: string; email: string };
+  updatedBy?: { id: string; name: string; email: string } | null;
+  cancelledBy?: { id: string; name: string; email: string } | null;
+  _count?: {
+    items: number;
+    payments: number;
+    goodsReceipts: number;
+  };
+};
+
+export type SupplierInvoicePayload = {
+  supplierId: string;
+  purchaseOrderId?: string;
+  invoiceNumber: string;
+  ncf?: string;
+  issueDate: string;
+  dueDate: string;
+  ncfValidUntil?: string;
+  paymentCondition?: string | null;
+  notes?: string;
+  ocrReview?: {
+    pageCount?: number;
+    detectedTotal?: number;
+    totalMismatchAccepted?: boolean;
+    warnings?: string[];
+  };
+  items: Array<{
+    productId: string;
+    purchaseOrderItemId?: string;
+    quantity: number;
+    unitCostNet: number;
+    taxRate: number;
+    discountTotal?: number;
+  }>;
+};
+
+export type PayablesSummary = {
+  asOf: string;
+  invoiceCount: number;
+  openInvoiceCount: number;
+  overdueCount: number;
+  dueTodayCount: number;
+  dueSoonCount: number;
+  paidInvoiceCount: number;
+  totalInvoiced: string;
+  paidAmount: string;
+  outstandingBalance: string;
+  overdueBalance: string;
+  dueTodayBalance: string;
+  dueSoonBalance: string;
+  laterOrNoDueBalance: string;
+  bySupplier: Array<{
+    supplierId: string;
+    supplierName: string;
+    invoiceCount: number;
+    overdueCount: number;
+    outstandingBalance: string;
+    overdueBalance: string;
+  }>;
+};
+
+export type GoodsReceiptStatus = 'DRAFT' | 'CONFIRMED' | 'REVERSED' | 'CANCELLED';
+export type ReceiptPriceDecision = 'KEEP' | 'RECALCULATE_MARGIN' | 'MANUAL';
+
+export type GoodsReceiptItem = {
+  id: string;
+  supplierInvoiceItemId: string;
+  purchaseOrderItemId: string | null;
+  productId: string;
+  quantityOrdered: string | null;
+  quantityInvoiced: string;
+  quantityReceived: string;
+  quantityDifference: string;
+  cumulativeReceived: string;
+  cumulativeDifference: string;
+  quantityRemaining: string;
+  projectedCumulativeReceived: string;
+  projectedDifference: string;
+  projectedRemaining: string;
+  differenceAccepted: boolean;
+  differenceNote: string | null;
+  lotNumber: string | null;
+  serialNumber: string | null;
+  expirationDate: string | null;
+  previousCostNet: string | null;
+  newCostNet: string;
+  previousCostWithTax: string | null;
+  newCostWithTax: string;
+  priceDecision: ReceiptPriceDecision;
+  previousSalePrice: string;
+  suggestedSalePrice: string | null;
+  finalSalePrice: string | null;
+  previousStock: number | null;
+  newStock: number | null;
+  product: Pick<
+    Product,
+    'id' | 'name' | 'sku' | 'barcode' | 'unit' | 'stock' | 'cost' | 'price' | 'salePrice'
+  > & { costWithTax?: string | null; margin?: string | null };
+  supplierInvoiceItem: Pick<
+    SupplierInvoiceItem,
+    | 'id'
+    | 'descriptionSnapshot'
+    | 'quantity'
+    | 'unitCostNet'
+    | 'unitCostWithTax'
+    | 'taxRate'
+    | 'total'
+  >;
+  purchaseOrderItem: {
+    id: string;
+    quantity: string;
+    receivedQuantity: string;
+  } | null;
+};
+
+export type GoodsReceipt = {
+  id: string;
+  tenantId: string;
+  supplierId: string;
+  purchaseOrderId: string | null;
+  supplierInvoiceId: string;
+  receiptNumber: string;
+  status: GoodsReceiptStatus;
+  notes: string | null;
+  confirmedAt: string | null;
+  reversedAt: string | null;
+  cancelledAt: string | null;
+  reversalReason: string | null;
+  cancelReason: string | null;
+  createdAt: string;
+  updatedAt: string;
+  supplier: Pick<
+    Supplier,
+    'id' | 'commercialName' | 'legalName' | 'documentType' | 'documentNumber'
+  >;
+  supplierInvoice: Pick<
+    SupplierInvoice,
+    'id' | 'invoiceNumber' | 'ncf' | 'issueDate' | 'dueDate' | 'status' | 'total' | 'currency'
+  >;
+  purchaseOrder: {
+    id: string;
+    orderNumber: string;
+    status: PurchaseOrderStatus;
+    expectedDeliveryDate: string | null;
+  } | null;
+  items: GoodsReceiptItem[];
+  quantitySummary: {
+    itemCount: number;
+    totalQuantityReceived: string;
+    itemsWithDifference: number;
+  };
+  createdBy: { id: string; name: string; email: string };
+  confirmedBy: { id: string; name: string; email: string } | null;
+  reversedBy: { id: string; name: string; email: string } | null;
+  cancelledBy: { id: string; name: string; email: string } | null;
+};
+
+export type GoodsReceiptPayload = {
+  supplierInvoiceId: string;
+  notes?: string;
+  items: Array<{
+    supplierInvoiceItemId: string;
+    quantityReceived: number;
+    differenceAccepted?: boolean;
+    differenceNote?: string;
+    lotNumber?: string;
+    serialNumber?: string;
+    expirationDate?: string;
+    priceDecision?: ReceiptPriceDecision;
+    manualSalePrice?: number;
+  }>;
+};
+
 const apiUrl = process.env.NEXT_PUBLIC_API_URL;
 
 if (!apiUrl) {
-  throw new Error('NEXT_PUBLIC_API_URL is required to connect the frontend with the CoreStack API.');
+  throw new Error(
+    'NEXT_PUBLIC_API_URL is required to connect the frontend with the CoreStack API.',
+  );
 }
 
 const apiMessageTranslations: Record<string, string> = {
@@ -759,10 +1441,8 @@ const apiMessageTranslations: Record<string, string> = {
     'El administrador no puede tomar ordenes para cobrar en caja.',
   'Invoice number is required for return lookup.':
     'Debes escribir el numero de factura u orden para buscar la devolucion.',
-  'Invoice not found for return lookup.':
-    'No se encontro una factura con ese numero.',
-  'Invoice status does not allow returns.':
-    'El estado de esta factura no permite devoluciones.',
+  'Invoice not found for return lookup.': 'No se encontro una factura con ese numero.',
+  'Invoice status does not allow returns.': 'El estado de esta factura no permite devoluciones.',
   'Return reason is required.': 'Debes indicar el motivo de la devolucion.',
   'Return request must include at least one item.':
     'La solicitud debe incluir al menos un producto.',
@@ -772,14 +1452,10 @@ const apiMessageTranslations: Record<string, string> = {
     'Uno de los productos no pertenece a la factura seleccionada.',
   'Return quantity exceeds invoice remaining quantity.':
     'La cantidad a devolver supera lo disponible en la factura.',
-  'Return request not found for tenant.':
-    'Solicitud de devolucion no encontrada en esta empresa.',
-  'Only requested returns can be approved.':
-    'Solo se pueden aprobar devoluciones solicitadas.',
-  'Only requested returns can be rejected.':
-    'Solo se pueden rechazar devoluciones solicitadas.',
-  'Return rejection reason is required.':
-    'Debes indicar el motivo del rechazo.',
+  'Return request not found for tenant.': 'Solicitud de devolucion no encontrada en esta empresa.',
+  'Only requested returns can be approved.': 'Solo se pueden aprobar devoluciones solicitadas.',
+  'Only requested returns can be rejected.': 'Solo se pueden rechazar devoluciones solicitadas.',
+  'Return rejection reason is required.': 'Debes indicar el motivo del rechazo.',
   'Employee does not have permission to request returns.':
     'Tu usuario no tiene permiso para solicitar devoluciones.',
   'Only admins can approve or reject returns.':
@@ -797,6 +1473,80 @@ const apiMessageTranslations: Record<string, string> = {
   'El RNC no es valido.': 'El RNC no es valido.',
   'La cedula debe tener 11 digitos.': 'La cedula debe tener 11 digitos.',
   'La cedula no es valida.': 'La cedula no es valida.',
+  'Purchase order access is required.': 'No tienes acceso a las órdenes de compra.',
+  'Administrator approval is required.':
+    'Esta acción requiere la autorización de un administrador.',
+  'Purchase order not found for tenant.': 'No se encontró la orden de compra.',
+  'Active supplier not found for tenant.': 'No se encontró un suplidor activo.',
+  'Only draft purchase orders can be edited.':
+    'Solo se pueden editar órdenes de compra en borrador.',
+  'Changing the supplier requires resubmitting all purchase order items.':
+    'Para cambiar el suplidor debes volver a enviar todos los productos de la orden.',
+  'A reason is required to pause a purchase order.':
+    'Debes indicar el motivo para pausar la orden de compra.',
+  'A reason is required to cancel a purchase order.':
+    'Debes indicar el motivo para cancelar la orden de compra.',
+  'A received purchase order cannot be cancelled.':
+    'No se puede cancelar una orden que ya recibió mercancía.',
+  'A product can only appear once in a purchase order.':
+    'Un producto solo puede aparecer una vez en la orden de compra.',
+  'One or more products are unavailable for this tenant.':
+    'Uno o más productos de la orden no están disponibles.',
+  'Invalid purchase order status.': 'El estado de la orden de compra no es válido.',
+  'The initial due date cannot be after the final due date.':
+    'La fecha inicial no puede ser posterior a la fecha final.',
+  'Supplier invoice not found for tenant.': 'No se encontró la factura del suplidor.',
+  'At least one field is required to update the invoice.':
+    'Debes indicar al menos un dato para actualizar la factura.',
+  'Only draft supplier invoices can be edited.':
+    'Solo se pueden editar facturas de suplidor en borrador.',
+  'Only draft supplier invoices can be registered.':
+    'Solo se pueden registrar facturas de suplidor en borrador.',
+  'A supplier invoice must contain at least one product.':
+    'La factura del suplidor debe contener al menos un producto.',
+  'Supplier invoice is already cancelled.': 'La factura del suplidor ya está cancelada.',
+  'A supplier invoice with confirmed goods receipts cannot be cancelled.':
+    'No puedes cancelar una factura con recepciones confirmadas.',
+  'Cancel completed supplier payments before cancelling the invoice.':
+    'Anula primero los pagos completados antes de cancelar la factura.',
+  'Open cash session not found for this tenant.': 'No se encontró la caja abierta seleccionada.',
+  'Supplier payment cannot exceed invoice balance.':
+    'El pago no puede superar el saldo pendiente de la factura.',
+  'Tendered amount must equal the applied amount for transfers and checks.':
+    'En transferencias y cheques, el monto entregado debe coincidir con el monto aplicado.',
+  'Supplier invoice has no pending balance to pay.':
+    'La factura no tiene saldo pendiente para pagar.',
+  'Only pending or partially paid supplier invoices accept payments.':
+    'Solo las facturas pendientes o parcialmente pagadas aceptan pagos.',
+  'Cash supplier payments require a cash session.':
+    'Los pagos en efectivo requieren seleccionar una caja abierta.',
+  'Only cash supplier payments can reference a cash session.':
+    'Solo los pagos en efectivo pueden vincularse a una caja.',
+  'Supplier invoice due date cannot be before its issue date.':
+    'El vencimiento no puede ser anterior a la fecha de emisión.',
+  'Supplier invoice NCF validity cannot be before its issue date.':
+    'La vigencia fiscal del NCF no puede ser anterior a la fecha de emisión.',
+  'Supplier invoice due date is required.':
+    'La fecha de vencimiento de la factura es obligatoria.',
+  'Supplier payment not found for this invoice and tenant.':
+    'No se encontró el pago de esta factura.',
+  'Only completed supplier payments can be cancelled.': 'Solo se pueden anular pagos completados.',
+  'Payments on a cancelled invoice cannot be changed.':
+    'No se pueden cambiar pagos de una factura cancelada.',
+  'This supplier already has an invoice with the same number.':
+    'Este suplidor ya tiene una factura con el mismo número.',
+  'This supplier already has an invoice with the same NCF.':
+    'Este suplidor ya tiene una factura con el mismo NCF.',
+  'Purchase order and supplier invoice must use the same supplier.':
+    'La orden de compra y la factura deben pertenecer al mismo suplidor.',
+  'Supplier invoices can only use issued or received purchase orders.':
+    'Solo puedes vincular órdenes emitidas o recibidas.',
+  'This purchase order already has a supplier invoice.':
+    'Esta orden de compra ya tiene una factura vinculada.',
+  'One or more supplier invoice products do not belong to this tenant.':
+    'Uno o más productos de la factura no pertenecen a esta empresa.',
+  'The accounting record changed concurrently. Try the operation again.':
+    'El registro cambió mientras se procesaba. Actualiza e inténtalo nuevamente.',
 };
 
 async function fetchJson<T>(path: string, options?: RequestInit) {
@@ -847,6 +1597,15 @@ async function fetchFormData<T>(path: string, formData: FormData, headers: Recor
   return JSON.parse(body) as T;
 }
 
+async function fetchBlob(path: string, headers: Record<string, string>) {
+  const response = await fetch(`${apiUrl}${path}`, { headers });
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(getApiErrorMessage(body, response.status));
+  }
+  return response.blob();
+}
+
 function getApiErrorMessage(body: string, status: number) {
   if (!body) {
     return `No se pudo completar la solicitud (${status}).`;
@@ -893,6 +1652,18 @@ function translateApiMessage(message: string) {
   if (message.startsWith('Product unit ') && message.includes(' requires whole quantities for ')) {
     const field = message.split(' requires whole quantities for ')[1]?.replace(/\.$/, '');
     return `La unidad seleccionada requiere cantidades completas${field ? ` en ${field}` : ''}.`;
+  }
+
+  if (message.startsWith('Purchase order cannot move from ') && message.includes(' to ')) {
+    return 'La orden de compra cambió de estado y ya no admite esa acción.';
+  }
+
+  if (message.startsWith('Discount exceeds subtotal for ')) {
+    return 'El descuento de un producto supera su subtotal.';
+  }
+
+  if (message.startsWith('Discount exceeds the gross subtotal for ')) {
+    return 'El descuento de un producto supera su subtotal bruto.';
   }
 
   return message;
@@ -1328,6 +2099,12 @@ export function getEmployeeLogs(tenantId: string, accessToken: string) {
   });
 }
 
+export function getOperationalLogs(tenantId: string, accessToken: string) {
+  return fetchJson<OperationalLog[]>('/employee-logs/operational', {
+    headers: tenantHeaders(tenantId, accessToken),
+  });
+}
+
 export function getFiscalSequences(tenantId: string, accessToken: string) {
   return fetchJson<FiscalSequence[]>('/fiscal-sequences', {
     headers: tenantHeaders(tenantId, accessToken),
@@ -1349,4 +2126,511 @@ export function importProductsFile(tenantId: string, accessToken: string, file: 
     formData,
     tenantHeaders(tenantId, accessToken),
   );
+}
+
+export function getSuppliers(
+  tenantId: string,
+  accessToken: string,
+  filters: { q?: string; status?: SupplierStatus } = {},
+) {
+  const query = new URLSearchParams();
+  if (filters.q?.trim()) query.set('q', filters.q.trim());
+  if (filters.status) query.set('status', filters.status);
+  const suffix = query.size ? `?${query.toString()}` : '';
+  return fetchJson<Supplier[]>(`/suppliers${suffix}`, {
+    headers: tenantHeaders(tenantId, accessToken),
+  });
+}
+
+export function getSupplier(tenantId: string, accessToken: string, supplierId: string) {
+  return fetchJson<Supplier>(`/suppliers/${supplierId}`, {
+    headers: tenantHeaders(tenantId, accessToken),
+  });
+}
+
+export function createSupplier(tenantId: string, accessToken: string, payload: SupplierPayload) {
+  return fetchJson<Supplier>('/suppliers', {
+    method: 'POST',
+    headers: tenantHeaders(tenantId, accessToken),
+    body: JSON.stringify(payload),
+  });
+}
+
+export function updateSupplier(
+  tenantId: string,
+  accessToken: string,
+  supplierId: string,
+  payload: Partial<SupplierPayload>,
+) {
+  return fetchJson<Supplier>(`/suppliers/${supplierId}`, {
+    method: 'PATCH',
+    headers: tenantHeaders(tenantId, accessToken),
+    body: JSON.stringify(payload),
+  });
+}
+
+export function deactivateSupplier(tenantId: string, accessToken: string, supplierId: string) {
+  return fetchJson<Supplier>(`/suppliers/${supplierId}/deactivate`, {
+    method: 'PATCH',
+    headers: tenantHeaders(tenantId, accessToken),
+  });
+}
+
+export function addSupplierProduct(
+  tenantId: string,
+  accessToken: string,
+  supplierId: string,
+  payload: {
+    productId: string;
+    supplierSku?: string;
+    lastCostNet?: number;
+    lastCostWithTax?: number;
+    leadTimeDays?: number;
+    isPrimary?: boolean;
+  },
+) {
+  return fetchJson<SupplierProduct>(`/suppliers/${supplierId}/products`, {
+    method: 'POST',
+    headers: tenantHeaders(tenantId, accessToken),
+    body: JSON.stringify(payload),
+  });
+}
+
+export function updateSupplierProduct(
+  tenantId: string,
+  accessToken: string,
+  supplierId: string,
+  productId: string,
+  payload: {
+    supplierSku?: string;
+    lastCostNet?: number;
+    lastCostWithTax?: number;
+    leadTimeDays?: number;
+    isPrimary?: boolean;
+    active?: boolean;
+  },
+) {
+  return fetchJson<SupplierProduct>(`/suppliers/${supplierId}/products/${productId}`, {
+    method: 'PATCH',
+    headers: tenantHeaders(tenantId, accessToken),
+    body: JSON.stringify(payload),
+  });
+}
+
+export function removeSupplierProduct(
+  tenantId: string,
+  accessToken: string,
+  supplierId: string,
+  productId: string,
+) {
+  return fetchJson<SupplierProduct>(`/suppliers/${supplierId}/products/${productId}`, {
+    method: 'DELETE',
+    headers: tenantHeaders(tenantId, accessToken),
+  });
+}
+
+export function getPurchaseOrders(
+  tenantId: string,
+  accessToken: string,
+  filters: { q?: string; status?: PurchaseOrderStatus | 'OVERDUE' } = {},
+) {
+  const query = new URLSearchParams();
+  if (filters.q?.trim()) query.set('q', filters.q.trim());
+  if (filters.status) query.set('status', filters.status);
+  const suffix = query.size ? `?${query.toString()}` : '';
+  return fetchJson<PurchaseOrder[]>(`/purchase-orders${suffix}`, {
+    headers: tenantHeaders(tenantId, accessToken),
+  });
+}
+
+export function getPurchaseOrder(tenantId: string, accessToken: string, orderId: string) {
+  return fetchJson<PurchaseOrder>(`/purchase-orders/${orderId}`, {
+    headers: tenantHeaders(tenantId, accessToken),
+  });
+}
+
+export function createPurchaseOrder(
+  tenantId: string,
+  accessToken: string,
+  payload: PurchaseOrderPayload,
+) {
+  return fetchJson<PurchaseOrder>('/purchase-orders', {
+    method: 'POST',
+    headers: tenantHeaders(tenantId, accessToken),
+    body: JSON.stringify(payload),
+  });
+}
+
+export function updatePurchaseOrder(
+  tenantId: string,
+  accessToken: string,
+  orderId: string,
+  payload: Partial<PurchaseOrderPayload>,
+) {
+  return fetchJson<PurchaseOrder>(`/purchase-orders/${orderId}`, {
+    method: 'PATCH',
+    headers: tenantHeaders(tenantId, accessToken),
+    body: JSON.stringify(payload),
+  });
+}
+
+export function transitionPurchaseOrder(
+  tenantId: string,
+  accessToken: string,
+  orderId: string,
+  transition: 'request' | 'submit' | 'review' | 'approve' | 'issue' | 'pause' | 'resume' | 'cancel',
+  note?: string,
+) {
+  return fetchJson<PurchaseOrder>(`/purchase-orders/${orderId}/${transition}`, {
+    method: 'POST',
+    headers: tenantHeaders(tenantId, accessToken),
+    body: JSON.stringify({ note }),
+  });
+}
+
+export function getSupplierInvoices(
+  tenantId: string,
+  accessToken: string,
+  filters: {
+    q?: string;
+    status?: SupplierInvoiceStatus;
+    supplierId?: string;
+    dueFrom?: string;
+    dueTo?: string;
+    overdue?: boolean;
+  } = {},
+) {
+  const query = new URLSearchParams();
+  if (filters.q?.trim()) query.set('q', filters.q.trim());
+  if (filters.status) query.set('status', filters.status);
+  if (filters.supplierId) query.set('supplierId', filters.supplierId);
+  if (filters.dueFrom) query.set('dueFrom', filters.dueFrom);
+  if (filters.dueTo) query.set('dueTo', filters.dueTo);
+  if (filters.overdue !== undefined) query.set('overdue', String(filters.overdue));
+  const suffix = query.size ? `?${query.toString()}` : '';
+  return fetchJson<SupplierInvoice[]>(`/supplier-invoices${suffix}`, {
+    headers: tenantHeaders(tenantId, accessToken),
+  });
+}
+
+export function getSupplierInvoice(tenantId: string, accessToken: string, invoiceId: string) {
+  return fetchJson<SupplierInvoice>(`/supplier-invoices/${invoiceId}`, {
+    headers: tenantHeaders(tenantId, accessToken),
+  });
+}
+
+export function createSupplierInvoice(
+  tenantId: string,
+  accessToken: string,
+  payload: SupplierInvoicePayload,
+) {
+  return fetchJson<SupplierInvoice>('/supplier-invoices', {
+    method: 'POST',
+    headers: tenantHeaders(tenantId, accessToken),
+    body: JSON.stringify(payload),
+  });
+}
+
+export function updateSupplierInvoice(
+  tenantId: string,
+  accessToken: string,
+  invoiceId: string,
+  payload: Omit<Partial<SupplierInvoicePayload>, 'purchaseOrderId'> & {
+    purchaseOrderId?: string | null;
+  },
+) {
+  return fetchJson<SupplierInvoice>(`/supplier-invoices/${invoiceId}`, {
+    method: 'PATCH',
+    headers: tenantHeaders(tenantId, accessToken),
+    body: JSON.stringify(payload),
+  });
+}
+
+export function confirmSupplierInvoiceEntry(
+  tenantId: string,
+  accessToken: string,
+  invoiceId: string,
+  payload: Omit<GoodsReceiptPayload, 'supplierInvoiceId'>,
+) {
+  return fetchJson<{ invoice: SupplierInvoice; receipt: GoodsReceipt }>(
+    `/supplier-invoices/${invoiceId}/confirm-entry`,
+    {
+      method: 'POST',
+      headers: tenantHeaders(tenantId, accessToken),
+      body: JSON.stringify(payload),
+    },
+  );
+}
+
+export function cancelSupplierInvoice(
+  tenantId: string,
+  accessToken: string,
+  invoiceId: string,
+  reason: string,
+) {
+  return fetchJson<SupplierInvoice>(`/supplier-invoices/${invoiceId}/cancel`, {
+    method: 'POST',
+    headers: tenantHeaders(tenantId, accessToken),
+    body: JSON.stringify({ reason }),
+  });
+}
+
+export function registerSupplierPayment(
+  tenantId: string,
+  accessToken: string,
+  invoiceId: string,
+  payload: {
+    method: 'CASH' | 'TRANSFER' | 'CHECK';
+    amount: number;
+    tenderedAmount?: number;
+    reference?: string;
+    notes?: string;
+    paidAt?: string;
+  },
+) {
+  return fetchJson<{ payment: SupplierPayment; invoice: SupplierInvoice }>(
+    `/supplier-invoices/${invoiceId}/payments`,
+    {
+      method: 'POST',
+      headers: tenantHeaders(tenantId, accessToken),
+      body: JSON.stringify(payload),
+    },
+  );
+}
+
+export function cancelSupplierPayment(
+  tenantId: string,
+  accessToken: string,
+  invoiceId: string,
+  paymentId: string,
+  reason: string,
+) {
+  return fetchJson<{ payment: SupplierPayment; invoice: SupplierInvoice }>(
+    `/supplier-invoices/${invoiceId}/payments/${paymentId}/cancel`,
+    {
+      method: 'POST',
+      headers: tenantHeaders(tenantId, accessToken),
+      body: JSON.stringify({ reason }),
+    },
+  );
+}
+
+export function getPayablesSummary(tenantId: string, accessToken: string, supplierId?: string) {
+  const query = supplierId ? `?supplierId=${encodeURIComponent(supplierId)}` : '';
+  return fetchJson<PayablesSummary>(`/supplier-invoices/payables/summary${query}`, {
+    headers: tenantHeaders(tenantId, accessToken),
+  });
+}
+
+export function getGoodsReceipts(
+  tenantId: string,
+  accessToken: string,
+  filters: {
+    q?: string;
+    status?: GoodsReceiptStatus;
+    supplierInvoiceId?: string;
+    purchaseOrderId?: string;
+    supplierId?: string;
+  } = {},
+) {
+  const query = new URLSearchParams();
+  if (filters.q?.trim()) query.set('q', filters.q.trim());
+  if (filters.status) query.set('status', filters.status);
+  if (filters.supplierInvoiceId) query.set('supplierInvoiceId', filters.supplierInvoiceId);
+  if (filters.purchaseOrderId) query.set('purchaseOrderId', filters.purchaseOrderId);
+  if (filters.supplierId) query.set('supplierId', filters.supplierId);
+  const suffix = query.size ? `?${query.toString()}` : '';
+  return fetchJson<GoodsReceipt[]>(`/receipts${suffix}`, {
+    headers: tenantHeaders(tenantId, accessToken),
+  });
+}
+
+export function getGoodsReceipt(tenantId: string, accessToken: string, receiptId: string) {
+  return fetchJson<GoodsReceipt>(`/receipts/${receiptId}`, {
+    headers: tenantHeaders(tenantId, accessToken),
+  });
+}
+
+export function createGoodsReceipt(
+  tenantId: string,
+  accessToken: string,
+  payload: GoodsReceiptPayload,
+) {
+  return fetchJson<GoodsReceipt>('/receipts', {
+    method: 'POST',
+    headers: tenantHeaders(tenantId, accessToken),
+    body: JSON.stringify(payload),
+  });
+}
+
+export function updateGoodsReceipt(
+  tenantId: string,
+  accessToken: string,
+  receiptId: string,
+  payload: Omit<GoodsReceiptPayload, 'supplierInvoiceId'>,
+) {
+  return fetchJson<GoodsReceipt>(`/receipts/${receiptId}`, {
+    method: 'PATCH',
+    headers: tenantHeaders(tenantId, accessToken),
+    body: JSON.stringify(payload),
+  });
+}
+
+export function confirmGoodsReceipt(tenantId: string, accessToken: string, receiptId: string) {
+  return fetchJson<GoodsReceipt>(`/receipts/${receiptId}/confirm`, {
+    method: 'POST',
+    headers: tenantHeaders(tenantId, accessToken),
+  });
+}
+
+export function cancelGoodsReceipt(
+  tenantId: string,
+  accessToken: string,
+  receiptId: string,
+  reason: string,
+) {
+  return fetchJson<GoodsReceipt>(`/receipts/${receiptId}/cancel`, {
+    method: 'POST',
+    headers: tenantHeaders(tenantId, accessToken),
+    body: JSON.stringify({ reason }),
+  });
+}
+
+export function reverseGoodsReceipt(
+  tenantId: string,
+  accessToken: string,
+  receiptId: string,
+  reason: string,
+) {
+  return fetchJson<GoodsReceipt>(`/receipts/${receiptId}/reverse`, {
+    method: 'POST',
+    headers: tenantHeaders(tenantId, accessToken),
+    body: JSON.stringify({ reason }),
+  });
+}
+
+export function configureCustomerCredit(
+  tenantId: string,
+  accessToken: string,
+  customerId: string,
+  payload: {
+    creditEnabled: boolean;
+    creditStatus: 'ACTIVE' | 'BLOCKED';
+    creditLimit: number;
+    creditTermDays: number;
+  },
+) {
+  return fetchJson<Customer>(`/customers/${customerId}/credit`, {
+    method: 'PATCH',
+    headers: tenantHeaders(tenantId, accessToken),
+    body: JSON.stringify(payload),
+  });
+}
+
+export function getCreditApprovals(
+  tenantId: string,
+  accessToken: string,
+  status?: CreditApprovalStatus,
+) {
+  const query = status ? `?status=${encodeURIComponent(status)}` : '';
+  return fetchJson<CreditSaleApproval[]>(`/credit-approvals${query}`, {
+    headers: tenantHeaders(tenantId, accessToken),
+  });
+}
+
+export function approveCreditSale(
+  tenantId: string,
+  accessToken: string,
+  approvalId: string,
+  payload: {
+    authorizeLimitExcess?: boolean;
+    decisionNote?: string;
+  },
+) {
+  return fetchJson<CreditSaleApproval>(`/credit-approvals/${approvalId}/approve`, {
+    method: 'POST',
+    headers: tenantHeaders(tenantId, accessToken),
+    body: JSON.stringify(payload),
+  });
+}
+
+export function rejectCreditSale(
+  tenantId: string,
+  accessToken: string,
+  approvalId: string,
+  reason: string,
+) {
+  return fetchJson<CreditSaleApproval>(`/credit-approvals/${approvalId}/reject`, {
+    method: 'POST',
+    headers: tenantHeaders(tenantId, accessToken),
+    body: JSON.stringify({ reason }),
+  });
+}
+
+export function getReceivables(
+  tenantId: string,
+  accessToken: string,
+  filters: {
+    q?: string;
+    bucket?: ReceivableDueBucket | 'ALL';
+  } = {},
+) {
+  const query = new URLSearchParams();
+  if (filters.q?.trim()) query.set('q', filters.q.trim());
+  if (filters.bucket && filters.bucket !== 'ALL') query.set('bucket', filters.bucket);
+  const suffix = query.size ? `?${query.toString()}` : '';
+  return fetchJson<ReceivableInvoice[]>(`/receivables${suffix}`, {
+    headers: tenantHeaders(tenantId, accessToken),
+  });
+}
+
+export function getReceivableCustomerSummary(tenantId: string, accessToken: string) {
+  return fetchJson<ReceivableCustomerSummary[]>('/receivables/customers', {
+    headers: tenantHeaders(tenantId, accessToken),
+  });
+}
+
+export function getCustomerStatement(tenantId: string, accessToken: string, customerId: string) {
+  return fetchJson<CustomerStatement>(`/receivables/customers/${customerId}/statement`, {
+    headers: tenantHeaders(tenantId, accessToken),
+  });
+}
+
+export function createReceivablePayment(
+  tenantId: string,
+  accessToken: string,
+  invoiceId: string,
+  payload: {
+    amount: number;
+    cashSessionId: string;
+    idempotencyKey?: string;
+  },
+) {
+  return fetchJson<ReceivablePayment>(`/receivables/invoices/${invoiceId}/payments`, {
+    method: 'POST',
+    headers: tenantHeaders(tenantId, accessToken),
+    body: JSON.stringify(payload),
+  });
+}
+
+export function getReceivablePayment(tenantId: string, accessToken: string, paymentId: string) {
+  return fetchJson<ReceivablePayment>(`/receivables/payments/${paymentId}`, {
+    headers: tenantHeaders(tenantId, accessToken),
+  });
+}
+
+export function cancelReceivablePayment(
+  tenantId: string,
+  accessToken: string,
+  paymentId: string,
+  payload: {
+    cashSessionId: string;
+    reason: string;
+  },
+) {
+  return fetchJson<ReceivablePayment>(`/receivables/payments/${paymentId}/cancel`, {
+    method: 'POST',
+    headers: tenantHeaders(tenantId, accessToken),
+    body: JSON.stringify(payload),
+  });
 }

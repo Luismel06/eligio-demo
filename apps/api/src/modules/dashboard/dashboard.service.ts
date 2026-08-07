@@ -2,16 +2,22 @@ import { Injectable } from '@nestjs/common';
 import {
   CashMovementType,
   CashSessionStatus,
+  CreditApprovalStatus,
   CustomerStatus,
   EmployeeStatus,
   FiscalSequenceStatus,
+  GoodsReceiptStatus,
   InvoiceStatus,
   PaymentMethod,
   ProductStatus,
+  PurchaseOrderStatus,
   ReturnRequestStatus,
+  SalePaymentMode,
   SalesOrderDestination,
   SalesOrderStatus,
+  SupplierInvoiceStatus,
 } from '@qorvex/database';
+import { addBusinessDays, businessDateKey } from '../../common/utils/business-date';
 import { PrismaService } from '../../prisma/prisma.service';
 
 const revenueStatuses = [
@@ -27,6 +33,21 @@ const pendingInvoiceStatuses = [
   InvoiceStatus.PARTIALLY_PAID,
   InvoiceStatus.PENDING_ECF,
 ];
+const excludedReceivableStatuses = [
+  InvoiceStatus.CANCELLED,
+  InvoiceStatus.VOIDED,
+  InvoiceStatus.VOID,
+  InvoiceStatus.REJECTED,
+];
+const payableInvoiceStatuses = [
+  SupplierInvoiceStatus.PENDING,
+  SupplierInvoiceStatus.PARTIALLY_PAID,
+  SupplierInvoiceStatus.PAID,
+];
+const terminalPurchaseOrderStatuses: PurchaseOrderStatus[] = [
+  PurchaseOrderStatus.RECEIVED,
+  PurchaseOrderStatus.CANCELLED,
+];
 
 @Injectable()
 export class DashboardService {
@@ -36,6 +57,9 @@ export class DashboardService {
     const now = new Date();
     const todayStart = new Date(now);
     todayStart.setHours(0, 0, 0, 0);
+    const accountingTodayKey = businessDateKey(now);
+    const accountingTomorrowKey = businessDateKey(addBusinessDays(1, now));
+    const accountingDueSoonEndKey = businessDateKey(addBusinessDays(8, now));
 
     const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
     const nextMonthStart = new Date(now.getFullYear(), now.getMonth() + 1, 1);
@@ -72,6 +96,15 @@ export class DashboardService {
       returnsForSeries,
       quotationSalesInCashier,
       completedQuotationSalesToday,
+      receivableInvoicesForAccounting,
+      payableInvoicesForAccounting,
+      purchaseOrdersForAccounting,
+      awaitingReceiptCount,
+      draftReceiptsCount,
+      draftReceiptItemsForAccounting,
+      pendingCreditApprovals,
+      creditApprovalsExceedingLimit,
+      recentAuditActivity,
     ] = await Promise.all([
       this.prisma.invoice.findMany({
         where: {
@@ -351,6 +384,89 @@ export class DashboardService {
           total: true,
         },
       }),
+      this.prisma.invoice.findMany({
+        where: {
+          tenantId,
+          paymentMode: SalePaymentMode.CREDIT,
+          status: { notIn: excludedReceivableStatuses },
+          balance: { gt: 0 },
+        },
+        select: {
+          balance: true,
+          dueDate: true,
+        },
+      }),
+      this.prisma.supplierInvoice.findMany({
+        where: {
+          tenantId,
+          status: { in: payableInvoiceStatuses },
+          balance: { gt: 0 },
+        },
+        select: {
+          balance: true,
+          dueDate: true,
+        },
+      }),
+      this.prisma.purchaseOrder.findMany({
+        where: { tenantId },
+        select: {
+          status: true,
+          expectedDeliveryDate: true,
+          supplierInvoice: { select: { id: true } },
+        },
+      }),
+      this.prisma.supplierInvoice.count({
+        where: {
+          tenantId,
+          status: { in: payableInvoiceStatuses },
+          goodsReceipts: { none: { status: GoodsReceiptStatus.CONFIRMED } },
+        },
+      }),
+      this.prisma.goodsReceipt.count({
+        where: {
+          tenantId,
+          status: GoodsReceiptStatus.DRAFT,
+        },
+      }),
+      this.prisma.goodsReceiptItem.findMany({
+        where: {
+          tenantId,
+          differenceAccepted: false,
+          goodsReceipt: { status: GoodsReceiptStatus.DRAFT },
+        },
+        select: {
+          quantityInvoiced: true,
+          quantityReceived: true,
+        },
+      }),
+      this.prisma.creditSaleApproval.aggregate({
+        where: {
+          tenantId,
+          status: CreditApprovalStatus.PENDING,
+        },
+        _count: { _all: true },
+        _sum: { financedAmount: true },
+      }),
+      this.prisma.creditSaleApproval.count({
+        where: {
+          tenantId,
+          status: CreditApprovalStatus.PENDING,
+          exceedsCreditLimit: true,
+        },
+      }),
+      this.prisma.auditLog.findMany({
+        where: { tenantId },
+        select: {
+          id: true,
+          action: true,
+          entity: true,
+          entityId: true,
+          createdAt: true,
+          user: { select: { name: true } },
+        },
+        orderBy: { createdAt: 'desc' },
+        take: 6,
+      }),
     ]);
 
     const lowStockProductsList = productsForStock.filter(
@@ -366,6 +482,45 @@ export class DashboardService {
     const pendingReturnAmount = this.decimalToNumber(pendingReturnsAggregate._sum.refundAmount);
     const quotationSalesInCashierAmount = this.sumOrderAmount(quotationSalesInCashier);
     const completedQuotationSalesTodayAmount = this.sumOrderAmount(completedQuotationSalesToday);
+    const receivablesAccounting = this.buildAgingSummary(receivableInvoicesForAccounting, {
+      todayKey: accountingTodayKey,
+      tomorrowKey: accountingTomorrowKey,
+      dueSoonEndKey: accountingDueSoonEndKey,
+    });
+    const payablesAccounting = this.buildAgingSummary(payableInvoicesForAccounting, {
+      todayKey: accountingTodayKey,
+      tomorrowKey: accountingTomorrowKey,
+      dueSoonEndKey: accountingDueSoonEndKey,
+    });
+    const purchaseOrdersAccounting = {
+      draftCount: purchaseOrdersForAccounting.filter(
+        (order) => order.status === PurchaseOrderStatus.DRAFT,
+      ).length,
+      underReviewCount: purchaseOrdersForAccounting.filter(
+        (order) =>
+          order.status === PurchaseOrderStatus.REQUESTED ||
+          order.status === PurchaseOrderStatus.UNDER_REVIEW,
+      ).length,
+      awaitingInvoiceCount: purchaseOrdersForAccounting.filter(
+        (order) => order.status === PurchaseOrderStatus.ISSUED && !order.supplierInvoice,
+      ).length,
+      overdueCount: purchaseOrdersForAccounting.filter(
+        (order) =>
+          Boolean(order.expectedDeliveryDate) &&
+          !terminalPurchaseOrderStatuses.includes(order.status) &&
+          businessDateKey(order.expectedDeliveryDate!) < accountingTodayKey,
+      ).length,
+      partiallyReceivedCount: purchaseOrdersForAccounting.filter(
+        (order) => order.status === PurchaseOrderStatus.PARTIALLY_RECEIVED,
+      ).length,
+      awaitingReceiptCount,
+    };
+    const itemsWithDifferenceCount = draftReceiptItemsForAccounting.filter(
+      (item) =>
+        Math.abs(
+          this.decimalToNumber(item.quantityReceived) - this.decimalToNumber(item.quantityInvoiced),
+        ) > 0.000001,
+    ).length;
 
     return {
       totalBilledMonth: netSalesMonth,
@@ -464,6 +619,28 @@ export class DashboardService {
         activeEmployees,
         openCashSessions,
       },
+      accounting: {
+        receivables: receivablesAccounting,
+        payables: payablesAccounting,
+        purchaseOrders: purchaseOrdersAccounting,
+        receipts: {
+          draftCount: draftReceiptsCount,
+          itemsWithDifferenceCount,
+        },
+        creditApprovals: {
+          pendingCount: pendingCreditApprovals._count._all,
+          pendingFinancedAmount: this.decimalToNumber(pendingCreditApprovals._sum.financedAmount),
+          exceedsLimitCount: creditApprovalsExceedingLimit,
+        },
+      },
+      recentAuditActivity: recentAuditActivity.map((activity) => ({
+        id: activity.id,
+        action: activity.action,
+        entity: activity.entity,
+        entityId: activity.entityId,
+        userName: activity.user?.name ?? null,
+        createdAt: activity.createdAt,
+      })),
       recentInventoryAlerts,
       salesSeries: this.buildSalesSeries(invoicesForSeries, returnsForSeries, now),
     };
@@ -654,6 +831,60 @@ export class DashboardService {
     return value ? value.toNumber() : 0;
   }
 
+  private buildAgingSummary(
+    invoices: Array<{
+      balance: { toNumber(): number };
+      dueDate: Date | null;
+    }>,
+    boundaries: {
+      todayKey: string;
+      tomorrowKey: string;
+      dueSoonEndKey: string;
+    },
+  ) {
+    let outstandingBalance = 0;
+    let overdueBalance = 0;
+    let overdueCount = 0;
+    let dueTodayCount = 0;
+    let dueSoonCount = 0;
+
+    for (const invoice of invoices) {
+      const balance = Math.max(this.decimalToNumber(invoice.balance), 0);
+
+      if (!balance) {
+        continue;
+      }
+
+      outstandingBalance += balance;
+
+      if (!invoice.dueDate) {
+        continue;
+      }
+
+      const dueDateKey = businessDateKey(invoice.dueDate);
+      if (dueDateKey < boundaries.todayKey) {
+        overdueCount += 1;
+        overdueBalance += balance;
+      } else if (dueDateKey === boundaries.todayKey) {
+        dueTodayCount += 1;
+      } else if (
+        dueDateKey >= boundaries.tomorrowKey &&
+        dueDateKey < boundaries.dueSoonEndKey
+      ) {
+        dueSoonCount += 1;
+      }
+    }
+
+    return {
+      outstandingBalance,
+      overdueBalance,
+      overdueCount,
+      dueTodayCount,
+      dueSoonCount,
+      openInvoiceCount: invoices.length,
+    };
+  }
+
   private sumInvoicePaidAmount(
     invoices: Array<{ paidAmount: { toNumber(): number }; total: { toNumber(): number } }>,
   ) {
@@ -680,7 +911,11 @@ export class DashboardService {
       method: PaymentMethod | null;
     }>;
   }) {
-    const negativeMovementTypes: CashMovementType[] = [CashMovementType.CASH_OUT, CashMovementType.REFUND];
+    const negativeMovementTypes: CashMovementType[] = [
+      CashMovementType.CASH_OUT,
+      CashMovementType.REFUND,
+      CashMovementType.SUPPLIER_PAYMENT,
+    ];
 
     return session.movements.reduce((sum, movement) => {
       if (movement.type === CashMovementType.CLOSING) {

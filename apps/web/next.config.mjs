@@ -1,5 +1,9 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  // Mantiene aislados los artefactos de `next dev` y `next build`.
+  // Sin esta separación, una compilación de producción puede reemplazar los
+  // chunks que un servidor de desarrollo ya tiene abiertos.
+  distDir: process.env.NODE_ENV === 'development' ? '.next-dev' : '.next',
   typedRoutes: false,
   poweredByHeader: false,
   async headers() {

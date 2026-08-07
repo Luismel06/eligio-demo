@@ -16,6 +16,7 @@ import {
   ProductUnit,
   ReturnRequestStatus,
   Role,
+  SalePaymentMode,
 } from '@qorvex/database';
 import { AuthenticatedUser } from '../../common/types/authenticated-request';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -117,6 +118,7 @@ export class ReturnsService {
     }
 
     return this.prisma.$transaction(async (tx) => {
+      await this.lockInvoice(tx, tenantId, dto.invoiceId);
       const invoice = await tx.invoice.findFirst({
         where: { id: dto.invoiceId, tenantId },
         include: this.invoiceLookupInclude(),
@@ -193,6 +195,19 @@ export class ReturnsService {
     this.ensureCanApproveReturn(membership);
 
     return this.prisma.$transaction(async (tx) => {
+      await this.lockReturnRequest(tx, tenantId, returnRequestId);
+      const requestHeader = await tx.returnRequest.findFirst({
+        where: {
+          id: returnRequestId,
+          tenantId,
+        },
+        select: { invoiceId: true },
+      });
+
+      if (!requestHeader) {
+        throw new NotFoundException('Return request not found for tenant.');
+      }
+      await this.lockInvoice(tx, tenantId, requestHeader.invoiceId);
       const request = await tx.returnRequest.findFirst({
         where: {
           id: returnRequestId,
@@ -201,24 +216,53 @@ export class ReturnsService {
         include: this.returnRequestInclude(),
       });
 
-      if (!request) {
-        throw new NotFoundException('Return request not found for tenant.');
-      }
-
-      if (request.status !== ReturnRequestStatus.REQUESTED) {
+      if (!request || request.status !== ReturnRequestStatus.REQUESTED) {
         throw new BadRequestException('Only requested returns can be approved.');
       }
 
       await this.ensureRequestCanStillBeCompleted(tx, tenantId, request);
 
       const refundMethod = dto.refundMethod ?? request.refundMethod ?? PaymentMethod.CASH;
-      const cashSession = await this.resolveCashSessionForRefund(
-        tx,
-        tenantId,
-        dto.cashSessionId,
-      );
+      const isCreditReturn = request.invoice.paymentMode === SalePaymentMode.CREDIT;
+      if (isCreditReturn && request.invoice.customerId) {
+        await this.lockCustomer(tx, tenantId, request.invoice.customerId);
+      }
+      const creditAppliedAmount = isCreditReturn
+        ? Prisma.Decimal.min(request.refundAmount, request.invoice.balance).toDecimalPlaces(2)
+        : new Prisma.Decimal(0);
+      const cashRefundAmount = request.refundAmount.sub(creditAppliedAmount).toDecimalPlaces(2);
+      const cashSession = cashRefundAmount.gt(0)
+        ? await this.resolveCashSessionForRefund(tx, tenantId, dto.cashSessionId)
+        : null;
+      if (
+        isCreditReturn &&
+        request.refundAmount.gt(request.invoice.balance.add(request.invoice.paidAmount))
+      ) {
+        throw new BadRequestException(
+          'Return exceeds the remaining paid amount and receivable balance.',
+        );
+      }
+      const approvedAt = new Date();
+      const claimed = await tx.returnRequest.updateMany({
+        where: {
+          id: request.id,
+          tenantId,
+          status: ReturnRequestStatus.REQUESTED,
+        },
+        data: {
+          status: ReturnRequestStatus.APPROVED,
+          approvedById: user.id,
+          approvedAt,
+        },
+      });
+      if (claimed.count !== 1) {
+        throw new BadRequestException('Only requested returns can be approved.');
+      }
 
-      for (const item of request.items) {
+      const restockItems = request.items
+        .filter((item) => item.restock && item.productId)
+        .sort((a, b) => a.productId!.localeCompare(b.productId!));
+      for (const item of restockItems) {
         if (!item.restock || !item.productId) {
           continue;
         }
@@ -238,13 +282,19 @@ export class ReturnsService {
           );
         }
 
-        const previousStock = product.stock;
-        const newStock = previousStock + quantity;
-
-        await tx.product.update({
-          where: { id: product.id },
-          data: { stock: newStock },
-        });
+        const updated = await tx.$queryRaw<Array<{ stock: number }>>`
+          UPDATE "Product"
+          SET "stock" = "stock" + ${quantity}
+          WHERE "id" = ${product.id}
+            AND "tenantId" = ${tenantId}
+            AND "trackInventory" = TRUE
+          RETURNING "stock"
+        `;
+        if (updated.length !== 1) {
+          throw new BadRequestException(`Product ${product.name} is no longer returnable.`);
+        }
+        const newStock = updated[0].stock;
+        const previousStock = newStock - quantity;
 
         await tx.inventoryMovement.create({
           data: {
@@ -263,14 +313,14 @@ export class ReturnsService {
         });
       }
 
-      if (request.refundAmount.gt(0)) {
+      if (cashRefundAmount.gt(0) && cashSession) {
         await tx.cashMovement.create({
           data: {
             tenantId,
             cashSessionId: cashSession.id,
             userId: user.id,
             type: CashMovementType.REFUND,
-            amount: request.refundAmount,
+            amount: cashRefundAmount,
             method: refundMethod,
             reason: dto.adminNote?.trim() || request.reason,
             reference: request.invoice.invoiceNumber,
@@ -280,18 +330,63 @@ export class ReturnsService {
       }
 
       const completedAt = new Date();
-      await tx.returnRequest.update({
-        where: { id: request.id },
+      const completed = await tx.returnRequest.updateMany({
+        where: {
+          id: request.id,
+          tenantId,
+          status: ReturnRequestStatus.APPROVED,
+        },
         data: {
           status: ReturnRequestStatus.COMPLETED,
-          approvedById: user.id,
-          cashSessionId: cashSession.id,
+          cashSessionId: cashSession?.id,
           refundMethod,
+          creditAppliedAmount,
+          cashRefundAmount,
           adminNote: dto.adminNote?.trim() || undefined,
-          approvedAt: completedAt,
           completedAt,
         },
       });
+      if (completed.count !== 1) {
+        throw new BadRequestException('Return request could not be completed.');
+      }
+
+      if (isCreditReturn && request.invoice.customerId) {
+        const nextBalance = request.invoice.balance.sub(creditAppliedAmount).toDecimalPlaces(2);
+        const nextPaidAmount = request.invoice.paidAmount.sub(cashRefundAmount).toDecimalPlaces(2);
+        if (nextPaidAmount.lt(0)) {
+          throw new BadRequestException(
+            'Return would refund more than the amount paid on the credit invoice.',
+          );
+        }
+        const nextStatus = nextBalance.isZero()
+          ? InvoiceStatus.PAID
+          : nextPaidAmount.gt(0)
+            ? InvoiceStatus.PARTIALLY_PAID
+            : InvoiceStatus.ISSUED;
+        await tx.invoice.update({
+          where: { id: request.invoiceId },
+          data: {
+            paidAmount: nextPaidAmount,
+            balance: nextBalance,
+            status: nextStatus,
+          },
+        });
+        const creditBalance = await tx.invoice.aggregate({
+          where: {
+            tenantId,
+            customerId: request.invoice.customerId,
+            paymentMode: SalePaymentMode.CREDIT,
+            status: {
+              notIn: [InvoiceStatus.CANCELLED, InvoiceStatus.VOID, InvoiceStatus.VOIDED],
+            },
+          },
+          _sum: { balance: true },
+        });
+        await tx.customer.update({
+          where: { id: request.invoice.customerId },
+          data: { creditBalance: creditBalance._sum.balance ?? new Prisma.Decimal(0) },
+        });
+      }
 
       await this.creditInvoiceIfFullyReturned(tx, tenantId, request.invoiceId);
 
@@ -300,7 +395,7 @@ export class ReturnsService {
           {
             tenantId,
             userId: user.id,
-            cashSessionId: cashSession.id,
+            cashSessionId: cashSession?.id,
             action: EmployeeLogAction.APPROVE_RETURN,
             entity: 'ReturnRequest',
             entityId: request.id,
@@ -309,13 +404,15 @@ export class ReturnsService {
             metadata: {
               invoiceNumber: request.invoice.invoiceNumber,
               refundMethod,
+              creditAppliedAmount: creditAppliedAmount.toString(),
+              cashRefundAmount: cashRefundAmount.toString(),
               adminNote: dto.adminNote,
             },
           },
           {
             tenantId,
             userId: user.id,
-            cashSessionId: cashSession.id,
+            cashSessionId: cashSession?.id,
             action: EmployeeLogAction.COMPLETE_RETURN,
             entity: 'ReturnRequest',
             entityId: request.id,
@@ -323,6 +420,8 @@ export class ReturnsService {
             amount: request.refundAmount,
             metadata: {
               invoiceNumber: request.invoice.invoiceNumber,
+              creditAppliedAmount: creditAppliedAmount.toString(),
+              cashRefundAmount: cashRefundAmount.toString(),
               restockedItems: request.items.filter((item) => item.restock).length,
             },
           },
@@ -351,6 +450,7 @@ export class ReturnsService {
     }
 
     return this.prisma.$transaction(async (tx) => {
+      await this.lockReturnRequest(tx, tenantId, returnRequestId);
       const request = await tx.returnRequest.findFirst({
         where: {
           id: returnRequestId,
@@ -367,14 +467,24 @@ export class ReturnsService {
         throw new BadRequestException('Only requested returns can be rejected.');
       }
 
-      const rejected = await tx.returnRequest.update({
-        where: { id: request.id },
+      const rejectedRows = await tx.returnRequest.updateMany({
+        where: {
+          id: request.id,
+          tenantId,
+          status: ReturnRequestStatus.REQUESTED,
+        },
         data: {
           status: ReturnRequestStatus.REJECTED,
           rejectedById: user.id,
           rejectedAt: new Date(),
           adminNote,
         },
+      });
+      if (rejectedRows.count !== 1) {
+        throw new BadRequestException('Only requested returns can be rejected.');
+      }
+      const rejected = await tx.returnRequest.findUniqueOrThrow({
+        where: { id: request.id },
         include: this.returnRequestInclude(),
       });
 
@@ -520,7 +630,9 @@ export class ReturnsService {
     );
 
     for (const item of request.items) {
-      const invoiceItem = request.invoice.items.find((candidate) => candidate.id === item.invoiceItemId);
+      const invoiceItem = request.invoice.items.find(
+        (candidate) => candidate.id === item.invoiceItemId,
+      );
       if (!invoiceItem) {
         throw new BadRequestException('Return item is no longer linked to the invoice.');
       }
@@ -538,6 +650,7 @@ export class ReturnsService {
     cashSessionId?: string,
   ) {
     if (cashSessionId) {
+      await this.lockCashSession(tx, tenantId, cashSessionId);
       const cashSession = await tx.cashSession.findFirst({
         where: {
           id: cashSessionId,
@@ -572,7 +685,79 @@ export class ReturnsService {
       throw new BadRequestException('Select an open cash session for this refund.');
     }
 
-    return openSessions[0];
+    await this.lockCashSession(tx, tenantId, openSessions[0].id);
+    const cashSession = await tx.cashSession.findFirst({
+      where: {
+        id: openSessions[0].id,
+        tenantId,
+        status: CashSessionStatus.OPEN,
+      },
+      include: { cashRegister: true },
+    });
+    if (!cashSession) {
+      throw new BadRequestException('Selected cash session is no longer open.');
+    }
+    return cashSession;
+  }
+
+  private async lockReturnRequest(
+    tx: Prisma.TransactionClient,
+    tenantId: string,
+    returnRequestId: string,
+  ) {
+    const rows = await tx.$queryRaw<Array<{ id: string }>>`
+      SELECT "id"
+      FROM "ReturnRequest"
+      WHERE "id" = ${returnRequestId}
+        AND "tenantId" = ${tenantId}
+      FOR UPDATE
+    `;
+    if (rows.length !== 1) {
+      throw new NotFoundException('Return request not found for tenant.');
+    }
+  }
+
+  private async lockInvoice(tx: Prisma.TransactionClient, tenantId: string, invoiceId: string) {
+    const rows = await tx.$queryRaw<Array<{ id: string }>>`
+      SELECT "id"
+      FROM "Invoice"
+      WHERE "id" = ${invoiceId}
+        AND "tenantId" = ${tenantId}
+      FOR UPDATE
+    `;
+    if (rows.length !== 1) {
+      throw new NotFoundException('Invoice not found for tenant.');
+    }
+  }
+
+  private async lockCustomer(tx: Prisma.TransactionClient, tenantId: string, customerId: string) {
+    const rows = await tx.$queryRaw<Array<{ id: string }>>`
+      SELECT "id"
+      FROM "Customer"
+      WHERE "id" = ${customerId}
+        AND "tenantId" = ${tenantId}
+      FOR UPDATE
+    `;
+    if (rows.length !== 1) {
+      throw new NotFoundException('Customer not found for tenant.');
+    }
+  }
+
+  private async lockCashSession(
+    tx: Prisma.TransactionClient,
+    tenantId: string,
+    cashSessionId: string,
+  ) {
+    const rows = await tx.$queryRaw<Array<{ id: string }>>`
+      SELECT "id"
+      FROM "CashSession"
+      WHERE "id" = ${cashSessionId}
+        AND "tenantId" = ${tenantId}
+      FOR UPDATE
+    `;
+    if (rows.length !== 1) {
+      throw new NotFoundException('Cash session not found for tenant.');
+    }
   }
 
   private async creditInvoiceIfFullyReturned(
@@ -666,12 +851,10 @@ export class ReturnsService {
   }
 
   private getMembership(tenantId: string, user: AuthenticatedUser) {
-    const membership = user.memberships.find(
-      (candidate) =>
-        candidate.tenantId === tenantId ||
-        candidate.role === Role.SUPER_ADMIN ||
-        candidate.role === Role.QORVEX_SUPER_ADMIN,
-    );
+    const membership =
+      user.memberships.find((candidate) =>
+        ([Role.SUPER_ADMIN, Role.QORVEX_SUPER_ADMIN] as Role[]).includes(candidate.role),
+      ) ?? user.memberships.find((candidate) => candidate.tenantId === tenantId);
 
     if (!membership) {
       throw new ForbiddenException('User does not belong to this tenant.');

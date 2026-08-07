@@ -44,7 +44,11 @@ export default function LoginPage() {
 
     const currentSession = getSession();
     if (currentSession) {
-      router.replace(canAccessPath(currentSession, safeNextPath) ? safeNextPath : getDefaultPathForSession(currentSession));
+      router.replace(
+        canAccessPath(currentSession, safeNextPath)
+          ? safeNextPath
+          : getDefaultPathForSession(currentSession),
+      );
     }
   }, [router]);
 
@@ -126,7 +130,9 @@ export default function LoginPage() {
                     {...register('email')}
                   />
                 </div>
-                {errors.email ? <p className="text-sm text-danger">{errors.email.message}</p> : null}
+                {errors.email ? (
+                  <p className="text-sm text-danger">{errors.email.message}</p>
+                ) : null}
               </div>
 
               <div className="space-y-2">
@@ -142,7 +148,9 @@ export default function LoginPage() {
                     {...register('password')}
                   />
                 </div>
-                {errors.password ? <p className="text-sm text-danger">{errors.password.message}</p> : null}
+                {errors.password ? (
+                  <p className="text-sm text-danger">{errors.password.message}</p>
+                ) : null}
               </div>
 
               {loginError ? <p className="text-sm text-danger">{loginError}</p> : null}

@@ -63,8 +63,8 @@ export function ProductForm({ productId }: { productId?: string }) {
   const [loadedProductId, setLoadedProductId] = useState<string | null>(null);
   const [imagePreviewFailed, setImagePreviewFailed] = useState(false);
   const basePrice = parseCurrencyInput(form.price);
-  const discountPrice = formatCurrencyInputFromNumber(basePrice * 0.9);
-  const preferredPrice = formatCurrencyInputFromNumber(basePrice * 0.82);
+  const discountPrice = formatCurrencyInputFromNumber(basePrice * 0.95);
+  const preferredPrice = formatCurrencyInputFromNumber(basePrice * 0.9);
 
   const productQuery = useQuery({
     queryKey: ['product', productId, session?.tenantId],
@@ -289,8 +289,8 @@ export function ProductForm({ productId }: { productId?: string }) {
                       <div className="max-w-sm text-center text-sm text-muted-foreground">
                         <p>No se pudo cargar la imagen.</p>
                         <p className="mt-1 text-xs">
-                          Usa un enlace directo a una imagen JPG, PNG, WEBP o GIF, o sube el
-                          archivo desde tu equipo.
+                          Usa un enlace directo a una imagen JPG, PNG, WEBP o GIF, o sube el archivo
+                          desde tu equipo.
                         </p>
                       </div>
                     ) : (
@@ -356,9 +356,7 @@ export function ProductForm({ productId }: { productId?: string }) {
                 />
                 <div className="grid gap-2 sm:grid-cols-2">
                   <div className="space-y-1.5">
-                    <Label className="text-xs text-muted-foreground">
-                      Precio descuento (10%)
-                    </Label>
+                    <Label className="text-xs text-muted-foreground">Precio descuento (5%)</Label>
                     <Input
                       value={discountPrice}
                       readOnly
@@ -368,7 +366,7 @@ export function ProductForm({ productId }: { productId?: string }) {
                   </div>
                   <div className="space-y-1.5">
                     <Label className="text-xs text-muted-foreground">
-                      Cliente preferencial (18%)
+                      Cliente preferencial (10%)
                     </Label>
                     <Input
                       value={preferredPrice}

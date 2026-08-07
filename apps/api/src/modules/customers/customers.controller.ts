@@ -8,6 +8,7 @@ import { RolesGuard } from '../../common/guards/roles.guard';
 import { TenantMembershipGuard } from '../../common/guards/tenant-membership.guard';
 import { AuthenticatedUser } from '../../common/types/authenticated-request';
 import { CustomersService } from './customers.service';
+import { ConfigureCustomerCreditDto } from './dto/configure-customer-credit.dto';
 import { CreateCustomerDto } from './dto/create-customer.dto';
 import { UpdateCustomerDto } from './dto/update-customer.dto';
 
@@ -45,6 +46,17 @@ export class CustomersController {
     @Body() dto: UpdateCustomerDto,
   ) {
     return this.customersService.update(tenantId, user.id, id, dto);
+  }
+
+  @Patch(':id/credit')
+  @Roles(Role.SUPER_ADMIN, Role.QORVEX_SUPER_ADMIN, Role.ADMIN)
+  configureCredit(
+    @TenantId() tenantId: string,
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+    @Body() dto: ConfigureCustomerCreditDto,
+  ) {
+    return this.customersService.configureCredit(tenantId, user.id, id, dto);
   }
 
   @Delete(':id')

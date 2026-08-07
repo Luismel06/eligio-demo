@@ -6,13 +6,20 @@ import {
 } from '@nestjs/common';
 import {
   CashSessionStatus,
+  CreditApprovalStatus,
+  CreditTermOption,
+  CustomerCreditStatus,
+  CustomerStatus,
   DocumentType,
   EmployeeLogAction,
   EmployeeStatus,
+  InitialPaymentOption,
+  InvoiceStatus,
   Prisma,
   ProductStatus,
   ProductUnit,
   Role,
+  SalePaymentMode,
   SalesOrderDestination,
   SalesOrderPriceLevel,
   SalesOrderStatus,
@@ -24,6 +31,11 @@ import {
   validateDominicanRnc,
 } from '../../common/utils/dominican-documents';
 import { getBarcodeLookupCandidates } from '../../common/utils/barcode';
+import {
+  addBusinessDays,
+  businessDateKey,
+  parseBusinessDate,
+} from '../../common/utils/business-date';
 import { PrismaService } from '../../prisma/prisma.service';
 import {
   CancelSalesOrderDto,
@@ -34,6 +46,7 @@ import {
 
 const adminRoles: Role[] = [Role.ADMIN, Role.SUPER_ADMIN, Role.QORVEX_SUPER_ADMIN];
 const openOrderStatuses: SalesOrderStatus[] = [
+  SalesOrderStatus.CREATED,
   SalesOrderStatus.SENT_TO_CASHIER,
   SalesOrderStatus.IN_CASHIER,
 ];
@@ -160,7 +173,7 @@ export class OrdersService {
   }
 
   async create(tenantId: string, user: AuthenticatedUser, dto: CreateSalesOrderDto) {
-    await this.ensureCanTakeOrders(tenantId, user);
+    const membership = await this.ensureCanTakeOrders(tenantId, user);
 
     if (!dto.items.length) {
       throw new BadRequestException('Sales order must include at least one item.');
@@ -170,33 +183,57 @@ export class OrdersService {
     const destination = dto.destination ?? SalesOrderDestination.CASH_SALE;
     const priceLevel = dto.priceLevel ?? SalesOrderPriceLevel.REGULAR;
     const discountRate = this.getDiscountRate(priceLevel);
+    const paymentMode = dto.paymentMode ?? SalePaymentMode.CASH;
 
     if (destination === SalesOrderDestination.QUOTATION) {
       this.validateQuotationDocument(dto);
     }
 
-    const customer = dto.customerId
-      ? await this.prisma.customer.findFirst({
-          where: {
-            id: dto.customerId,
-            tenantId,
-          },
-        })
-      : null;
-
-    if (dto.customerId && !customer) {
-      throw new NotFoundException('Customer not found for tenant.');
-    }
+    this.validatePaymentModeFields(paymentMode, dto);
 
     return this.prisma.$transaction(async (tx) => {
+      const customer = dto.customerId
+        ? await tx.customer.findFirst({
+            where: {
+              id: dto.customerId,
+              tenantId,
+            },
+          })
+        : null;
+
+      if (dto.customerId && !customer) {
+        throw new NotFoundException('Customer not found for tenant.');
+      }
+
+      if (paymentMode === SalePaymentMode.CREDIT) {
+        this.validateCreditCustomer(customer);
+      }
+
       const computed = await this.computeOrder(tenantId, dto.items, tx, priceLevel);
       const isQuotation = destination === SalesOrderDestination.QUOTATION;
+      const isCredit = paymentMode === SalePaymentMode.CREDIT;
+      const initialPaymentOption = isCredit ? dto.initialPaymentOption : undefined;
+      const initialPaymentRate = isCredit
+        ? this.getInitialPaymentRate(initialPaymentOption!)
+        : new Prisma.Decimal(0);
+      const initialPaymentAmount = computed.total.mul(initialPaymentRate).toDecimalPlaces(2);
+      const creditTermOption = isCredit ? dto.creditTermOption : undefined;
+      const creditTerms =
+        isCredit && customer
+          ? this.resolveCreditTerms(customer.creditTermDays, creditTermOption!, dto.customDueDate)
+          : null;
+      const waitsForCreditApproval = isCredit && !isQuotation;
 
-      if (!isQuotation) {
+      if (!isQuotation && !isCredit) {
         await this.reserveStockForOrder(tenantId, computed.items, tx);
       }
 
       const now = new Date();
+      const currentBalance =
+        waitsForCreditApproval && customer
+          ? await this.getCustomerCreditBalance(tx, tenantId, customer.id)
+          : new Prisma.Decimal(0);
+      const financedAmount = computed.total.sub(initialPaymentAmount).toDecimalPlaces(2);
       const order = await tx.salesOrder.create({
         data: {
           tenantId,
@@ -208,16 +245,28 @@ export class OrdersService {
             ? normalizeDominicanDocument(dto.quotationDocumentNumber ?? '')
             : undefined,
           orderNumber: this.generateOrderNumber(isQuotation),
-          status: isQuotation ? SalesOrderStatus.QUOTATION : SalesOrderStatus.SENT_TO_CASHIER,
+          status: isQuotation
+            ? SalesOrderStatus.QUOTATION
+            : waitsForCreditApproval
+              ? SalesOrderStatus.CREATED
+              : SalesOrderStatus.SENT_TO_CASHIER,
           priceLevel,
           discountRate,
           subtotal: computed.subtotal,
           taxTotal: computed.taxTotal,
           discountTotal: computed.discountTotal,
           total: computed.total,
+          paymentMode,
+          initialPaymentOption,
+          initialPaymentRate,
+          initialPaymentAmount,
+          creditTermOption,
+          creditTermDays: creditTerms?.days,
+          dueDate: creditTerms?.dueDate,
+          creditRequestNote: isCredit ? dto.creditRequestNote?.trim() || null : null,
           notes: dto.notes?.trim() || undefined,
           createdById: user.id,
-          sentToCashierAt: isQuotation ? undefined : now,
+          sentToCashierAt: isQuotation || waitsForCreditApproval ? undefined : now,
           items: {
             create: computed.items.map((item) => ({
               productId: item.product.id,
@@ -225,7 +274,7 @@ export class OrdersService {
               barcode: item.product.barcode,
               description: item.product.name,
               quantity: item.quantity,
-              reservedQuantity: isQuotation ? 0 : item.reservedQuantity,
+              reservedQuantity: isQuotation || isCredit ? 0 : item.reservedQuantity,
               unitPrice: item.unitPrice,
               discountTotal: item.discountTotal,
               taxRate: item.product.taxRate,
@@ -234,6 +283,28 @@ export class OrdersService {
               total: item.total,
             })),
           },
+          ...(waitsForCreditApproval && customer && creditTerms && initialPaymentOption
+            ? {
+                creditApproval: {
+                  create: {
+                    tenantId,
+                    customerId: customer.id,
+                    initialPaymentOption,
+                    creditTermOption: creditTermOption!,
+                    requestedTotal: computed.total,
+                    initialPaymentAmount,
+                    financedAmount,
+                    customerBalanceSnapshot: currentBalance,
+                    creditLimitSnapshot: customer.creditLimit,
+                    exceedsCreditLimit: currentBalance.add(financedAmount).gt(customer.creditLimit),
+                    dueDate: creditTerms.dueDate,
+                    requestNote: dto.creditRequestNote?.trim() || undefined,
+                    requestedById: user.id,
+                    expiresAt: new Date(now.getTime() + 24 * 60 * 60 * 1000),
+                  },
+                },
+              }
+            : {}),
         },
         include: this.orderInclude(),
       });
@@ -250,7 +321,7 @@ export class OrdersService {
         },
       ];
 
-      if (!isQuotation) {
+      if (!isQuotation && !waitsForCreditApproval) {
         activityLogs.push({
           tenantId,
           userId: user.id,
@@ -331,6 +402,7 @@ export class OrdersService {
         throw new BadRequestException('Sales order is already claimed by another cashier.');
       }
 
+      await this.lockOpenCashSessionForUser(tx, tenantId, user.id, cashSession.id);
       const order = await tx.salesOrder.findUniqueOrThrow({
         where: { id },
         include: this.orderInclude(),
@@ -349,6 +421,9 @@ export class OrdersService {
             orderNumber: order.orderNumber,
             role: membership.role,
             cashRegister: cashSession.cashRegister.name,
+            sourceDestination: order.destination,
+            sourceStatus: order.status,
+            clientName: order.clientName,
           },
         },
       });
@@ -403,7 +478,12 @@ export class OrdersService {
           entity: 'SalesOrder',
           entityId: id,
           amount: released.total,
-          metadata: { orderNumber: released.orderNumber },
+          metadata: {
+            orderNumber: released.orderNumber,
+            sourceDestination: released.destination,
+            sourceStatus: released.status,
+            clientName: released.clientName,
+          },
         },
       });
 
@@ -426,7 +506,8 @@ export class OrdersService {
       const canCancel =
         adminRoles.includes(membership.role) ||
         (order.createdById === user.id &&
-          (order.status === SalesOrderStatus.SENT_TO_CASHIER ||
+          (order.status === SalesOrderStatus.CREATED ||
+            order.status === SalesOrderStatus.SENT_TO_CASHIER ||
             order.status === SalesOrderStatus.QUOTATION) &&
           (membership.role === Role.ORDER_TAKER || adminRoles.includes(membership.role))) ||
         (order.claimedById === user.id &&
@@ -439,7 +520,10 @@ export class OrdersService {
         );
       }
 
-      if (!openOrderStatuses.includes(order.status) && order.status !== SalesOrderStatus.QUOTATION) {
+      if (
+        !openOrderStatuses.includes(order.status) &&
+        order.status !== SalesOrderStatus.QUOTATION
+      ) {
         throw new BadRequestException('Only pending sales orders can be cancelled.');
       }
 
@@ -469,6 +553,21 @@ export class OrdersService {
       }
 
       await this.releaseReservedStock(order.items, tx);
+      if (
+        order.creditApproval &&
+        (order.creditApproval.status === CreditApprovalStatus.PENDING ||
+          order.creditApproval.status === CreditApprovalStatus.APPROVED)
+      ) {
+        await tx.creditSaleApproval.update({
+          where: { id: order.creditApproval.id },
+          data: {
+            status: CreditApprovalStatus.CANCELLED,
+            cancelledById: user.id,
+            cancelledAt: new Date(),
+            decisionNote: dto?.reason?.trim() || 'Orden cancelada',
+          },
+        });
+      }
 
       const cancelled = await tx.salesOrder.findUniqueOrThrow({
         where: { id },
@@ -487,6 +586,9 @@ export class OrdersService {
           metadata: {
             orderNumber: cancelled.orderNumber,
             reason: cancelled.cancelReason,
+            sourceDestination: cancelled.destination,
+            sourceStatus: cancelled.status,
+            clientName: cancelled.clientName,
           },
         },
       });
@@ -496,13 +598,15 @@ export class OrdersService {
   }
 
   async accept(tenantId: string, user: AuthenticatedUser, id: string) {
-    const membership = this.getMembership(tenantId, user);
-    this.ensureCanViewOrders(membership);
+    await this.ensureCanTakeOrders(tenantId, user);
 
     return this.prisma.$transaction(async (tx) => {
+      await this.lockSalesOrder(tx, tenantId, id);
       const order = await tx.salesOrder.findFirst({
         where: { id, tenantId },
         include: {
+          customer: true,
+          creditApproval: true,
           items: {
             include: {
               product: true,
@@ -517,6 +621,80 @@ export class OrdersService {
 
       if (order.status !== SalesOrderStatus.QUOTATION) {
         throw new BadRequestException('Only quotations can be accepted.');
+      }
+
+      if (order.paymentMode === SalePaymentMode.CREDIT) {
+        this.validateCreditCustomer(order.customer);
+        if (!order.customer || !order.initialPaymentOption || !order.creditTermOption) {
+          throw new BadRequestException('Credit quotation is missing payment terms.');
+        }
+        if (order.creditApproval) {
+          throw new BadRequestException('Credit quotation already has an approval request.');
+        }
+        const creditTerms = this.resolveCreditTerms(
+          order.customer.creditTermDays,
+          order.creditTermOption,
+          order.creditTermOption === CreditTermOption.CUSTOM_DATE
+            ? order.dueDate
+              ? businessDateKey(order.dueDate)
+              : undefined
+            : undefined,
+        );
+        const currentBalance = await this.getCustomerCreditBalance(tx, tenantId, order.customer.id);
+        const initialPaymentAmount = order.total.mul(order.initialPaymentRate).toDecimalPlaces(2);
+        const financedAmount = order.total.sub(initialPaymentAmount).toDecimalPlaces(2);
+        const now = new Date();
+
+        await tx.creditSaleApproval.create({
+          data: {
+            tenantId,
+            salesOrderId: order.id,
+            customerId: order.customer.id,
+            initialPaymentOption: order.initialPaymentOption,
+            creditTermOption: order.creditTermOption,
+            requestedTotal: order.total,
+            initialPaymentAmount,
+            financedAmount,
+            customerBalanceSnapshot: currentBalance,
+            creditLimitSnapshot: order.customer.creditLimit,
+            exceedsCreditLimit: currentBalance.add(financedAmount).gt(order.customer.creditLimit),
+            dueDate: creditTerms.dueDate,
+            requestNote: order.creditRequestNote,
+            requestedById: user.id,
+            expiresAt: new Date(now.getTime() + 24 * 60 * 60 * 1000),
+          },
+        });
+        const updated = await tx.salesOrder.update({
+          where: { id },
+          data: {
+            destination: SalesOrderDestination.CASH_SALE,
+            status: SalesOrderStatus.CREATED,
+            initialPaymentAmount,
+            creditTermDays: creditTerms.days,
+            dueDate: creditTerms.dueDate,
+          },
+          include: this.orderInclude(),
+        });
+        await tx.employeeActivityLog.create({
+          data: {
+            tenantId,
+            userId: user.id,
+            action: EmployeeLogAction.CREATE_SALES_ORDER,
+            entity: 'CreditSaleApproval',
+            entityId: order.id,
+            amount: order.total,
+            metadata: {
+              orderNumber: order.orderNumber,
+              action: 'CREDIT_APPROVAL_REQUESTED',
+              sourceDestination: SalesOrderDestination.QUOTATION,
+              sourceStatus: order.status,
+              destination: updated.destination,
+              status: updated.status,
+              clientName: order.clientName,
+            },
+          },
+        });
+        return updated;
       }
 
       // Convert order items to list format for stock reservation
@@ -560,7 +738,14 @@ export class OrdersService {
           entity: 'SalesOrder',
           entityId: id,
           amount: updated.total,
-          metadata: { orderNumber: updated.orderNumber },
+          metadata: {
+            orderNumber: updated.orderNumber,
+            sourceDestination: SalesOrderDestination.QUOTATION,
+            sourceStatus: order.status,
+            destination: updated.destination,
+            status: updated.status,
+            clientName: order.clientName,
+          },
         },
       });
 
@@ -569,12 +754,12 @@ export class OrdersService {
   }
 
   async update(tenantId: string, user: AuthenticatedUser, id: string, dto: CreateSalesOrderDto) {
-    const membership = this.getMembership(tenantId, user);
-    this.ensureCanTakeOrders(tenantId, user);
+    const membership = await this.ensureCanTakeOrders(tenantId, user);
 
     this.validateQuotationDocument(dto);
 
     return this.prisma.$transaction(async (tx) => {
+      await this.lockSalesOrder(tx, tenantId, id);
       const order = await tx.salesOrder.findFirst({
         where: { id, tenantId },
         include: { items: true },
@@ -586,6 +771,34 @@ export class OrdersService {
 
       if (order.status !== SalesOrderStatus.QUOTATION) {
         throw new BadRequestException('Only quotations can be modified.');
+      }
+
+      if (dto.paymentMode && dto.paymentMode !== order.paymentMode) {
+        throw new BadRequestException('Quotation payment mode cannot be changed after creation.');
+      }
+      if (dto.initialPaymentOption && dto.initialPaymentOption !== order.initialPaymentOption) {
+        throw new BadRequestException(
+          'Credit initial payment option cannot be changed after creation.',
+        );
+      }
+      if (dto.creditTermOption && dto.creditTermOption !== order.creditTermOption) {
+        throw new BadRequestException('Credit term cannot be changed after creation.');
+      }
+      if (
+        order.paymentMode === SalePaymentMode.CREDIT &&
+        order.creditTermOption === CreditTermOption.CUSTOM_DATE &&
+        dto.customDueDate &&
+        order.dueDate &&
+        dto.customDueDate !== businessDateKey(order.dueDate)
+      ) {
+        throw new BadRequestException('Custom credit due date cannot be changed after creation.');
+      }
+      this.validatePaymentModeFields(order.paymentMode, dto, false);
+      if (order.paymentMode === SalePaymentMode.CREDIT) {
+        const creditCustomer = dto.customerId
+          ? await tx.customer.findFirst({ where: { id: dto.customerId, tenantId } })
+          : null;
+        this.validateCreditCustomer(creditCustomer);
       }
 
       // Delete existing items
@@ -613,6 +826,14 @@ export class OrdersService {
           taxTotal: computed.taxTotal,
           discountTotal: computed.discountTotal,
           total: computed.total,
+          initialPaymentAmount:
+            order.paymentMode === SalePaymentMode.CREDIT
+              ? computed.total.mul(order.initialPaymentRate).toDecimalPlaces(2)
+              : undefined,
+          creditRequestNote:
+            order.paymentMode === SalePaymentMode.CREDIT
+              ? dto.creditRequestNote?.trim() || null
+              : null,
           notes: dto.notes?.trim() || null,
           items: {
             create: computed.items.map((item) => ({
@@ -643,7 +864,13 @@ export class OrdersService {
           entity: 'SalesOrder',
           entityId: id,
           amount: computed.total,
-          metadata: { orderNumber: updated.orderNumber, isUpdate: true },
+          metadata: {
+            orderNumber: updated.orderNumber,
+            isUpdate: true,
+            sourceDestination: updated.destination,
+            sourceStatus: updated.status,
+            clientName: updated.clientName,
+          },
         },
       });
 
@@ -685,7 +912,9 @@ export class OrdersService {
     const computedItems: ComputedOrderItem[] = products.map((product) => {
       const quantity = new Prisma.Decimal(quantitiesByProduct.get(product.id) ?? 0);
       const regularUnitPrice = product.salePrice.gt(0) ? product.salePrice : product.price;
-      const unitPrice = regularUnitPrice.mul(new Prisma.Decimal(1).sub(discountRate)).toDecimalPlaces(2);
+      const unitPrice = regularUnitPrice
+        .mul(new Prisma.Decimal(1).sub(discountRate))
+        .toDecimalPlaces(2);
       const regularSubtotal = quantity.mul(regularUnitPrice).toDecimalPlaces(2);
       const subtotal = quantity.mul(unitPrice).toDecimalPlaces(2);
       const discountTotal = regularSubtotal.sub(subtotal).toDecimalPlaces(2);
@@ -741,14 +970,136 @@ export class OrdersService {
 
   private getDiscountRate(priceLevel: SalesOrderPriceLevel) {
     if (priceLevel === SalesOrderPriceLevel.DISCOUNT_10) {
-      return new Prisma.Decimal('0.10');
+      return new Prisma.Decimal('0.05');
     }
 
     if (priceLevel === SalesOrderPriceLevel.PREFERRED_18) {
-      return new Prisma.Decimal('0.18');
+      return new Prisma.Decimal('0.10');
     }
 
     return new Prisma.Decimal(0);
+  }
+
+  private validateCreditCustomer(
+    customer: {
+      status: CustomerStatus;
+      creditEnabled: boolean;
+      creditStatus: CustomerCreditStatus;
+    } | null,
+  ) {
+    if (!customer) {
+      throw new BadRequestException('Credit sales require a registered customer.');
+    }
+    if (customer.status !== CustomerStatus.ACTIVE) {
+      throw new BadRequestException('Credit customer must be active.');
+    }
+    if (!customer.creditEnabled || customer.creditStatus !== CustomerCreditStatus.ACTIVE) {
+      throw new BadRequestException('Customer credit is disabled or blocked.');
+    }
+  }
+
+  private validatePaymentModeFields(
+    paymentMode: SalePaymentMode,
+    dto: CreateSalesOrderDto,
+    requireCreditFields = true,
+  ) {
+    if (paymentMode === SalePaymentMode.CASH) {
+      if (
+        dto.initialPaymentOption !== undefined ||
+        dto.creditTermOption !== undefined ||
+        dto.customDueDate !== undefined ||
+        dto.creditRequestNote !== undefined
+      ) {
+        throw new BadRequestException('Cash orders cannot include credit payment terms.');
+      }
+      return;
+    }
+
+    if (requireCreditFields && dto.initialPaymentOption === undefined) {
+      throw new BadRequestException('Credit sales require an initial payment option.');
+    }
+    if (requireCreditFields && dto.creditTermOption === undefined) {
+      throw new BadRequestException('Credit sales require a credit term option.');
+    }
+    if (
+      requireCreditFields &&
+      dto.creditTermOption === CreditTermOption.CUSTOM_DATE &&
+      !dto.customDueDate
+    ) {
+      throw new BadRequestException('Custom credit term requires a due date.');
+    }
+    if (
+      requireCreditFields &&
+      dto.creditTermOption !== CreditTermOption.CUSTOM_DATE &&
+      dto.customDueDate !== undefined
+    ) {
+      throw new BadRequestException('Custom due date is only valid for a custom credit term.');
+    }
+  }
+
+  private getInitialPaymentRate(option: InitialPaymentOption) {
+    const rates: Record<InitialPaymentOption, string> = {
+      [InitialPaymentOption.NONE]: '0',
+      [InitialPaymentOption.PERCENT_30]: '0.30',
+      [InitialPaymentOption.PERCENT_50]: '0.50',
+      [InitialPaymentOption.PERCENT_70]: '0.70',
+    };
+    return new Prisma.Decimal(rates[option]);
+  }
+
+  private resolveCreditTerms(
+    customerDefaultDays: number,
+    option: CreditTermOption,
+    customDueDate?: string,
+  ) {
+    const now = new Date();
+    if (option === CreditTermOption.CUSTOM_DATE) {
+      if (!customDueDate) {
+        throw new BadRequestException('Custom credit term requires a due date.');
+      }
+      const dueDate = parseBusinessDate(customDueDate);
+      if (!dueDate || businessDateKey(dueDate) <= businessDateKey(now)) {
+        throw new BadRequestException('Credit due date must be in the future.');
+      }
+      return { dueDate, days: null };
+    }
+    const days =
+      option === CreditTermOption.DAYS_15
+        ? 15
+        : option === CreditTermOption.DAYS_30
+          ? 30
+          : option === CreditTermOption.DAYS_45
+            ? 45
+            : customerDefaultDays;
+    if (!Number.isInteger(days) || days <= 0) {
+      throw new BadRequestException('Customer credit days must be a positive whole number.');
+    }
+    const dueDate = addBusinessDays(days, now);
+    return { dueDate, days };
+  }
+
+  private async getCustomerCreditBalance(
+    client: Prisma.TransactionClient,
+    tenantId: string,
+    customerId: string,
+  ) {
+    const aggregate = await client.invoice.aggregate({
+      where: {
+        tenantId,
+        customerId,
+        paymentMode: SalePaymentMode.CREDIT,
+        status: {
+          notIn: [
+            // Cancelled and voided documents do not consume the credit line.
+            InvoiceStatus.CANCELLED,
+            InvoiceStatus.VOID,
+            InvoiceStatus.VOIDED,
+          ],
+        },
+      },
+      _sum: { balance: true },
+    });
+    return (aggregate._sum.balance ?? new Prisma.Decimal(0)).toDecimalPlaces(2);
   }
 
   private async reserveStockForOrder(
@@ -756,7 +1107,7 @@ export class OrdersService {
     items: ComputedOrderItem[],
     tx: Prisma.TransactionClient,
   ) {
-    for (const item of items) {
+    for (const item of [...items].sort((a, b) => a.product.id.localeCompare(b.product.id))) {
       if (!item.product.trackInventory || item.reservedQuantity <= 0) {
         continue;
       }
@@ -776,11 +1127,61 @@ export class OrdersService {
     }
   }
 
+  private async lockSalesOrder(
+    tx: Prisma.TransactionClient,
+    tenantId: string,
+    salesOrderId: string,
+  ) {
+    const rows = await tx.$queryRaw<Array<{ id: string }>>`
+      SELECT "id"
+      FROM "SalesOrder"
+      WHERE "id" = ${salesOrderId}
+        AND "tenantId" = ${tenantId}
+      FOR UPDATE
+    `;
+
+    if (rows.length !== 1) {
+      throw new NotFoundException('Sales order not found for tenant.');
+    }
+  }
+
+  private async lockOpenCashSessionForUser(
+    tx: Prisma.TransactionClient,
+    tenantId: string,
+    userId: string,
+    cashSessionId: string,
+  ) {
+    const rows = await tx.$queryRaw<Array<{ id: string }>>`
+      SELECT "id"
+      FROM "CashSession"
+      WHERE "id" = ${cashSessionId}
+        AND "tenantId" = ${tenantId}
+      FOR UPDATE
+    `;
+    if (rows.length !== 1) {
+      throw new BadRequestException('Selected cash session was not found.');
+    }
+    const openSession = await tx.cashSession.findFirst({
+      where: {
+        id: cashSessionId,
+        tenantId,
+        openedById: userId,
+        status: CashSessionStatus.OPEN,
+      },
+      select: { id: true },
+    });
+    if (!openSession) {
+      throw new BadRequestException('Selected cash session is no longer open for this cashier.');
+    }
+  }
+
   private async releaseReservedStock(
     items: Array<{ productId: string | null; reservedQuantity: number }>,
     tx: Prisma.TransactionClient,
   ) {
-    for (const item of items) {
+    for (const item of [...items].sort((a, b) =>
+      (a.productId ?? '').localeCompare(b.productId ?? ''),
+    )) {
       if (!item.productId || item.reservedQuantity <= 0) {
         continue;
       }
@@ -814,7 +1215,10 @@ export class OrdersService {
   }
 
   private getMembership(tenantId: string, user: AuthenticatedUser) {
-    const membership = user.memberships.find((candidate) => candidate.tenantId === tenantId);
+    const membership =
+      user.memberships.find((candidate) =>
+        ([Role.SUPER_ADMIN, Role.QORVEX_SUPER_ADMIN] as Role[]).includes(candidate.role),
+      ) ?? user.memberships.find((candidate) => candidate.tenantId === tenantId);
 
     if (!membership) {
       throw new ForbiddenException('User does not belong to this tenant.');
@@ -837,13 +1241,18 @@ export class OrdersService {
   private async ensureCanTakeOrders(tenantId: string, user: AuthenticatedUser) {
     const membership = this.getMembership(tenantId, user);
 
-    if (!adminRoles.includes(membership.role) && membership.role !== Role.ORDER_TAKER) {
+    if (
+      !adminRoles.includes(membership.role) &&
+      membership.role !== Role.ORDER_TAKER
+    ) {
       throw new ForbiddenException('Employee does not have permission to take orders.');
     }
 
     if (!adminRoles.includes(membership.role)) {
       await this.ensureActiveEmployeeProfile(tenantId, user.id, 'take orders');
     }
+
+    return membership;
   }
 
   private async ensureCanUsePosForOrders(tenantId: string, user: AuthenticatedUser) {
@@ -857,7 +1266,7 @@ export class OrdersService {
       throw new ForbiddenException('Employee does not have POS access.');
     }
 
-    if (membership.role !== Role.SUPER_ADMIN) {
+    if (!adminRoles.includes(membership.role)) {
       await this.ensureActiveEmployeeProfile(tenantId, user.id, 'use POS');
     }
 
@@ -935,6 +1344,13 @@ export class OrdersService {
         },
       },
       invoice: { select: { id: true, invoiceNumber: true, total: true } },
+      creditApproval: {
+        include: {
+          requestedBy: { select: { id: true, name: true, email: true } },
+          approvedBy: { select: { id: true, name: true, email: true } },
+          rejectedBy: { select: { id: true, name: true, email: true } },
+        },
+      },
       items: {
         include: {
           product: { include: { category: true } },
@@ -975,7 +1391,7 @@ export class OrdersService {
         throw new BadRequestException('El RNC debe tener 9 digitos.');
       }
 
-      if (!validateDominicanRnc(normalized)) {
+      if (!validateDominicanRnc(documentNumber)) {
         throw new BadRequestException('El RNC no es valido.');
       }
 
@@ -986,13 +1402,19 @@ export class OrdersService {
       throw new BadRequestException('La cedula debe tener 11 digitos.');
     }
 
-    if (!validateDominicanCedula(normalized)) {
+    if (!validateDominicanCedula(documentNumber)) {
       throw new BadRequestException('La cedula no es valida.');
     }
   }
 
   private buildOrderLogMetadata(
-    order: { orderNumber: string; customerId: string | null },
+    order: {
+      orderNumber: string;
+      customerId: string | null;
+      destination: SalesOrderDestination;
+      status: SalesOrderStatus;
+      clientName: string | null;
+    },
     items: ComputedOrderItem[],
     userId: string,
   ) {
@@ -1000,6 +1422,9 @@ export class OrdersService {
       orderNumber: order.orderNumber,
       customerId: order.customerId,
       createdById: userId,
+      sourceDestination: order.destination,
+      sourceStatus: order.status,
+      clientName: order.clientName,
       itemCount: items.length,
       quantityTotal: items.reduce((total, item) => total + item.quantity.toNumber(), 0),
       items: items.map((item) => ({

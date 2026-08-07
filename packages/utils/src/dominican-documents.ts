@@ -1,14 +1,23 @@
 const cedulaWeights = [1, 2, 1, 2, 1, 2, 1, 2, 1, 2] as const;
 const rncWeights = [7, 9, 8, 6, 5, 4, 3, 2] as const;
+const dominicanDocumentCharacters = /^[\d\s-]+$/;
 
 export function normalizeDominicanDocument(value: string) {
   return value.replace(/\D/g, '');
 }
 
+function isTrivialDocument(digits: string) {
+  return /^(\d)\1+$/.test(digits) || /^0+\d$/.test(digits);
+}
+
 export function validateDominicanCedula(value: string) {
+  if (!dominicanDocumentCharacters.test(value.trim())) {
+    return false;
+  }
+
   const digits = normalizeDominicanDocument(value);
 
-  if (digits.length !== 11 || !/^\d+$/.test(digits)) {
+  if (digits.length !== 11 || !/^\d+$/.test(digits) || isTrivialDocument(digits)) {
     return false;
   }
 
@@ -29,9 +38,13 @@ export function validateDominicanCedula(value: string) {
 }
 
 export function validateDominicanRnc(value: string) {
+  if (!dominicanDocumentCharacters.test(value.trim())) {
+    return false;
+  }
+
   const digits = normalizeDominicanDocument(value);
 
-  if (digits.length !== 9 || !/^\d+$/.test(digits)) {
+  if (digits.length !== 9 || !/^\d+$/.test(digits) || isTrivialDocument(digits)) {
     return false;
   }
 
@@ -65,7 +78,7 @@ export function formatDominicanDocument(type: 'RNC' | 'CEDULA', value: string) {
   const digits = normalizeDominicanDocument(value);
 
   if (type === 'RNC' && digits.length === 9) {
-    return `${digits.slice(0, 1)}-${digits.slice(1, 2)}-${digits.slice(2, 8)}-${digits.slice(8)}`;
+    return `${digits.slice(0, 1)}-${digits.slice(1, 3)}-${digits.slice(3, 8)}-${digits.slice(8)}`;
   }
 
   if (type === 'CEDULA' && digits.length === 11) {
