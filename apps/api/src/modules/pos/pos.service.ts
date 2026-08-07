@@ -3,10 +3,14 @@ import {
   ForbiddenException,
   Injectable,
   NotFoundException,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import {
   CashMovementType,
   CashSessionStatus,
+  CreditApprovalStatus,
+  CustomerCreditStatus,
+  CustomerStatus,
   DocumentType,
   ElectronicDocumentProvider,
   ElectronicDocumentStatus,
@@ -24,12 +28,14 @@ import {
   ProductStatus,
   ProductUnit,
   Role,
+  SalePaymentMode,
   SalesOrderDestination,
   SalesOrderStatus,
 } from '@qorvex/database';
 import { PrismaService } from '../../prisma/prisma.service';
 import { AuthenticatedUser } from '../../common/types/authenticated-request';
 import { getBarcodeLookupCandidates } from '../../common/utils/barcode';
+import { businessDateKey } from '../../common/utils/business-date';
 import { CompleteSaleDto, PosSaleItemDto } from './dto/complete-sale.dto';
 
 const adminRoles: Role[] = [Role.ADMIN, Role.SUPER_ADMIN, Role.QORVEX_SUPER_ADMIN];
@@ -136,14 +142,17 @@ export class PosService {
     const membership = await this.ensureCanUsePos(tenantId, user);
 
     if (this.isAdminMembership(membership)) {
-      throw new ForbiddenException('Admins cannot complete POS sales. Cashiers must charge orders.');
+      throw new ForbiddenException(
+        'Admins cannot complete POS sales. Cashiers must charge orders.',
+      );
     }
 
     if (!dto.orderId) {
       throw new ForbiddenException('Direct POS sales are disabled. Load an order to charge.');
     }
+    this.ensureSupportedPaymentMethod(dto.paymentMethod);
 
-    return this.prisma.$transaction(async (tx) => {
+    return this.runSerializable(async (tx) => {
       const cashSession = await this.findCashSessionForSale(
         tx,
         tenantId,
@@ -161,9 +170,19 @@ export class PosService {
       if (!computed.items.length) {
         throw new BadRequestException('Sale must include at least one item.');
       }
+      if (order && !computed.total.eq(order.total)) {
+        throw new BadRequestException('Sales order totals are inconsistent and must be reviewed.');
+      }
 
       const documentType = dto.documentType ?? InvoiceDocumentType.CONSUMER_ELECTRONIC_32;
-      const customerId = dto.customerId ?? order?.customerId ?? undefined;
+      if (order?.customerId && dto.customerId && dto.customerId !== order.customerId) {
+        throw new BadRequestException('Order customer cannot be changed at checkout.');
+      }
+      const customerId = order?.customerId ?? dto.customerId ?? undefined;
+      const isCreditSale = order?.paymentMode === SalePaymentMode.CREDIT;
+      if (isCreditSale && customerId) {
+        await this.lockCustomer(tx, tenantId, customerId);
+      }
       const customer = customerId
         ? await tx.customer.findFirst({
             where: {
@@ -177,6 +196,80 @@ export class PosService {
         throw new NotFoundException('Customer not found for tenant.');
       }
 
+      if (isCreditSale) {
+        if (
+          !customer ||
+          !order.creditApproval ||
+          order.creditApproval.status !== CreditApprovalStatus.APPROVED
+        ) {
+          throw new BadRequestException(
+            'Credit sale requires a registered customer and administrator approval.',
+          );
+        }
+        if (
+          customer.status !== CustomerStatus.ACTIVE ||
+          !customer.creditEnabled ||
+          customer.creditStatus !== CustomerCreditStatus.ACTIVE
+        ) {
+          throw new BadRequestException('Customer credit is disabled, blocked, or inactive.');
+        }
+        if (!order.dueDate) {
+          throw new BadRequestException('Approved credit sale is missing its due date.');
+        }
+        if (
+          order.creditApproval.tenantId !== tenantId ||
+          order.creditApproval.salesOrderId !== order.id ||
+          order.creditApproval.customerId !== customer.id ||
+          !order.creditApproval.approvedById ||
+          !order.creditApproval.approvedAt
+        ) {
+          throw new BadRequestException('Credit approval is inconsistent with the sales order.');
+        }
+        const expectedInitialPayment = computed.total
+          .mul(order.initialPaymentRate)
+          .toDecimalPlaces(2);
+        const expectedFinancedAmount = computed.total
+          .sub(expectedInitialPayment)
+          .toDecimalPlaces(2);
+        if (
+          !order.initialPaymentOption ||
+          !order.creditTermOption ||
+          !order.initialPaymentAmount.eq(expectedInitialPayment) ||
+          !order.creditApproval.requestedTotal.eq(computed.total) ||
+          !order.creditApproval.initialPaymentAmount.eq(expectedInitialPayment) ||
+          !order.creditApproval.financedAmount.eq(expectedFinancedAmount) ||
+          order.creditApproval.initialPaymentOption !== order.initialPaymentOption ||
+          order.creditApproval.creditTermOption !== order.creditTermOption ||
+          businessDateKey(order.creditApproval.dueDate) !== businessDateKey(order.dueDate)
+        ) {
+          throw new BadRequestException('Approved credit terms do not match the sales order.');
+        }
+        if (businessDateKey(order.dueDate) <= businessDateKey(new Date())) {
+          throw new BadRequestException('Credit due date must still be in the future at checkout.');
+        }
+
+        const outstanding = await tx.invoice.aggregate({
+          where: {
+            tenantId,
+            customerId: customer.id,
+            paymentMode: SalePaymentMode.CREDIT,
+            status: {
+              notIn: [InvoiceStatus.CANCELLED, InvoiceStatus.VOID, InvoiceStatus.VOIDED],
+            },
+          },
+          _sum: { balance: true },
+        });
+        const currentBalance = outstanding._sum.balance ?? new Prisma.Decimal(0);
+        if (
+          currentBalance.add(expectedFinancedAmount).gt(customer.creditLimit) &&
+          !order.creditApproval.exceedsCreditLimit
+        ) {
+          throw new BadRequestException(
+            'Current customer debt now exceeds the approved credit limit. A new approval is required.',
+          );
+        }
+      }
+
       if (
         documentType === InvoiceDocumentType.FISCAL_CREDIT_ELECTRONIC_31 &&
         (!customer ||
@@ -186,8 +279,15 @@ export class PosService {
         throw new BadRequestException('Fiscal credit invoices require an RNC customer.');
       }
 
+      await this.lockOpenCashSessionForUser(tx, tenantId, user.id, cashSession.id);
       const sequence = await this.reserveFiscalSequence(tx, tenantId, documentType);
-      const payment = this.getPaymentAmounts(dto.amountReceived, computed.total, dto.paymentMethod);
+      const requiredPayment = isCreditSale ? order.initialPaymentAmount : computed.total;
+      const payment = this.getPaymentAmounts(
+        dto.amountReceived,
+        computed.total,
+        dto.paymentMethod,
+        requiredPayment,
+      );
       const paidAmount = payment.paidAmount;
       const balance = computed.total.sub(paidAmount).toDecimalPlaces(2);
       const status = this.getInvoiceStatus(paidAmount, computed.total);
@@ -214,11 +314,12 @@ export class PosService {
           amountReceived: payment.amountReceived,
           changeAmount: payment.changeAmount,
           balance,
+          paymentMode: isCreditSale ? SalePaymentMode.CREDIT : SalePaymentMode.CASH,
           paymentMethod: dto.paymentMethod,
           issuedById: user.id,
           cashSessionId: cashSession.id,
           issuedAt,
-          dueDate: issuedAt,
+          dueDate: isCreditSale ? order.dueDate : issuedAt,
           items: {
             create: computed.items.map((item) => ({
               productId: item.productId,
@@ -243,7 +344,9 @@ export class PosService {
         },
       });
 
-      for (const item of computed.items) {
+      for (const item of [...computed.items].sort((a, b) =>
+        a.productId.localeCompare(b.productId),
+      )) {
         await this.applyInventoryForSale(tx, {
           tenantId,
           item,
@@ -301,6 +404,9 @@ export class PosService {
               amountReceived: payment.amountReceived.toString(),
               changeAmount: payment.changeAmount.toString(),
               orderNumber: order?.orderNumber,
+              status: invoice.status,
+              destination: SalesOrderDestination.CASH_SALE,
+              clientName: customer?.name,
             },
           },
           {
@@ -318,6 +424,9 @@ export class PosService {
               amountReceived: payment.amountReceived.toString(),
               changeAmount: payment.changeAmount.toString(),
               orderNumber: order?.orderNumber,
+              status: invoice.status,
+              destination: SalesOrderDestination.CASH_SALE,
+              clientName: customer?.name,
             },
           },
           ...(order
@@ -334,6 +443,11 @@ export class PosService {
                   metadata: {
                     orderNumber: order.orderNumber,
                     invoiceNumber,
+                    sourceDestination: order.orderNumber.startsWith('COT-')
+                      ? SalesOrderDestination.QUOTATION
+                      : order.destination,
+                    sourceStatus: SalesOrderStatus.COMPLETED,
+                    clientName: order.clientName,
                   },
                 },
               ]
@@ -351,6 +465,24 @@ export class PosService {
             completedAt: issuedAt,
             claimExpiresAt: null,
           },
+        });
+      }
+
+      if (isCreditSale && customer) {
+        const aggregate = await tx.invoice.aggregate({
+          where: {
+            tenantId,
+            customerId: customer.id,
+            paymentMode: SalePaymentMode.CREDIT,
+            status: {
+              notIn: [InvoiceStatus.CANCELLED, InvoiceStatus.VOID, InvoiceStatus.VOIDED],
+            },
+          },
+          _sum: { balance: true },
+        });
+        await tx.customer.update({
+          where: { id: customer.id },
+          data: { creditBalance: aggregate._sum.balance ?? new Prisma.Decimal(0) },
         });
       }
 
@@ -465,6 +597,7 @@ export class PosService {
       where: { id: orderId },
       include: {
         customer: true,
+        creditApproval: true,
         items: {
           include: {
             product: true,
@@ -617,6 +750,12 @@ export class PosService {
         );
       }
 
+      if (item.product.trackInventory && Math.abs(item.reservedQuantity - quantity) > 1e-9) {
+        throw new BadRequestException(
+          `Inventory reservation is incomplete for ${item.description}.`,
+        );
+      }
+
       if (item.product.trackInventory && item.product.stock < quantity) {
         throw new BadRequestException(`Insufficient stock for ${item.description}.`);
       }
@@ -673,6 +812,7 @@ export class PosService {
             AND "tenantId" = ${tenantId}
             AND "trackInventory" = TRUE
             AND "stock" >= ${quantity}
+            AND "reservedStock" >= ${item.reservedQuantity}
           RETURNING "stock", "reservedStock"
         `
       : await tx.$queryRaw<Array<{ stock: number; reservedStock: number }>>`
@@ -794,6 +934,50 @@ export class PosService {
     return session;
   }
 
+  private async lockCustomer(tx: Prisma.TransactionClient, tenantId: string, customerId: string) {
+    const rows = await tx.$queryRaw<Array<{ id: string }>>`
+      SELECT "id"
+      FROM "Customer"
+      WHERE "id" = ${customerId}
+        AND "tenantId" = ${tenantId}
+      FOR UPDATE
+    `;
+
+    if (rows.length !== 1) {
+      throw new NotFoundException('Customer not found for tenant.');
+    }
+  }
+
+  private async lockOpenCashSessionForUser(
+    tx: Prisma.TransactionClient,
+    tenantId: string,
+    userId: string,
+    cashSessionId: string,
+  ) {
+    const rows = await tx.$queryRaw<Array<{ id: string }>>`
+      SELECT "id"
+      FROM "CashSession"
+      WHERE "id" = ${cashSessionId}
+        AND "tenantId" = ${tenantId}
+      FOR UPDATE
+    `;
+    if (rows.length !== 1) {
+      throw new BadRequestException('Selected cash session was not found.');
+    }
+    const openSession = await tx.cashSession.findFirst({
+      where: {
+        id: cashSessionId,
+        tenantId,
+        openedById: userId,
+        status: CashSessionStatus.OPEN,
+      },
+      select: { id: true },
+    });
+    if (!openSession) {
+      throw new BadRequestException('Selected cash session is no longer open for this cashier.');
+    }
+  }
+
   private async ensureCanCreateDirectSale(tenantId: string, user: AuthenticatedUser) {
     const membership = await this.ensureCanUsePos(tenantId, user);
 
@@ -805,7 +989,10 @@ export class PosService {
   }
 
   private async ensureCanUsePos(tenantId: string, user: AuthenticatedUser) {
-    const membership = user.memberships.find((candidate) => candidate.tenantId === tenantId);
+    const membership =
+      user.memberships.find((candidate) =>
+        ([Role.SUPER_ADMIN, Role.QORVEX_SUPER_ADMIN] as Role[]).includes(candidate.role),
+      ) ?? user.memberships.find((candidate) => candidate.tenantId === tenantId);
 
     if (
       !membership ||
@@ -814,7 +1001,7 @@ export class PosService {
       throw new ForbiddenException('Employee does not have POS access.');
     }
 
-    if (membership.role !== Role.SUPER_ADMIN) {
+    if (!this.isAdminMembership(membership)) {
       const employee = await this.prisma.employeeProfile.findFirst({
         where: {
           tenantId,
@@ -836,31 +1023,92 @@ export class PosService {
     return adminRoles.includes(membership.role);
   }
 
+  private ensureSupportedPaymentMethod(paymentMethod: PaymentMethod) {
+    const supportedMethods: PaymentMethod[] = [
+      PaymentMethod.CASH,
+      PaymentMethod.CARD,
+      PaymentMethod.TRANSFER,
+    ];
+    if (!supportedMethods.includes(paymentMethod)) {
+      throw new BadRequestException('POS payments only support cash, card, or transfer.');
+    }
+  }
+
+  /**
+   * A completed POS sale writes the invoice, payment, cash movement, inventory,
+   * order state, customer balance, audit trail and electronic document together.
+   * Remote database latency can make that safely exceed Prisma's 5 second default.
+   */
+  private async runSerializable<T>(
+    operation: (tx: Prisma.TransactionClient) => Promise<T>,
+  ): Promise<T> {
+    const attempts = 3;
+
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      try {
+        return await this.prisma.$transaction(operation, {
+          isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+          maxWait: 10_000,
+          timeout: 30_000,
+        });
+      } catch (error) {
+        if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2028') {
+          throw new ServiceUnavailableException(
+            'El cobro tardó demasiado y se revirtió por seguridad. Inténtalo nuevamente.',
+          );
+        }
+
+        const canRetry =
+          error instanceof Prisma.PrismaClientKnownRequestError &&
+          error.code === 'P2034' &&
+          attempt < attempts;
+        if (!canRetry) {
+          throw error;
+        }
+      }
+    }
+
+    throw new ServiceUnavailableException(
+      'No se pudo completar el cobro por concurrencia. Inténtalo nuevamente.',
+    );
+  }
+
   private getPaymentAmounts(
     amountReceived: number | undefined,
     total: Prisma.Decimal,
     paymentMethod: PaymentMethod,
+    requiredPayment: Prisma.Decimal = total,
   ) {
-    const tendered = new Prisma.Decimal(amountReceived ?? total).toDecimalPlaces(2);
+    const required = requiredPayment.toDecimalPlaces(2);
+    if (required.lt(0) || required.gt(total)) {
+      throw new BadRequestException('Required payment amount is invalid.');
+    }
+    const tendered = new Prisma.Decimal(amountReceived ?? required).toDecimalPlaces(2);
 
     if (tendered.lt(0)) {
       throw new BadRequestException('Amount received cannot be negative.');
     }
 
-    if (paymentMethod === PaymentMethod.CASH && tendered.lt(total)) {
-      throw new BadRequestException('Cash received must cover the invoice total.');
+    if (required.isZero() && !tendered.isZero()) {
+      throw new BadRequestException('This credit sale has no initial payment to collect.');
     }
 
-    if (paymentMethod !== PaymentMethod.CASH && tendered.lt(total)) {
-      throw new BadRequestException('Payment amount must cover the invoice total.');
+    if (paymentMethod === PaymentMethod.CASH && tendered.lt(required)) {
+      throw new BadRequestException('Cash received must cover the required initial payment.');
+    }
+
+    if (paymentMethod !== PaymentMethod.CASH && !tendered.eq(required)) {
+      throw new BadRequestException(
+        'Card and transfer payments must equal the required initial payment.',
+      );
     }
 
     return {
-      paidAmount: total.toDecimalPlaces(2),
+      paidAmount: required,
       amountReceived: tendered,
       changeAmount:
-        paymentMethod === PaymentMethod.CASH && tendered.gt(total)
-          ? tendered.sub(total).toDecimalPlaces(2)
+        paymentMethod === PaymentMethod.CASH && tendered.gt(required)
+          ? tendered.sub(required).toDecimalPlaces(2)
           : new Prisma.Decimal(0),
     };
   }

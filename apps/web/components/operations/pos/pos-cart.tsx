@@ -37,7 +37,7 @@ export function PosCart({
         ) : null}
       </div>
 
-      <div className="max-h-[26rem] space-y-2 overflow-y-auto p-3">
+      <div className="surface-scrollbar max-h-[26rem] space-y-2 overflow-y-auto p-3">
         {items.length ? (
           items.map((item) => {
             const unitPrice = item.unitPrice ?? getProductPrice(item.product);

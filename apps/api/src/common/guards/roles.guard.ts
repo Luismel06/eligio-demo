@@ -26,12 +26,14 @@ export class RolesGuard implements CanActivate {
       throw new ForbiddenException('Role checks require authenticated tenant context.');
     }
 
-    const roleForTenant = user.memberships.find(
+    const platformRole = user.memberships.find(
       (membership) =>
-        membership.tenantId === tenantId ||
-        membership.role === Role.SUPER_ADMIN ||
-        membership.role === Role.QORVEX_SUPER_ADMIN,
+        membership.role === Role.SUPER_ADMIN || membership.role === Role.QORVEX_SUPER_ADMIN,
     )?.role;
+    const tenantRole = user.memberships.find(
+      (membership) => membership.tenantId === tenantId,
+    )?.role;
+    const roleForTenant = platformRole ?? tenantRole;
 
     if (!roleForTenant || !roles.includes(roleForTenant)) {
       throw new ForbiddenException('Insufficient role for this operation.');

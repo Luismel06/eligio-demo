@@ -19,7 +19,7 @@ import { SessionRequired, useCurrentSession } from './session-required';
 
 type QuotationTab = 'PENDING' | 'ACCEPTED' | 'CANCELLED';
 
-const acceptedStatuses = new Set(['SENT_TO_CASHIER', 'IN_CASHIER', 'COMPLETED']);
+const acceptedStatuses = new Set(['CREATED', 'SENT_TO_CASHIER', 'IN_CASHIER', 'COMPLETED']);
 
 export function QuotationsView() {
   const session = useCurrentSession();
@@ -73,9 +73,14 @@ export function QuotationsView() {
     onSuccess: async (order) => {
       await queryClient.invalidateQueries({ queryKey: ['sales-orders'] });
       setActiveTab('ACCEPTED');
-      toast.success('Cotizacion aceptada y enviada a caja', {
-        description: `Codigo: ${order.orderNumber}`,
-      });
+      toast.success(
+        order.paymentMode === 'CREDIT'
+          ? 'Cotización aceptada y enviada para aprobación de crédito'
+          : 'Cotización aceptada y enviada a caja',
+        {
+          description: `Codigo: ${order.orderNumber}`,
+        },
+      );
     },
     onError: (error) => {
       toast.error(error instanceof Error ? error.message : 'No se pudo aceptar la cotizacion.');
@@ -96,7 +101,7 @@ export function QuotationsView() {
     {
       id: 'ACCEPTED' as const,
       label: 'Aceptadas',
-      description: 'En caja o completadas',
+      description: 'En aprobación, caja o completadas',
       count: groupedQuotations.ACCEPTED.length,
     },
     {
@@ -260,6 +265,13 @@ function QuotationCard({
             </p>
           ) : null}
           <p className="text-xs text-zinc-500">Por: {order.createdBy.name}</p>
+          {order.paymentMode === 'CREDIT' ? (
+            <p className="rounded-md bg-sky-50 px-2 py-1.5 text-xs text-sky-900">
+              Venta fiada · inicial {formatCurrency(Number(order.initialPaymentAmount))} · saldo{' '}
+              {formatCurrency(Number(order.total) - Number(order.initialPaymentAmount))}
+              {order.creditApproval?.status === 'PENDING' ? ' · pendiente de aprobación' : ''}
+            </p>
+          ) : null}
           {order.sentToCashierAt ? (
             <p className="text-xs text-zinc-500">
               Enviada a caja: {formatDateTime(order.sentToCashierAt)}

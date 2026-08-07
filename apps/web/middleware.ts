@@ -16,6 +16,7 @@ const protectedPrefixes = [
   '/dashboard',
   '/pos',
   '/orders',
+  '/operations',
   '/products',
   '/employees',
   '/cash',
@@ -77,7 +78,10 @@ export const config = {
 
 function buildContentSecurityPolicy(nonce: string) {
   const isProduction = process.env.NODE_ENV === 'production';
-  const connectSources = ["'self'"];
+  const ocrAssetOrigin = 'https://cdn.jsdelivr.net';
+  // El OCR se ejecuta en el navegador; este origen solo entrega el motor y los
+  // modelos de idioma. La imagen de la factura no se envía fuera del dispositivo.
+  const connectSources = ["'self'", ocrAssetOrigin];
   const apiUrl = process.env.NEXT_PUBLIC_API_URL?.trim();
 
   if (apiUrl) {
@@ -90,7 +94,9 @@ function buildContentSecurityPolicy(nonce: string) {
 
   return [
     "default-src 'self'",
-    `script-src 'self' 'nonce-${nonce}' 'strict-dynamic'${isProduction ? '' : " 'unsafe-eval'"}`,
+    // OpenCV.js y Tesseract ejecutan WebAssembly localmente. `wasm-unsafe-eval`
+    // permite compilar WASM sin habilitar el inseguro `unsafe-eval` en producción.
+    `script-src 'self' ${ocrAssetOrigin} 'nonce-${nonce}' 'strict-dynamic' 'wasm-unsafe-eval'${isProduction ? '' : " 'unsafe-eval'"}`,
     "style-src 'self' 'unsafe-inline'",
     "img-src 'self' data: blob: https:",
     "font-src 'self' data:",
@@ -99,7 +105,7 @@ function buildContentSecurityPolicy(nonce: string) {
     "base-uri 'self'",
     "form-action 'self'",
     "frame-ancestors 'none'",
-    "worker-src 'self' blob:",
+    `worker-src 'self' blob: ${ocrAssetOrigin}`,
     ...(isProduction ? ['upgrade-insecure-requests'] : []),
   ].join('; ');
 }

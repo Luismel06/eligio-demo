@@ -6,7 +6,11 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import type { Customer } from '@/lib/api';
 import { formatCurrency } from '@/lib/utils';
-import { formatCurrencyInput, formatCurrencyInputFromNumber, sanitizeCurrencyInput } from './currency-input';
+import {
+  formatCurrencyInput,
+  formatCurrencyInputFromNumber,
+  sanitizeCurrencyInput,
+} from './currency-input';
 import { PaymentCalculator } from './payment-calculator';
 import type { PosTotals } from './types';
 
@@ -15,6 +19,9 @@ type PosPaymentPanelProps = {
   customerId: string;
   documentType: string;
   paymentMethod: string;
+  salePaymentMode: 'CASH' | 'CREDIT';
+  dueDate?: string | null;
+  customerLocked?: boolean;
   amountReceived: string;
   totals: PosTotals;
   message: string | null;
@@ -32,6 +39,9 @@ export function PosPaymentPanel({
   customerId,
   documentType,
   paymentMethod,
+  salePaymentMode,
+  dueDate,
+  customerLocked = false,
   amountReceived,
   totals,
   message,
@@ -43,8 +53,12 @@ export function PosPaymentPanel({
   onAmountReceivedChange,
   onCompleteSale,
 }: PosPaymentPanelProps) {
-  const cashInsufficient = paymentMethod === 'CASH' && totals.total > 0 && totals.received < totals.total;
+  const cashInsufficient =
+    paymentMethod === 'CASH' &&
+    totals.requiredPayment > 0 &&
+    totals.received < totals.requiredPayment;
   const cashPayment = paymentMethod === 'CASH';
+  const creditSale = salePaymentMode === 'CREDIT';
 
   return (
     <div className="space-y-3">
@@ -55,8 +69,9 @@ export function PosPaymentPanel({
             <select
               id="customer"
               value={customerId}
+              disabled={customerLocked}
               onChange={(event) => onCustomerChange(event.target.value)}
-              className="h-10 w-full rounded-md border border-input bg-card px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className="h-10 w-full rounded-md border border-input bg-card px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:bg-zinc-100"
             >
               <option value="">Consumidor final</option>
               {customers.map((customer) => (
@@ -96,6 +111,15 @@ export function PosPaymentPanel({
             </select>
           </div>
         </div>
+        {creditSale ? (
+          <div className="mt-3 rounded-md border border-sky-200 bg-sky-50 px-3 py-2 text-sm text-sky-950">
+            Venta fiada aprobada. En esta factura se cobra únicamente la inicial de{' '}
+            <strong>{formatCurrency(totals.requiredPayment)}</strong>
+            {dueDate
+              ? ` y el saldo vence el ${new Date(dueDate).toLocaleDateString('es-DO')}.`
+              : '.'}
+          </div>
+        ) : null}
       </div>
 
       <div className="rounded-md border-2 border-[#f36c10]/40 bg-white p-4 shadow-sm">
@@ -110,18 +134,30 @@ export function PosPaymentPanel({
               inputMode="decimal"
               value={amountReceived}
               disabled={!cashPayment}
-              onChange={(event) => onAmountReceivedChange(sanitizeCurrencyInput(event.target.value))}
+              onChange={(event) =>
+                onAmountReceivedChange(sanitizeCurrencyInput(event.target.value))
+              }
               onBlur={(event) => onAmountReceivedChange(formatCurrencyInput(event.target.value))}
               onFocus={(event) => event.currentTarget.select()}
-              placeholder={totals.total ? formatCurrencyInputFromNumber(totals.total) : '0.00'}
+              placeholder={
+                totals.requiredPayment
+                  ? formatCurrencyInputFromNumber(totals.requiredPayment)
+                  : '0.00'
+              }
               className="h-14 text-2xl font-semibold"
             />
           </div>
-          <div className="grid grid-cols-2 gap-2">
+          <div className={creditSale ? 'grid grid-cols-3 gap-2' : 'grid grid-cols-2 gap-2'}>
             <div className="rounded-md bg-zinc-950 px-4 py-3 text-white">
               <p className="text-xs text-zinc-300">Total</p>
               <p className="text-2xl font-bold">{formatCurrency(totals.total)}</p>
             </div>
+            {creditSale ? (
+              <div className="rounded-md bg-sky-100 px-4 py-3 text-sky-950">
+                <p className="text-xs">Inicial</p>
+                <p className="text-2xl font-bold">{formatCurrency(totals.requiredPayment)}</p>
+              </div>
+            ) : null}
             <div className="rounded-md bg-success/10 px-4 py-3 text-success">
               <p className="text-xs">Devuelta</p>
               <p className="text-2xl font-bold">{formatCurrency(totals.change)}</p>
@@ -130,7 +166,7 @@ export function PosPaymentPanel({
 
           {cashInsufficient ? (
             <p className="rounded-md bg-danger/10 px-3 py-2 text-sm text-danger">
-              El efectivo recibido debe cubrir el total para completar la venta.
+              El efectivo recibido debe cubrir el monto requerido para completar la venta.
             </p>
           ) : null}
 
@@ -150,13 +186,13 @@ export function PosPaymentPanel({
         </div>
         {!cashPayment ? (
           <p className="mt-2 text-xs text-muted-foreground">
-            Tarjeta y transferencia se registran por el total exacto de la factura.
+            Tarjeta y transferencia se registran por el monto exacto requerido.
           </p>
         ) : null}
       </div>
 
       <PaymentCalculator
-        total={totals.total}
+        total={totals.requiredPayment}
         amountReceived={amountReceived}
         disabled={!cashPayment}
         onAmountChange={onAmountReceivedChange}
@@ -180,6 +216,18 @@ export function PosPaymentPanel({
             <span>Total</span>
             <span>{formatCurrency(totals.total)}</span>
           </div>
+          {creditSale ? (
+            <>
+              <div className="flex justify-between text-base font-semibold text-sky-800">
+                <span>Inicial a cobrar</span>
+                <span>{formatCurrency(totals.requiredPayment)}</span>
+              </div>
+              <div className="flex justify-between text-base font-semibold text-amber-800">
+                <span>Saldo pendiente</span>
+                <span>{formatCurrency(totals.remainingBalance)}</span>
+              </div>
+            </>
+          ) : null}
           <div className="flex justify-between text-base font-semibold text-success">
             <span>Devuelta</span>
             <span>{formatCurrency(totals.change)}</span>

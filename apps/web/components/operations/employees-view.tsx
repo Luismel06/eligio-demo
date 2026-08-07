@@ -77,11 +77,37 @@ export function EmployeesView() {
                     <TableCell>{translateRole(membership?.role) ?? 'Sin rol'}</TableCell>
                     <TableCell>
                       <div className="flex flex-wrap gap-1">
+                        {membership?.role === 'ACCOUNTANT' ? (
+                          <Badge variant="success">Acceso contable</Badge>
+                        ) : null}
                         {membership?.canUsePos ? <Badge variant="success">Usar caja</Badge> : null}
-                        {membership?.role === 'ORDER_TAKER' ? <Badge variant="success">Tomar ordenes</Badge> : null}
+                        {membership?.canTakeOrders ? <Badge variant="success">Tomar ordenes</Badge> : null}
                         {membership?.canOpenCashSession ? <Badge variant="outline">Abrir caja</Badge> : null}
+                        {membership?.canCloseCashSession ? <Badge variant="outline">Cerrar caja</Badge> : null}
+                        {membership?.canApplyDiscount ? (
+                          <Badge variant="outline">Descuentos</Badge>
+                        ) : null}
+                        {membership?.canCancelInvoice ? (
+                          <Badge variant="outline">Cancelar facturas</Badge>
+                        ) : null}
+                        {membership?.canVoidInvoice ? (
+                          <Badge variant="outline">Anular facturas</Badge>
+                        ) : null}
                         {membership?.canManageProducts ? <Badge variant="outline">Productos</Badge> : null}
+                        {membership?.canAdjustInventory ? (
+                          <Badge variant="outline">Inventario</Badge>
+                        ) : null}
                         {membership?.canManageEmployees ? <Badge variant="outline">Empleados</Badge> : null}
+                        {membership?.canViewReports ? <Badge variant="outline">Reportes</Badge> : null}
+                        {membership?.canManageFiscalSequences ? (
+                          <Badge variant="outline">Secuencias fiscales</Badge>
+                        ) : null}
+                        {membership?.canViewCashLogs ? (
+                          <Badge variant="outline">Logs de caja</Badge>
+                        ) : null}
+                        {membership?.canReprintReceipt ? (
+                          <Badge variant="outline">Reimprimir recibos</Badge>
+                        ) : null}
                       </div>
                     </TableCell>
                     <TableCell>

@@ -34,7 +34,7 @@ const permissionKeys = [
   'canTakeOrders',
 ] as const;
 const maxTenantUsers = 4;
-const tenantAssignableRoles: Role[] = [Role.ADMIN, Role.CASHIER, Role.ORDER_TAKER];
+const tenantAssignableRoles: Role[] = [Role.ADMIN, Role.ACCOUNTANT, Role.CASHIER, Role.ORDER_TAKER];
 
 @Injectable()
 export class EmployeesService {
@@ -86,13 +86,17 @@ export class EmployeesService {
         status === EmployeeStatus.BLOCKED
           ? UserStatus.BLOCKED
           : status === EmployeeStatus.INACTIVE || status === EmployeeStatus.TERMINATED
-          ? UserStatus.INACTIVE
-          : status === EmployeeStatus.ACTIVE
-          ? UserStatus.ACTIVE
-          : undefined;
+            ? UserStatus.INACTIVE
+            : status === EmployeeStatus.ACTIVE
+              ? UserStatus.ACTIVE
+              : undefined;
 
       const mapMembershipStatus = (status: EmployeeStatus | undefined) =>
-        status === EmployeeStatus.ACTIVE ? MembershipStatus.ACTIVE : status ? MembershipStatus.INACTIVE : undefined;
+        status === EmployeeStatus.ACTIVE
+          ? MembershipStatus.ACTIVE
+          : status
+            ? MembershipStatus.INACTIVE
+            : undefined;
 
       const user =
         existing ??
@@ -118,7 +122,7 @@ export class EmployeesService {
         });
       }
 
-      await tx.membership.create({
+      const membership = await tx.membership.create({
         data: {
           tenantId,
           userId: user.id,
@@ -171,6 +175,7 @@ export class EmployeesService {
             action: 'EMPLOYEE_CREATED',
             employeeUserId: user.id,
             role: dto.role,
+            permissions: this.permissionSnapshot(membership),
           },
         },
       });
@@ -263,7 +268,7 @@ export class EmployeesService {
         },
       });
 
-      await tx.membership.update({
+      const updatedMembership = await tx.membership.update({
         where: { id: membership.id },
         data: {
           role: dto.role,
@@ -275,6 +280,7 @@ export class EmployeesService {
                 : undefined,
           ...this.pickPermissions(dto, dto.role ?? membership.role),
         },
+        select: this.membershipSelect(),
       });
 
       const updated = await tx.employeeProfile.update({
@@ -318,6 +324,11 @@ export class EmployeesService {
           metadata: {
             action: 'EMPLOYEE_UPDATED',
             fields: Object.keys(dto),
+            previousRole: membership.role,
+            newRole: updatedMembership.role,
+            previousPermissions: this.permissionSnapshot(membership),
+            newPermissions: this.permissionSnapshot(updatedMembership),
+            changedPermissionKeys: this.changedPermissionKeys(membership, updatedMembership),
           },
         },
       });
@@ -463,6 +474,15 @@ export class EmployeesService {
       };
     }
 
+    if (role === Role.ACCOUNTANT) {
+      return {
+        ...this.blankPermissions(),
+        canViewReports: true,
+        canViewCashLogs: true,
+        canReprintReceipt: true,
+      };
+    }
+
     if (role === Role.CASHIER) {
       return {
         ...data,
@@ -490,6 +510,23 @@ export class EmployeesService {
       },
       {} as Record<(typeof permissionKeys)[number], boolean>,
     );
+  }
+
+  private permissionSnapshot(value: Record<(typeof permissionKeys)[number], boolean>) {
+    return permissionKeys.reduce<Record<(typeof permissionKeys)[number], boolean>>(
+      (permissions, key) => {
+        permissions[key] = value[key];
+        return permissions;
+      },
+      {} as Record<(typeof permissionKeys)[number], boolean>,
+    );
+  }
+
+  private changedPermissionKeys(
+    previous: Record<(typeof permissionKeys)[number], boolean>,
+    next: Record<(typeof permissionKeys)[number], boolean>,
+  ) {
+    return permissionKeys.filter((key) => previous[key] !== next[key]);
   }
 
   private membershipSelect() {

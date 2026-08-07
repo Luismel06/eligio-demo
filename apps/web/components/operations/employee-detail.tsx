@@ -44,12 +44,38 @@ export function EmployeeDetail({ employeeId }: { employeeId: string }) {
               </div>
               <div className="flex flex-wrap gap-2">
                 <Badge variant={getStatusVariant(employee.status)}>{translateStatus(employee.status)}</Badge>
+                {membership?.role === 'ACCOUNTANT' ? (
+                  <Badge variant="success">Acceso contable</Badge>
+                ) : null}
                 {membership?.canUsePos ? <Badge variant="success">Usar caja</Badge> : null}
-                {membership?.role === 'ORDER_TAKER' ? <Badge variant="success">Tomar ordenes</Badge> : null}
+                {membership?.canTakeOrders ? <Badge variant="success">Tomar ordenes</Badge> : null}
                 {membership?.canOpenCashSession ? <Badge variant="outline">Abrir caja</Badge> : null}
+                {membership?.canCloseCashSession ? <Badge variant="outline">Cerrar caja</Badge> : null}
+                {membership?.canApplyDiscount ? <Badge variant="outline">Aplicar descuentos</Badge> : null}
+                {membership?.canCancelInvoice ? <Badge variant="outline">Cancelar facturas</Badge> : null}
+                {membership?.canVoidInvoice ? <Badge variant="outline">Anular facturas</Badge> : null}
                 {membership?.canManageProducts ? <Badge variant="outline">Productos</Badge> : null}
+                {membership?.canAdjustInventory ? <Badge variant="outline">Inventario</Badge> : null}
                 {membership?.canManageEmployees ? <Badge variant="outline">Empleados</Badge> : null}
+                {membership?.canViewReports ? <Badge variant="outline">Reportes</Badge> : null}
+                {membership?.canManageFiscalSequences ? (
+                  <Badge variant="outline">Secuencias fiscales</Badge>
+                ) : null}
+                {membership?.canViewCashLogs ? <Badge variant="outline">Logs de caja</Badge> : null}
+                {membership?.canReprintReceipt ? (
+                  <Badge variant="outline">Reimprimir recibos</Badge>
+                ) : null}
               </div>
+              {membership?.role === 'ACCOUNTANT' ? (
+                <div className="rounded-md border border-primary/20 bg-primary/5 p-4">
+                  <p className="text-sm font-semibold">Alcance del rol Contador</p>
+                  <p className="mt-1 text-sm leading-6 text-muted-foreground">
+                    Consulta ventas, productos, clientes, inventario, suplidores, cuentas y caja;
+                    prepara órdenes de compra y registra facturas de suplidores, pagos,
+                    recepciones y abonos. No puede aprobar, cancelar ni revertir operaciones.
+                  </p>
+                </div>
+              ) : null}
               <Button asChild>
                 <Link href={`/employees/${employee.id}/edit`}>Editar empleado</Link>
               </Button>

@@ -1,7 +1,7 @@
 'use client';
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ClipboardCheck, FileText, Search, Send, X } from 'lucide-react';
+import { ClipboardCheck, CreditCard, FileText, Search, Send, X } from 'lucide-react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -21,6 +21,10 @@ import {
   searchOrderProducts,
   updateSalesOrder,
   type Product,
+  type CreditTermOption,
+  type Customer,
+  type InitialPaymentOption,
+  type SalePaymentMode,
   type SalesOrder,
   type SalesOrderPriceLevel,
 } from '@/lib/api';
@@ -64,17 +68,20 @@ const finalDiscountCustomerId = '__FINAL_DISCOUNT_10__';
 const finalPreferredCustomerId = '__FINAL_PREFERRED_18__';
 
 const specialCustomerLabels = [
+  'Consumidor final (descuento 5%)',
+  'Consumidor final (cliente preferencial 10%)',
+  // Keep recognizing labels stored by drafts created before the rate change.
   'Consumidor final (descuento 10%)',
   'Consumidor final (cliente preferencial 18%)',
 ];
 
 function getPriceLevelDiscountRate(priceLevel: SalesOrderPriceLevel) {
   if (priceLevel === 'DISCOUNT_10') {
-    return 0.1;
+    return 0.05;
   }
 
   if (priceLevel === 'PREFERRED_18') {
-    return 0.18;
+    return 0.1;
   }
 
   return 0;
@@ -110,6 +117,13 @@ function getRegisteredCustomerId(customerValue: string) {
   return getSpecialCustomerPriceLevel(customerValue) ? '' : customerValue;
 }
 
+function normalizeCustomerSearch(value?: string | null) {
+  return (value ?? '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLocaleLowerCase('es');
+}
+
 function roundMoney(value: number) {
   return Math.round((value + Number.EPSILON) * 100) / 100;
 }
@@ -142,6 +156,8 @@ function buildPricedCartItem(
 
 export function OrdersView() {
   const session = useCurrentSession();
+  const canUseOrderTaking = canTakeOrders(session);
+  const cashierCreditOnly = session?.role === 'CASHIER';
   const queryClient = useQueryClient();
   const searchParams = useSearchParams();
   const editOrderId = searchParams.get('edit');
@@ -155,10 +171,17 @@ export function OrdersView() {
 
   const [destination, setDestination] = useState<OrderDestination>('CASH_SALE');
   const [clientName, setClientName] = useState('');
+  const [customerSearchOpen, setCustomerSearchOpen] = useState(false);
   const [quotationDocumentType, setQuotationDocumentType] = useState<'RNC' | 'CEDULA'>('CEDULA');
   const [quotationDocumentNumber, setQuotationDocumentNumber] = useState('');
   const [customerId, setCustomerId] = useState('');
   const [priceLevel, setPriceLevel] = useState<SalesOrderPriceLevel>('REGULAR');
+  const [paymentMode, setPaymentMode] = useState<SalePaymentMode>('CASH');
+  const [initialPaymentOption, setInitialPaymentOption] =
+    useState<InitialPaymentOption>('PERCENT_30');
+  const [creditTermOption, setCreditTermOption] = useState<CreditTermOption>('CUSTOMER_DEFAULT');
+  const [customDueDate, setCustomDueDate] = useState('');
+  const [creditRequestNote, setCreditRequestNote] = useState('');
   const [notes, setNotes] = useState('');
   const [barcode, setBarcode] = useState('');
   const [scannerEnabled, setScannerEnabled] = useState(false);
@@ -180,23 +203,23 @@ export function OrdersView() {
   const customersQuery = useQuery({
     queryKey: ['order-customers', session?.tenantId],
     queryFn: () => getCustomers(session?.tenantId ?? '', session?.accessToken ?? ''),
-    enabled: Boolean(session),
+    enabled: canUseOrderTaking,
   });
   const productsQuery = useQuery({
     queryKey: ['order-products-search', session?.tenantId, search],
     queryFn: () =>
       searchOrderProducts(session?.tenantId ?? '', session?.accessToken ?? '', search || 'RIV'),
-    enabled: Boolean(session),
+    enabled: canUseOrderTaking,
   });
   const pendingOrdersQuery = useQuery({
     queryKey: ['sales-orders', session?.tenantId, 'OPEN'],
     queryFn: () => getSalesOrders(session?.tenantId ?? '', session?.accessToken ?? '', 'OPEN'),
-    enabled: Boolean(session),
+    enabled: canUseOrderTaking,
   });
   const quotationsQuery = useQuery({
     queryKey: ['sales-orders', session?.tenantId, 'QUOTATION'],
     queryFn: () => getSalesOrders(session?.tenantId ?? '', session?.accessToken ?? '', 'QUOTATION'),
-    enabled: Boolean(session),
+    enabled: canUseOrderTaking,
   });
 
   useEffect(() => {
@@ -204,6 +227,12 @@ export function OrdersView() {
       barcodeInputRef.current?.focus();
     }
   }, [scannerEnabled]);
+
+  useEffect(() => {
+    if (cashierCreditOnly && !editOrderId) {
+      setPaymentMode('CREDIT');
+    }
+  }, [cashierCreditOnly, editOrderId]);
 
   useEffect(() => {
     setCart((current) =>
@@ -225,6 +254,7 @@ export function OrdersView() {
 
     if (
       !session ||
+      !canUseOrderTaking ||
       loadedEditOrderRef.current === editOrderId ||
       loadedEditOrderId === editOrderId
     ) {
@@ -251,6 +281,15 @@ export function OrdersView() {
         setClientName(order.clientName || '');
         setCustomerId(order.customerId || getSpecialCustomerValue(order.priceLevel));
         setPriceLevel(order.priceLevel ?? 'REGULAR');
+        setPaymentMode(order.paymentMode ?? 'CASH');
+        setInitialPaymentOption(order.initialPaymentOption ?? 'PERCENT_30');
+        setCreditTermOption(order.creditTermOption ?? 'CUSTOMER_DEFAULT');
+        setCustomDueDate(
+          order.creditTermOption === 'CUSTOM_DATE' && order.dueDate
+            ? order.dueDate.slice(0, 10)
+            : '',
+        );
+        setCreditRequestNote(order.creditRequestNote ?? order.creditApproval?.requestNote ?? '');
         setNotes(order.notes || '');
         if (order.quotationDocumentType === 'RNC' || order.quotationDocumentType === 'CEDULA') {
           setQuotationDocumentType(order.quotationDocumentType);
@@ -294,11 +333,42 @@ export function OrdersView() {
         loadedEditOrderRef.current = null;
       }
     };
-  }, [editOrderId, session, router, loadedEditOrderId]);
+  }, [canUseOrderTaking, editOrderId, session, router, loadedEditOrderId]);
 
   const activeCustomers = (customersQuery.data ?? []).filter(
     (customer) => customer.status === 'ACTIVE',
   );
+  const selectedCustomer = activeCustomers.find(
+    (customer) => customer.id === getRegisteredCustomerId(customerId),
+  );
+  const normalizedCustomerSearch = normalizeCustomerSearch(clientName);
+  const customerSearchResults = useMemo(() => {
+    const matches = normalizedCustomerSearch
+      ? activeCustomers.filter((customer) =>
+          [customer.name, customer.documentNumber, customer.phone, customer.email].some((value) =>
+            normalizeCustomerSearch(value).includes(normalizedCustomerSearch),
+          ),
+        )
+      : activeCustomers.filter((customer) => Number(customer.creditBalance ?? 0) > 0);
+
+    return matches
+      .sort((left, right) => {
+        const leftStartsWithSearch = normalizeCustomerSearch(left.name).startsWith(
+          normalizedCustomerSearch,
+        );
+        const rightStartsWithSearch = normalizeCustomerSearch(right.name).startsWith(
+          normalizedCustomerSearch,
+        );
+        if (leftStartsWithSearch !== rightStartsWithSearch) {
+          return leftStartsWithSearch ? -1 : 1;
+        }
+
+        const balanceDifference = Number(right.creditBalance ?? 0) - Number(left.creditBalance ?? 0);
+        if (balanceDifference) return balanceDifference;
+        return left.name.localeCompare(right.name, 'es');
+      })
+      .slice(0, 8);
+  }, [activeCustomers, normalizedCustomerSearch]);
   const productPool = productsQuery.data ?? [];
   const categories = uniqueValues(
     productPool
@@ -319,10 +389,7 @@ export function OrdersView() {
       (sum, item) => sum + (item.subtotal ?? getProductPrice(item.product) * item.quantity),
       0,
     );
-    const discount = cart.reduce(
-      (sum, item) => sum + (item.discountTotal ?? 0),
-      0,
-    );
+    const discount = cart.reduce((sum, item) => sum + (item.discountTotal ?? 0), 0);
     const tax = cart.reduce(
       (sum, item) =>
         sum +
@@ -338,6 +405,24 @@ export function OrdersView() {
       total: subtotal + tax,
     };
   }, [cart]);
+  const initialPaymentRate =
+    initialPaymentOption === 'PERCENT_30'
+      ? 0.3
+      : initialPaymentOption === 'PERCENT_50'
+        ? 0.5
+        : initialPaymentOption === 'PERCENT_70'
+          ? 0.7
+          : 0;
+  const initialPaymentAmount = roundMoney(totals.total * initialPaymentRate);
+  const financedAmount = roundMoney(totals.total - initialPaymentAmount);
+  const projectedCustomerBalance = roundMoney(
+    Number(selectedCustomer?.creditBalance ?? 0) + financedAmount,
+  );
+  const exceedsCreditLimit = Boolean(
+    paymentMode === 'CREDIT' &&
+    selectedCustomer &&
+    projectedCustomerBalance > Number(selectedCustomer.creditLimit),
+  );
 
   const barcodeMutation = useMutation({
     mutationFn: (code: string) => {
@@ -378,12 +463,24 @@ export function OrdersView() {
         throw new Error('El nombre del cliente es requerido.');
       }
 
+      if (paymentMode === 'CREDIT') {
+        if (!selectedCustomer) {
+          throw new Error('Una venta fiada requiere seleccionar un cliente registrado.');
+        }
+        if (!selectedCustomer.creditEnabled || selectedCustomer.creditStatus !== 'ACTIVE') {
+          throw new Error('El crédito de este cliente no está habilitado o está bloqueado.');
+        }
+        if (creditTermOption === 'CUSTOM_DATE' && !customDueDate) {
+          throw new Error('Selecciona la fecha de vencimiento del crédito.');
+        }
+      }
+
       if (destination === 'QUOTATION') {
         const normalizedDocument = normalizeDominicanDocument(quotationDocumentNumber);
         const isValidDocument =
           quotationDocumentType === 'RNC'
-            ? validateDominicanRnc(normalizedDocument)
-            : validateDominicanCedula(normalizedDocument);
+            ? validateDominicanRnc(quotationDocumentNumber)
+            : validateDominicanCedula(quotationDocumentNumber);
 
         if (!normalizedDocument) {
           throw new Error('El numero de documento es requerido para cotizaciones.');
@@ -401,6 +498,15 @@ export function OrdersView() {
         clientName: trimmedClientName,
         customerId: getRegisteredCustomerId(customerId) || undefined,
         priceLevel,
+        paymentMode,
+        initialPaymentOption: paymentMode === 'CREDIT' ? initialPaymentOption : undefined,
+        creditTermOption: paymentMode === 'CREDIT' ? creditTermOption : undefined,
+        customDueDate:
+          paymentMode === 'CREDIT' && creditTermOption === 'CUSTOM_DATE'
+            ? customDueDate
+            : undefined,
+        creditRequestNote:
+          paymentMode === 'CREDIT' ? creditRequestNote.trim() || undefined : undefined,
         quotationDocumentType: destination === 'QUOTATION' ? quotationDocumentType : undefined,
         quotationDocumentNumber:
           destination === 'QUOTATION'
@@ -424,12 +530,19 @@ export function OrdersView() {
         ? `Cotizacion ${order.orderNumber} actualizada correctamente.`
         : destination === 'QUOTATION'
           ? `Cotizacion ${order.orderNumber} registrada correctamente.`
-          : `Ticket pendiente ${order.orderNumber} enviado a caja. No es una factura fiscal.`;
+          : paymentMode === 'CREDIT'
+            ? `Solicitud de crédito ${order.orderNumber} enviada para aprobación administrativa.`
+            : `Ticket pendiente ${order.orderNumber} enviado a caja. No es una factura fiscal.`;
       setMessage(successMessage);
       setCart([]);
       setNotes('');
       setCustomerId('');
       setPriceLevel('REGULAR');
+      setPaymentMode(cashierCreditOnly ? 'CREDIT' : 'CASH');
+      setInitialPaymentOption('PERCENT_30');
+      setCreditTermOption('CUSTOMER_DEFAULT');
+      setCustomDueDate('');
+      setCreditRequestNote('');
       setClientName('');
       setQuotationDocumentNumber('');
       setMobileSection('products');
@@ -442,7 +555,9 @@ export function OrdersView() {
           ? 'Cotizacion actualizada'
           : destination === 'QUOTATION'
             ? 'Cotizacion creada'
-            : 'Ticket enviado a caja',
+            : paymentMode === 'CREDIT'
+              ? 'Crédito enviado para aprobación'
+              : 'Ticket enviado a caja',
         { description: order.orderNumber },
       );
 
@@ -478,7 +593,7 @@ export function OrdersView() {
     return <SessionRequired session={session} />;
   }
 
-  if (!canTakeOrders(session)) {
+  if (!canUseOrderTaking) {
     return (
       <Card>
         <CardHeader>
@@ -586,6 +701,43 @@ export function OrdersView() {
     const selectedCustomer = activeCustomers.find((customer) => customer.id === nextCustomerId);
     if (selectedCustomer) {
       setClientName(selectedCustomer.name);
+    }
+  }
+
+  function handleClientNameChange(nextClientName: string) {
+    const registeredCustomerId = getRegisteredCustomerId(customerId);
+    const currentCustomer = activeCustomers.find((customer) => customer.id === registeredCustomerId);
+
+    // Al cambiar manualmente el texto, se desasocia el cliente seleccionado
+    // para nunca adjudicar una orden a otra persona por coincidencia parcial.
+    if (
+      currentCustomer &&
+      normalizeCustomerSearch(nextClientName) !== normalizeCustomerSearch(currentCustomer.name)
+    ) {
+      setCustomerId('');
+      setPriceLevel('REGULAR');
+    }
+
+    setClientName(nextClientName);
+  }
+
+  function selectRegisteredCustomer(customer: Customer) {
+    handleCustomerSelection(customer.id);
+    setCustomerSearchOpen(false);
+  }
+
+  function handlePaymentModeChange(nextPaymentMode: SalePaymentMode) {
+    setPaymentMode(nextPaymentMode);
+    if (nextPaymentMode !== 'CREDIT') {
+      return;
+    }
+
+    if (!getRegisteredCustomerId(customerId)) {
+      setCustomerId('');
+      setPriceLevel('REGULAR');
+      if (specialCustomerLabels.includes(clientName.trim())) {
+        setClientName('');
+      }
     }
   }
 
@@ -793,7 +945,7 @@ export function OrdersView() {
             </CardContent>
           </Card>
 
-          <div className="xl:min-h-0 xl:flex-1 xl:overflow-y-auto xl:pr-2">
+          <div className="surface-scrollbar xl:min-h-0 xl:flex-1 xl:overflow-y-auto xl:pr-2">
             <PosProductGrid
               products={filteredProducts}
               quantitiesByProduct={quantitiesByProduct}
@@ -805,7 +957,7 @@ export function OrdersView() {
 
         <div
           className={cn(
-            'space-y-3 xl:h-full xl:overflow-y-auto xl:pr-1',
+            'surface-scrollbar space-y-3 xl:h-full xl:overflow-y-auto xl:pr-1',
             mobileSection === 'order' ? 'block' : 'hidden xl:block',
           )}
         >
@@ -819,14 +971,18 @@ export function OrdersView() {
                       ? 'Modificar cotizacion'
                       : destination === 'QUOTATION'
                         ? 'Registrar cotizacion'
-                        : 'Enviar a caja'}
+                        : paymentMode === 'CREDIT'
+                          ? 'Solicitar venta fiada'
+                          : 'Enviar a caja'}
                   </CardTitle>
                   <CardDescription>
                     {editOrderId
                       ? 'Actualiza los productos o datos de la cotización existente.'
                       : destination === 'QUOTATION'
                         ? 'Genera una cotizacion sin enviarla a caja ni emitir factura.'
-                        : 'Esto crea una preventa/ticket pendiente para caja. No emite factura fiscal.'}
+                        : paymentMode === 'CREDIT'
+                          ? 'La solicitud se enviará al administrador; el inventario se reservará al aprobar.'
+                          : 'Esto crea una preventa/ticket pendiente para caja. No emite factura fiscal.'}
                   </CardDescription>
                 </div>
                 {editOrderId ? (
@@ -840,6 +996,11 @@ export function OrdersView() {
                       setNotes('');
                       setCustomerId('');
                       setPriceLevel('REGULAR');
+                      setPaymentMode(cashierCreditOnly ? 'CREDIT' : 'CASH');
+                      setInitialPaymentOption('PERCENT_30');
+                      setCreditTermOption('CUSTOMER_DEFAULT');
+                      setCustomDueDate('');
+                      setCreditRequestNote('');
                       setClientName('');
                       setQuotationDocumentNumber('');
                       setMobileSection('products');
@@ -891,16 +1052,144 @@ export function OrdersView() {
                 </div>
 
                 <div className="space-y-2">
+                  <Label htmlFor="orderPaymentMode">Modalidad de pago</Label>
+                  <select
+                    id="orderPaymentMode"
+                    value={paymentMode}
+                    disabled={Boolean(editOrderId) || cashierCreditOnly}
+                    onChange={(event) =>
+                      handlePaymentModeChange(event.target.value as SalePaymentMode)
+                    }
+                    className="h-10 w-full rounded-md border border-input bg-white px-3 text-sm disabled:bg-zinc-100"
+                  >
+                    {!cashierCreditOnly ? <option value="CASH">Contado</option> : null}
+                    <option value="CREDIT">Fiado / crédito</option>
+                  </select>
+                  <p className="text-xs text-muted-foreground">
+                    {cashierCreditOnly
+                      ? 'Como cajero puedes crear solicitudes fiadas; el administrador deberá aprobarlas.'
+                      : 'La modalidad se fija al crear la orden y no se podrá cambiar al llegar a caja.'}
+                  </p>
+                </div>
+
+                <div className="space-y-2">
                   <Label htmlFor="orderClientName">
                     Nombre del cliente <span className="text-danger">*</span>
                   </Label>
-                  <Input
-                    id="orderClientName"
-                    value={clientName}
-                    onChange={(event) => setClientName(event.target.value)}
-                    placeholder="Nombre del cliente"
-                    required
-                  />
+                  <div className="relative">
+                    <Search className="pointer-events-none absolute left-3 top-1/2 z-10 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                    <Input
+                      id="orderClientName"
+                      role="combobox"
+                      aria-autocomplete="list"
+                      aria-controls="orderCustomerSearchResults"
+                      aria-expanded={customerSearchOpen}
+                      value={clientName}
+                      onFocus={() => setCustomerSearchOpen(true)}
+                      onBlur={() => window.setTimeout(() => setCustomerSearchOpen(false), 150)}
+                      onChange={(event) => {
+                        handleClientNameChange(event.target.value);
+                        setCustomerSearchOpen(true);
+                      }}
+                      placeholder="Busca por nombre, cedula, telefono o correo"
+                      className="bg-white pl-9"
+                      autoComplete="off"
+                      required
+                    />
+                    {customerSearchOpen ? (
+                      <div
+                        id="orderCustomerSearchResults"
+                        role="listbox"
+                        className="absolute z-30 mt-2 max-h-72 w-full overflow-y-auto rounded-lg border border-border bg-card p-1 shadow-lg"
+                      >
+                        <div className="px-3 py-2 text-xs font-medium text-muted-foreground">
+                          {normalizedCustomerSearch
+                            ? 'Clientes registrados coincidentes'
+                            : 'Clientes con saldo pendiente'}
+                        </div>
+                        {customerSearchResults.length ? (
+                          customerSearchResults.map((customer) => {
+                            const balance = Number(customer.creditBalance ?? 0);
+                            const creditUnavailable =
+                              paymentMode === 'CREDIT' &&
+                              (!customer.creditEnabled || customer.creditStatus !== 'ACTIVE');
+
+                            return (
+                              <button
+                                key={customer.id}
+                                type="button"
+                                role="option"
+                                aria-selected={customer.id === selectedCustomer?.id}
+                                disabled={creditUnavailable}
+                                className="flex w-full items-center justify-between gap-3 rounded-md px-3 py-2.5 text-left transition-colors hover:bg-muted focus-visible:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+                                onMouseDown={(event) => event.preventDefault()}
+                                onClick={() => selectRegisteredCustomer(customer)}
+                              >
+                                <span className="min-w-0">
+                                  <span className="block truncate text-sm font-medium">
+                                    {customer.name}
+                                  </span>
+                                  <span className="block truncate text-xs text-muted-foreground">
+                                    {[customer.documentNumber, customer.phone, customer.email]
+                                      .filter(Boolean)
+                                      .join(' · ') || 'Sin documento ni contacto'}
+                                  </span>
+                                </span>
+                                <span
+                                  className={cn(
+                                    'shrink-0 rounded-full px-2 py-1 text-xs font-semibold',
+                                    balance > 0
+                                      ? 'bg-danger/10 text-danger'
+                                      : 'bg-success/10 text-success',
+                                  )}
+                                >
+                                  {balance > 0
+                                    ? `Debe ${formatCurrency(balance)}`
+                                    : 'Al dia'}
+                                </span>
+                              </button>
+                            );
+                          })
+                        ) : (
+                          <p className="px-3 py-3 text-sm text-muted-foreground">
+                            {normalizedCustomerSearch
+                              ? 'No encontramos clientes registrados con esa busqueda.'
+                              : 'No hay clientes con saldo pendiente.'}
+                          </p>
+                        )}
+                      </div>
+                    ) : null}
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    Busca y selecciona un cliente para consultar su saldo. Para contado tambien puedes
+                    escribir un cliente no registrado.
+                  </p>
+                  {selectedCustomer ? (
+                    <div className="flex flex-col gap-3 rounded-lg border border-border bg-muted/20 p-3 sm:flex-row sm:items-center sm:justify-between">
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-semibold">{selectedCustomer.name}</p>
+                        <p className="mt-0.5 text-xs text-muted-foreground">
+                          {selectedCustomer.documentNumber ?? 'Sin documento'}
+                          {selectedCustomer.creditEnabled
+                            ? ` · Limite ${formatCurrency(Number(selectedCustomer.creditLimit ?? 0))}`
+                            : ' · Credito no habilitado'}
+                        </p>
+                      </div>
+                      <div className="text-left sm:text-right">
+                        <p className="text-xs text-muted-foreground">Saldo pendiente</p>
+                        <p
+                          className={cn(
+                            'text-sm font-bold',
+                            Number(selectedCustomer.creditBalance ?? 0) > 0
+                              ? 'text-danger'
+                              : 'text-success',
+                          )}
+                        >
+                          {formatCurrency(Number(selectedCustomer.creditBalance ?? 0))}
+                        </p>
+                      </div>
+                    </div>
+                  ) : null}
                 </div>
 
                 {destination === 'QUOTATION' ? (
@@ -935,34 +1224,212 @@ export function OrdersView() {
                   </>
                 ) : null}
 
-                <div className="space-y-2">
-                  <Label htmlFor="orderCustomer">Cliente registrado (opcional)</Label>
+                <div className="hidden">
+                  <Label htmlFor="orderCustomer">
+                    Cliente registrado
+                    {paymentMode === 'CREDIT' ? (
+                      <span className="text-danger"> *</span>
+                    ) : (
+                      ' (opcional)'
+                    )}
+                  </Label>
                   <select
                     id="orderCustomer"
                     value={customerId}
                     onChange={(event) => handleCustomerSelection(event.target.value)}
                     className="h-10 w-full rounded-md border border-input bg-white px-3 text-sm"
                   >
-                    <option value="">Consumidor final</option>
-                    <option value={finalDiscountCustomerId}>
-                      Consumidor Final (descuento 10%)
+                    <option value="">
+                      {paymentMode === 'CREDIT' ? 'Selecciona un cliente' : 'Consumidor final'}
                     </option>
-                    <option value={finalPreferredCustomerId}>
-                      Consumidor Final (Cliente preferencial 18%)
-                    </option>
+                    {paymentMode === 'CASH' ? (
+                      <>
+                        <option value={finalDiscountCustomerId}>
+                          Consumidor Final (descuento 5%)
+                        </option>
+                        <option value={finalPreferredCustomerId}>
+                          Consumidor Final (Cliente preferencial 10%)
+                        </option>
+                      </>
+                    ) : null}
                     {activeCustomers.map((customer) => (
-                      <option key={customer.id} value={customer.id}>
+                      <option
+                        key={customer.id}
+                        value={customer.id}
+                        disabled={
+                          paymentMode === 'CREDIT' &&
+                          (!customer.creditEnabled || customer.creditStatus !== 'ACTIVE')
+                        }
+                      >
                         {customer.name}
+                        {paymentMode === 'CREDIT' && !customer.creditEnabled
+                          ? ' — crédito no habilitado'
+                          : paymentMode === 'CREDIT' && customer.creditStatus !== 'ACTIVE'
+                            ? ' — crédito bloqueado'
+                            : ''}
                       </option>
                     ))}
                   </select>
                   {priceLevel !== 'REGULAR' ? (
                     <p className="text-xs font-medium text-emerald-700">
-                      Se aplicara un descuento de {Math.round(getPriceLevelDiscountRate(priceLevel) * 100)}
-                      % a los productos de esta orden.
+                      Se aplicara un descuento de{' '}
+                      {Math.round(getPriceLevelDiscountRate(priceLevel) * 100)}% a los productos de
+                      esta orden.
                     </p>
                   ) : null}
                 </div>
+
+                {paymentMode === 'CASH' ? (
+                  <div className="space-y-2">
+                    <p className="text-xs font-medium text-muted-foreground">
+                      Accesos rapidos para consumidor final
+                    </p>
+                    <div className="flex flex-wrap gap-2">
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant={
+                          customerId === finalDiscountCustomerId ? 'default' : 'outline'
+                        }
+                        onClick={() => handleCustomerSelection(finalDiscountCustomerId)}
+                      >
+                        Descuento 5%
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant={
+                          customerId === finalPreferredCustomerId ? 'default' : 'outline'
+                        }
+                        onClick={() => handleCustomerSelection(finalPreferredCustomerId)}
+                      >
+                        Cliente preferencial 10%
+                      </Button>
+                    </div>
+                  </div>
+                ) : null}
+                {priceLevel !== 'REGULAR' ? (
+                  <p className="text-xs font-medium text-emerald-700">
+                    Se aplicara un descuento de {Math.round(getPriceLevelDiscountRate(priceLevel) * 100)}%
+                    {' '}a los productos de esta orden.
+                  </p>
+                ) : null}
+
+                {paymentMode === 'CREDIT' ? (
+                  <div className="space-y-4 rounded-md border border-sky-200 bg-sky-50/60 p-4">
+                    <div className="flex items-center gap-2 text-sm font-semibold text-sky-950">
+                      <CreditCard className="h-4 w-4" />
+                      Condiciones de la venta fiada
+                    </div>
+                    {selectedCustomer ? (
+                      <div className="grid gap-2 text-xs sm:grid-cols-3">
+                        <div className="rounded-md bg-white p-2">
+                          <span className="text-muted-foreground">Balance</span>
+                          <p className="font-semibold">
+                            {formatCurrency(Number(selectedCustomer.creditBalance ?? 0))}
+                          </p>
+                        </div>
+                        <div className="rounded-md bg-white p-2">
+                          <span className="text-muted-foreground">Límite</span>
+                          <p className="font-semibold">
+                            {formatCurrency(Number(selectedCustomer.creditLimit ?? 0))}
+                          </p>
+                        </div>
+                        <div className="rounded-md bg-white p-2">
+                          <span className="text-muted-foreground">Plazo recomendado</span>
+                          <p className="font-semibold">{selectedCustomer.creditTermDays} días</p>
+                        </div>
+                      </div>
+                    ) : null}
+                    <div className="grid gap-4 sm:grid-cols-2">
+                      <div className="space-y-2">
+                        <Label htmlFor="initialPaymentOption">Pago inicial</Label>
+                        <select
+                          id="initialPaymentOption"
+                          value={initialPaymentOption}
+                          disabled={Boolean(editOrderId)}
+                          onChange={(event) =>
+                            setInitialPaymentOption(event.target.value as InitialPaymentOption)
+                          }
+                          className="h-10 w-full rounded-md border border-input bg-white px-3 text-sm disabled:bg-zinc-100"
+                        >
+                          <option value="NONE">Sin pago inicial</option>
+                          <option value="PERCENT_30">30 %</option>
+                          <option value="PERCENT_50">50 %</option>
+                          <option value="PERCENT_70">70 %</option>
+                        </select>
+                      </div>
+                      <div className="space-y-2">
+                        <Label htmlFor="creditTermOption">Vencimiento</Label>
+                        <select
+                          id="creditTermOption"
+                          value={creditTermOption}
+                          disabled={Boolean(editOrderId)}
+                          onChange={(event) =>
+                            setCreditTermOption(event.target.value as CreditTermOption)
+                          }
+                          className="h-10 w-full rounded-md border border-input bg-white px-3 text-sm disabled:bg-zinc-100"
+                        >
+                          <option value="CUSTOMER_DEFAULT">
+                            Plazo del cliente
+                            {selectedCustomer ? ` (${selectedCustomer.creditTermDays} días)` : ''}
+                          </option>
+                          <option value="DAYS_15">15 días</option>
+                          <option value="DAYS_30">30 días</option>
+                          <option value="DAYS_45">45 días</option>
+                          <option value="CUSTOM_DATE">Fecha personalizada</option>
+                        </select>
+                      </div>
+                    </div>
+                    {creditTermOption === 'CUSTOM_DATE' ? (
+                      <div className="space-y-2">
+                        <Label htmlFor="customDueDate">Fecha de vencimiento</Label>
+                        <Input
+                          id="customDueDate"
+                          type="date"
+                          min={new Date(Date.now() + 86_400_000).toISOString().slice(0, 10)}
+                          value={customDueDate}
+                          disabled={Boolean(editOrderId)}
+                          onChange={(event) => setCustomDueDate(event.target.value)}
+                          required
+                        />
+                      </div>
+                    ) : null}
+                    <div className="grid gap-2 rounded-md bg-white p-3 text-sm">
+                      <div className="flex justify-between">
+                        <span>Pago inicial</span>
+                        <strong>{formatCurrency(initialPaymentAmount)}</strong>
+                      </div>
+                      <div className="flex justify-between">
+                        <span>Saldo a financiar</span>
+                        <strong>{formatCurrency(financedAmount)}</strong>
+                      </div>
+                      <div className="flex justify-between border-t pt-2">
+                        <span>Balance proyectado del cliente</span>
+                        <strong className={exceedsCreditLimit ? 'text-danger' : ''}>
+                          {formatCurrency(projectedCustomerBalance)}
+                        </strong>
+                      </div>
+                    </div>
+                    {exceedsCreditLimit ? (
+                      <p className="rounded-md bg-amber-100 px-3 py-2 text-xs font-medium text-amber-900">
+                        Supera el límite de crédito. El administrador deberá autorizar
+                        explícitamente el exceso y dejar una nota.
+                      </p>
+                    ) : null}
+                    <div className="space-y-2">
+                      <Label htmlFor="creditRequestNote">Nota para aprobación (opcional)</Label>
+                      <textarea
+                        id="creditRequestNote"
+                        value={creditRequestNote}
+                        onChange={(event) => setCreditRequestNote(event.target.value)}
+                        className="min-h-16 w-full rounded-md border border-input bg-white px-3 py-2 text-sm"
+                        maxLength={500}
+                        placeholder="Contexto para el administrador"
+                      />
+                    </div>
+                  </div>
+                ) : null}
 
                 <div className="space-y-2">
                   <Label htmlFor="orderNotes">Notas</Label>
@@ -1013,6 +1480,11 @@ export function OrdersView() {
                     <>
                       <FileText className="h-5 w-5" />
                       Guardar cotizacion
+                    </>
+                  ) : paymentMode === 'CREDIT' ? (
+                    <>
+                      <CreditCard className="h-5 w-5" />
+                      Solicitar aprobación de crédito
                     </>
                   ) : (
                     <>
@@ -1094,7 +1566,9 @@ export function OrdersView() {
               <p className="truncate text-xs font-medium text-muted-foreground">
                 {cart.length} producto(s) en la orden
               </p>
-              <p className="text-base font-extrabold text-zinc-950">{formatCurrency(totals.total)}</p>
+              <p className="text-base font-extrabold text-zinc-950">
+                {formatCurrency(totals.total)}
+              </p>
             </div>
             <Button
               type="button"
@@ -1132,8 +1606,10 @@ function PendingOrdersPanel({
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Tickets en caja</CardTitle>
-        <CardDescription>Preventas pendientes de cobro. Aun no son facturas.</CardDescription>
+        <CardTitle>Órdenes abiertas</CardTitle>
+        <CardDescription>
+          Preventas pendientes de aprobación o cobro. Aún no son facturas.
+        </CardDescription>
       </CardHeader>
       <CardContent className="space-y-2">
         {loading ? (
@@ -1150,7 +1626,20 @@ function PendingOrdersPanel({
                     <Badge variant={getStatusVariant(order.status)}>
                       {translateStatus(order.status)}
                     </Badge>
-                    <Badge variant={getWaitingVariant(order)}>{getWaitingMinutes(order)} min</Badge>
+                    {order.paymentMode === 'CREDIT' ? (
+                      <Badge variant="outline">
+                        {order.creditApproval?.status === 'PENDING'
+                          ? 'Crédito pendiente'
+                          : order.creditApproval?.status === 'APPROVED'
+                            ? 'Crédito aprobado'
+                            : 'Fiado'}
+                      </Badge>
+                    ) : null}
+                    {order.sentToCashierAt ? (
+                      <Badge variant={getWaitingVariant(order)}>
+                        {getWaitingMinutes(order)} min
+                      </Badge>
+                    ) : null}
                   </div>
                   <p className="mt-1 text-xs text-muted-foreground">
                     {getOrderSearchLabel(order)} -{' '}
@@ -1165,6 +1654,14 @@ function PendingOrdersPanel({
                       {order.claimedCashSession?.cashRegister.name
                         ? ` en ${order.claimedCashSession.cashRegister.name}`
                         : ''}
+                    </p>
+                  ) : null}
+                  {order.paymentMode === 'CREDIT' ? (
+                    <p className="mt-1 text-xs text-sky-800">
+                      Inicial {formatCurrency(Number(order.initialPaymentAmount))} · Saldo{' '}
+                      {formatCurrency(
+                        Number(order.total) - Number(order.initialPaymentAmount ?? 0),
+                      )}
                     </p>
                   ) : null}
                 </div>
@@ -1236,6 +1733,9 @@ function QuotationsPanel({
                     <Badge variant={getStatusVariant(order.status)}>
                       {translateStatus(order.status)}
                     </Badge>
+                    {order.paymentMode === 'CREDIT' ? (
+                      <Badge variant="outline">Cotización fiada</Badge>
+                    ) : null}
                   </div>
                   <p className="mt-1 text-xs text-muted-foreground">
                     Cliente: {getOrderClientLabel(order)}

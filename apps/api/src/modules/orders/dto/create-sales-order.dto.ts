@@ -5,11 +5,19 @@ import {
   IsNumber,
   IsOptional,
   IsString,
+  Matches,
   MaxLength,
   Min,
   ValidateNested,
 } from 'class-validator';
-import { DocumentType, SalesOrderDestination, SalesOrderPriceLevel } from '@qorvex/database';
+import {
+  CreditTermOption,
+  DocumentType,
+  InitialPaymentOption,
+  SalePaymentMode,
+  SalesOrderDestination,
+  SalesOrderPriceLevel,
+} from '@qorvex/database';
 
 export class SalesOrderItemDto {
   @IsString()
@@ -37,6 +45,28 @@ export class CreateSalesOrderDto {
   @IsOptional()
   @IsEnum(SalesOrderPriceLevel)
   priceLevel?: SalesOrderPriceLevel;
+
+  @IsOptional()
+  @IsEnum(SalePaymentMode)
+  paymentMode?: SalePaymentMode;
+
+  @IsOptional()
+  @IsEnum(InitialPaymentOption)
+  initialPaymentOption?: InitialPaymentOption;
+
+  @IsOptional()
+  @IsEnum(CreditTermOption)
+  creditTermOption?: CreditTermOption;
+
+  @IsOptional()
+  @IsString()
+  @Matches(/^\d{4}-\d{2}-\d{2}$/)
+  customDueDate?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  creditRequestNote?: string;
 
   @IsOptional()
   @IsEnum(DocumentType)

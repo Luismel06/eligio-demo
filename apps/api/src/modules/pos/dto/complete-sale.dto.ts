@@ -3,6 +3,7 @@ import { Type } from 'class-transformer';
 import {
   IsArray,
   IsEnum,
+  IsIn,
   IsNumber,
   IsOptional,
   IsString,
@@ -15,7 +16,7 @@ export class PosSaleItemDto {
   productId: string;
 
   @Type(() => Number)
-  @IsNumber()
+  @IsNumber({ maxDecimalPlaces: 2 })
   @Min(0.01)
   quantity: number;
 }
@@ -29,12 +30,12 @@ export class CompleteSaleDto {
   @IsEnum(InvoiceDocumentType)
   documentType?: InvoiceDocumentType;
 
-  @IsEnum(PaymentMethod)
+  @IsIn([PaymentMethod.CASH, PaymentMethod.CARD, PaymentMethod.TRANSFER])
   paymentMethod: PaymentMethod;
 
   @IsOptional()
   @Type(() => Number)
-  @IsNumber()
+  @IsNumber({ maxDecimalPlaces: 2 })
   @Min(0)
   amountReceived?: number;
 

@@ -182,22 +182,27 @@ export function PosView() {
     const discount = cart.reduce((sum, item) => sum + (item.discountTotal ?? 0), 0);
     const total = subtotal + tax;
     const received = parseCurrencyInput(amountReceived);
+    const requiredPayment =
+      loadedOrder?.paymentMode === 'CREDIT' ? Number(loadedOrder.initialPaymentAmount ?? 0) : total;
 
     return {
       subtotal,
       discount,
       tax,
       total,
+      requiredPayment,
+      remainingBalance: Math.max(total - requiredPayment, 0),
       received,
-      change: paymentMethod === 'CASH' && received > total ? received - total : 0,
+      change:
+        paymentMethod === 'CASH' && received > requiredPayment ? received - requiredPayment : 0,
     };
-  }, [amountReceived, cart, paymentMethod]);
+  }, [amountReceived, cart, loadedOrder, paymentMethod]);
 
   useEffect(() => {
-    if (paymentMethod !== 'CASH' && totals.total > 0) {
-      setAmountReceived(formatCurrencyInputFromNumber(totals.total));
+    if (paymentMethod !== 'CASH' && totals.requiredPayment >= 0) {
+      setAmountReceived(formatCurrencyInputFromNumber(totals.requiredPayment));
     }
-  }, [paymentMethod, totals.total]);
+  }, [paymentMethod, totals.requiredPayment]);
 
   useEffect(() => () => stopCameraScan(), []);
 
@@ -220,10 +225,7 @@ export function PosView() {
     cart.map((item) => [item.product.id, item.quantity]),
   );
   const canCompleteSale =
-    !isAdmin &&
-    cart.length > 0 &&
-    Boolean(currentCashSession) &&
-    Boolean(loadedOrder);
+    !isAdmin && cart.length > 0 && Boolean(currentCashSession) && Boolean(loadedOrder);
   const selectedOpenSession = (cashSessionsQuery.data ?? []).find(
     (cashSession) =>
       cashSession.status === 'OPEN' && cashSession.cashRegister.id === selectedRegisterId,
@@ -734,6 +736,18 @@ export function PosView() {
                     <span className="font-semibold">Nota:</span> {loadedOrder.notes}
                   </div>
                 ) : null}
+                {loadedOrder.paymentMode === 'CREDIT' ? (
+                  <div className="border-t border-[#f36c10]/20 pt-2 text-xs">
+                    Venta fiada aprobada · Inicial{' '}
+                    <strong>{formatCurrency(Number(loadedOrder.initialPaymentAmount))}</strong> ·
+                    Saldo{' '}
+                    <strong>
+                      {formatCurrency(
+                        Number(loadedOrder.total) - Number(loadedOrder.initialPaymentAmount),
+                      )}
+                    </strong>
+                  </div>
+                ) : null}
               </div>
             ) : null}
             <PosCart
@@ -749,6 +763,9 @@ export function PosView() {
                 customerId={customerId}
                 documentType={documentType}
                 paymentMethod={paymentMethod}
+                salePaymentMode={loadedOrder?.paymentMode ?? 'CASH'}
+                dueDate={loadedOrder?.dueDate}
+                customerLocked={Boolean(loadedOrder?.customerId)}
                 amountReceived={amountReceived}
                 totals={totals}
                 message={message}
@@ -845,9 +862,9 @@ function SalesOrdersQueuePanel({
       <CardHeader className="pb-3">
         <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
           <div>
-            <CardTitle>Tickets pendientes en caja</CardTitle>
+            <CardTitle>Solicitudes y tickets pendientes</CardTitle>
             <CardDescription>
-              Selecciona una preventa pendiente para cobrarla y emitir factura.
+              Las ventas fiadas solo se pueden cobrar después de la aprobación administrativa.
             </CardDescription>
           </div>
           <Badge variant={orders.length ? 'warning' : 'outline'}>
@@ -915,16 +932,26 @@ function SalesOrdersQueuePanel({
                       <Badge variant={getStatusVariant(order.status)}>
                         {translateStatus(order.status)}
                       </Badge>
-                      <Badge variant={getWaitingVariant(order)}>
-                        {getWaitingMinutes(order)} min
-                      </Badge>
+                      {order.paymentMode === 'CREDIT' ? (
+                        <Badge variant="outline">
+                          {order.creditApproval?.status === 'APPROVED'
+                            ? 'Crédito aprobado'
+                            : 'Crédito pendiente'}
+                        </Badge>
+                      ) : null}
+                      {order.sentToCashierAt ? (
+                        <Badge variant={getWaitingVariant(order)}>
+                          {getWaitingMinutes(order)} min
+                        </Badge>
+                      ) : null}
                     </div>
                     <p className="mt-1 text-xs text-muted-foreground">
-                  {getOrderSearchLabel(order)} - {formatDateTime(order.sentToCashierAt ?? order.createdAt)}
-                </p>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  Cliente: {getOrderClientLabel(order)}
-                </p>
+                      {getOrderSearchLabel(order)} -{' '}
+                      {formatDateTime(order.sentToCashierAt ?? order.createdAt)}
+                    </p>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      Cliente: {getOrderClientLabel(order)}
+                    </p>
                     <p className="mt-1 text-xs text-muted-foreground">
                       Creada por {order.createdBy.name}
                     </p>
@@ -939,6 +966,14 @@ function SalesOrdersQueuePanel({
                         {order.claimedCashSession?.cashRegister.name
                           ? ` en ${order.claimedCashSession.cashRegister.name}`
                           : ''}
+                      </p>
+                    ) : null}
+                    {order.paymentMode === 'CREDIT' ? (
+                      <p className="mt-1 text-xs text-sky-800">
+                        Inicial {formatCurrency(Number(order.initialPaymentAmount))} · Saldo{' '}
+                        {formatCurrency(
+                          Number(order.total) - Number(order.initialPaymentAmount ?? 0),
+                        )}
                       </p>
                     ) : null}
                   </div>
@@ -959,15 +994,18 @@ function SalesOrdersQueuePanel({
                         loadedOrderId === order.id ||
                         claimingId === order.id ||
                         (Boolean(loadedOrderId) && loadedOrderId !== order.id) ||
+                        order.status === 'CREATED' ||
                         (order.status === 'IN_CASHIER' && order.claimedBy?.id !== currentUserId)
                       }
                     >
                       <ClipboardCheck className="h-4 w-4" />
                       {loadedOrderId === order.id
                         ? 'Cargada'
-                        : order.status === 'IN_CASHIER'
-                          ? 'Tomada'
-                          : 'Cobrar'}
+                        : order.status === 'CREATED'
+                          ? 'Esperando aprobación'
+                          : order.status === 'IN_CASHIER'
+                            ? 'Tomada'
+                            : 'Cobrar'}
                     </Button>
                   ) : (
                     <span className="text-xs text-muted-foreground">Solo cajero</span>

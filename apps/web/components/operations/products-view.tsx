@@ -1,10 +1,20 @@
 'use client';
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Barcode, Pencil, Plus, Printer, Search, Trash2 } from 'lucide-react';
+import {
+  Barcode,
+  ChevronLeft,
+  ChevronRight,
+  Pencil,
+  Plus,
+  Printer,
+  Search,
+  Trash2,
+} from 'lucide-react';
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import { toast } from 'sonner';
+import { ActionDialog } from '@/components/ui/action-dialog';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -28,6 +38,12 @@ export function ProductsView() {
   const session = useCurrentSession();
   const queryClient = useQueryClient();
   const [search, setSearch] = useState('');
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(100);
+  const [productPendingDeactivation, setProductPendingDeactivation] = useState<{
+    id: string;
+    name: string;
+  } | null>(null);
 
   useEffect(() => {
     const query = new URLSearchParams(window.location.search).get('q');
@@ -95,6 +111,14 @@ export function ProductsView() {
     return <SessionRequired session={session} />;
   }
 
+  const readOnly = session.role === 'ACCOUNTANT';
+  const products = productsQuery.data ?? [];
+  const pageCount = Math.max(1, Math.ceil(products.length / pageSize));
+  const currentPage = Math.min(page, pageCount);
+  const rangeStart = products.length ? (currentPage - 1) * pageSize + 1 : 0;
+  const rangeEnd = Math.min(currentPage * pageSize, products.length);
+  const visibleProducts = products.slice(rangeStart ? rangeStart - 1 : 0, rangeEnd);
+
   return (
     <div className="space-y-6">
       <ModuleHeader
@@ -107,27 +131,46 @@ export function ProductsView() {
           <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
           <Input
             value={search}
-            onChange={(event) => setSearch(event.target.value)}
+            onChange={(event) => {
+              setSearch(event.target.value);
+              setPage(1);
+            }}
             className="bg-white pl-9"
             placeholder="Buscar nombre, SKU, marca o codigo"
           />
         </div>
-        <Button asChild>
-          <Link href="/products/new">
-            <Plus className="h-4 w-4" />
-            Nuevo producto
-          </Link>
-        </Button>
+        {!readOnly ? (
+          <Button asChild>
+            <Link href="/products/new">
+              <Plus className="h-4 w-4" />
+              Nuevo producto
+            </Link>
+          </Button>
+        ) : null}
       </div>
 
       <Card>
         <CardHeader>
           <CardTitle>Catalogo</CardTitle>
-          <CardDescription>{productsQuery.data?.length ?? 0} productos activos o inactivos.</CardDescription>
+          <CardDescription>{products.length} productos activos o inactivos.</CardDescription>
         </CardHeader>
-        <CardContent>
-          <div className="space-y-3 md:hidden">
-            {(productsQuery.data ?? []).map((product) => {
+        <CardContent className="space-y-4">
+          <ProductPagination
+            page={currentPage}
+            pageCount={pageCount}
+            pageSize={pageSize}
+            rangeStart={rangeStart}
+            rangeEnd={rangeEnd}
+            total={products.length}
+            onPageChange={setPage}
+            onPageSizeChange={(nextPageSize) => {
+              setPageSize(nextPageSize);
+              setPage(1);
+            }}
+          />
+
+          <div className="max-h-[65vh] space-y-3 overflow-y-auto pr-1 md:hidden">
+            {visibleProducts.map((product) => {
               const availableStock = getAvailableStock(product);
               const lowStock = product.trackInventory && availableStock <= Number(product.minStock);
               return (
@@ -137,7 +180,9 @@ export function ProductsView() {
                       <p className="truncate text-sm font-semibold">{product.name}</p>
                       <p className="text-xs text-muted-foreground">{product.sku ?? 'Sin SKU'}</p>
                     </div>
-                    <Badge variant={getStatusVariant(product.status)}>{translateStatus(product.status)}</Badge>
+                    <Badge variant={getStatusVariant(product.status)}>
+                      {translateStatus(product.status)}
+                    </Badge>
                   </div>
                   <div className="mt-3 flex items-center justify-between gap-3 text-sm">
                     <span className="font-semibold">{formatCurrency(Number(product.price))}</span>
@@ -156,104 +201,233 @@ export function ProductsView() {
           </div>
 
           <div className="hidden md:block">
-            <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Producto</TableHead>
-                <TableHead>Categoria</TableHead>
-                <TableHead>Precio</TableHead>
-                <TableHead>Codigo</TableHead>
-                <TableHead>Stock</TableHead>
-                <TableHead>Estado</TableHead>
-                <TableHead className="text-right">Acciones</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {(productsQuery.data ?? []).map((product) => {
-                const availableStock = getAvailableStock(product);
-                const lowStock = product.trackInventory && availableStock <= Number(product.minStock);
-                return (
-                  <TableRow key={product.id}>
-                    <TableCell>
-                      <div className="font-medium">{product.name}</div>
-                      <div className="text-xs text-muted-foreground">
-                        {product.sku ?? 'Sin SKU'} {product.brand ? `- ${product.brand}` : ''}
-                      </div>
-                    </TableCell>
-                    <TableCell>{product.category?.name ?? 'Sin categoria'}</TableCell>
-                    <TableCell>{formatCurrency(Number(product.price))}</TableCell>
-                    <TableCell>
-                      <div className="text-sm">{product.barcode ?? 'Sin codigo'}</div>
-                      <div className="text-xs text-muted-foreground">{translateBarcodeType(product.barcodeType)}</div>
-                    </TableCell>
-                    <TableCell>
-                      {product.trackInventory ? (
-                        <div>
-                          <Badge variant={lowStock ? 'danger' : 'success'}>
-                            {formatQuantity(availableStock)} disp. /{' '}
-                            {formatQuantity(product.reservedStock)} res.
-                          </Badge>
-                          <p className="mt-1 text-xs text-muted-foreground">
-                            Total {formatQuantity(product.stock)} / min{' '}
-                            {formatQuantity(product.minStock)}
-                          </p>
+            <Table wrapperClassName="max-h-[65vh] rounded-md border border-border overflow-auto">
+              <TableHeader className="sticky top-0 z-10 bg-card shadow-sm">
+                <TableRow>
+                  <TableHead>Producto</TableHead>
+                  <TableHead>Categoria</TableHead>
+                  <TableHead>Precio</TableHead>
+                  <TableHead>Codigo</TableHead>
+                  <TableHead>Stock</TableHead>
+                  <TableHead>Estado</TableHead>
+                  {!readOnly ? <TableHead className="text-right">Acciones</TableHead> : null}
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {visibleProducts.map((product) => {
+                  const availableStock = getAvailableStock(product);
+                  const lowStock =
+                    product.trackInventory && availableStock <= Number(product.minStock);
+                  return (
+                    <TableRow key={product.id}>
+                      <TableCell>
+                        <div className="font-medium">{product.name}</div>
+                        <div className="text-xs text-muted-foreground">
+                          {product.sku ?? 'Sin SKU'} {product.brand ? `- ${product.brand}` : ''}
                         </div>
-                      ) : (
-                        <Badge variant="outline">Servicio</Badge>
-                      )}
-                    </TableCell>
-                    <TableCell>
-                      <Badge variant={getStatusVariant(product.status)}>{translateStatus(product.status)}</Badge>
-                    </TableCell>
-                    <TableCell className="text-right">
-                      <div className="flex justify-end gap-1">
-                        {!product.barcode ? (
-                          <Button
-                            variant="outline"
-                            size="icon"
-                            onClick={() => generateMutation.mutate(product.id)}
-                            aria-label="Generar codigo de barras"
-                          >
-                            <Barcode className="h-4 w-4" />
-                          </Button>
+                      </TableCell>
+                      <TableCell>{product.category?.name ?? 'Sin categoria'}</TableCell>
+                      <TableCell>{formatCurrency(Number(product.price))}</TableCell>
+                      <TableCell>
+                        <div className="text-sm">{product.barcode ?? 'Sin codigo'}</div>
+                        <div className="text-xs text-muted-foreground">
+                          {translateBarcodeType(product.barcodeType)}
+                        </div>
+                      </TableCell>
+                      <TableCell>
+                        {product.trackInventory ? (
+                          <div>
+                            <Badge variant={lowStock ? 'danger' : 'success'}>
+                              {formatQuantity(availableStock)} disp. /{' '}
+                              {formatQuantity(product.reservedStock)} res.
+                            </Badge>
+                            <p className="mt-1 text-xs text-muted-foreground">
+                              Total {formatQuantity(product.stock)} / min{' '}
+                              {formatQuantity(product.minStock)}
+                            </p>
+                          </div>
                         ) : (
-                          <Button
-                            variant="outline"
-                            size="icon"
-                            onClick={() => labelMutation.mutate(product.id)}
-                            aria-label="Imprimir etiqueta"
-                          >
-                            <Printer className="h-4 w-4" />
-                          </Button>
+                          <Badge variant="outline">Servicio</Badge>
                         )}
-                        <Button asChild variant="ghost" size="icon">
-                          <Link href={`/products/${product.id}/edit`} aria-label="Editar producto">
-                            <Pencil className="h-4 w-4" />
-                          </Link>
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          disabled={deleteMutation.isPending}
-                          onClick={() => {
-                            if (window.confirm(`Desactivar ${product.name}?`)) {
-                              deleteMutation.mutate(product.id);
-                            }
-                          }}
-                          aria-label="Desactivar producto"
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </Button>
-                      </div>
-                    </TableCell>
-                  </TableRow>
-                );
-              })}
-            </TableBody>
+                      </TableCell>
+                      <TableCell>
+                        <Badge variant={getStatusVariant(product.status)}>
+                          {translateStatus(product.status)}
+                        </Badge>
+                      </TableCell>
+                      {!readOnly ? (
+                        <TableCell className="text-right">
+                          <div className="flex justify-end gap-1">
+                            {!product.barcode ? (
+                              <Button
+                                variant="outline"
+                                size="icon"
+                                onClick={() => generateMutation.mutate(product.id)}
+                                aria-label="Generar codigo de barras"
+                              >
+                                <Barcode className="h-4 w-4" />
+                              </Button>
+                            ) : (
+                              <Button
+                                variant="outline"
+                                size="icon"
+                                onClick={() => labelMutation.mutate(product.id)}
+                                aria-label="Imprimir etiqueta"
+                              >
+                                <Printer className="h-4 w-4" />
+                              </Button>
+                            )}
+                            <Button asChild variant="ghost" size="icon">
+                              <Link
+                                href={`/products/${product.id}/edit`}
+                                aria-label="Editar producto"
+                              >
+                                <Pencil className="h-4 w-4" />
+                              </Link>
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              disabled={deleteMutation.isPending}
+                              onClick={() =>
+                                setProductPendingDeactivation({
+                                  id: product.id,
+                                  name: product.name,
+                                })
+                              }
+                              aria-label="Desactivar producto"
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </Button>
+                          </div>
+                        </TableCell>
+                      ) : null}
+                    </TableRow>
+                  );
+                })}
+              </TableBody>
             </Table>
           </div>
+
+          <ProductPagination
+            page={currentPage}
+            pageCount={pageCount}
+            pageSize={pageSize}
+            rangeStart={rangeStart}
+            rangeEnd={rangeEnd}
+            total={products.length}
+            onPageChange={setPage}
+            onPageSizeChange={(nextPageSize) => {
+              setPageSize(nextPageSize);
+              setPage(1);
+            }}
+          />
         </CardContent>
       </Card>
+      <ActionDialog
+        open={Boolean(productPendingDeactivation)}
+        onClose={() => {
+          if (!deleteMutation.isPending) setProductPendingDeactivation(null);
+        }}
+        title="Desactivar producto"
+        description="El producto dejará de estar disponible para nuevas ventas. Su historial, movimientos e inventario se conservarán."
+        tone="danger"
+        size="sm"
+        confirmLabel="Desactivar producto"
+        cancelLabel="Cancelar"
+        isPending={deleteMutation.isPending}
+        onConfirm={() => {
+          const product = productPendingDeactivation;
+          if (!product) return;
+          deleteMutation.mutate(product.id, {
+            onSuccess: () => setProductPendingDeactivation(null),
+          });
+        }}
+        summary={
+          productPendingDeactivation ? (
+            <div>
+
+              <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+
+                Producto
+              </p>
+              <p className="mt-0.5 font-semibold text-foreground">
+                {productPendingDeactivation.name}
+              </p>
+            </div>
+          ) : null
+        }
+      />
+    </div>
+  );
+}
+
+function ProductPagination({
+  page,
+  pageCount,
+  pageSize,
+  rangeStart,
+  rangeEnd,
+  total,
+  onPageChange,
+  onPageSizeChange,
+}: {
+  page: number;
+  pageCount: number;
+  pageSize: number;
+  rangeStart: number;
+  rangeEnd: number;
+  total: number;
+  onPageChange: (page: number) => void;
+  onPageSizeChange: (pageSize: number) => void;
+}) {
+  return (
+    <div className="flex flex-col gap-3 rounded-md border border-border bg-muted/30 px-3 py-2 sm:flex-row sm:items-center sm:justify-between">
+      <div className="flex items-center gap-2 text-sm text-muted-foreground">
+        <span>Mostrar</span>
+        <select
+          value={pageSize}
+          onChange={(event) => onPageSizeChange(Number(event.target.value))}
+          className="h-9 rounded-md border border-input bg-card px-2 text-sm text-foreground"
+          aria-label="Productos por bloque"
+        >
+          {[50, 100, 200].map((size) => (
+            <option key={size} value={size}>
+              {size}
+            </option>
+          ))}
+        </select>
+        <span>por bloque</span>
+      </div>
+
+      <div className="flex items-center justify-between gap-2 sm:justify-end">
+        <Button
+          type="button"
+          variant="outline"
+          size="icon"
+          disabled={page <= 1}
+          onClick={() => onPageChange(page - 1)}
+          aria-label="Bloque anterior"
+        >
+          <ChevronLeft className="h-4 w-4" />
+        </Button>
+        <div className="min-w-36 text-center text-sm">
+          <span className="font-medium text-foreground">
+            {rangeStart}-{rangeEnd}
+          </span>{' '}
+          <span className="text-muted-foreground">de {total}</span>
+        </div>
+        <Button
+          type="button"
+          variant="outline"
+          size="icon"
+          disabled={page >= pageCount}
+          onClick={() => onPageChange(page + 1)}
+          aria-label="Bloque siguiente"
+        >
+          <ChevronRight className="h-4 w-4" />
+        </Button>
+      </div>
     </div>
   );
 }

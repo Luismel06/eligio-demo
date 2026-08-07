@@ -76,6 +76,11 @@ export function QuotationPrint({
           <h2 className="mt-2 text-2xl font-bold">{order.orderNumber}</h2>
           <div className="mt-3 flex flex-wrap gap-2">
             <Badge variant="outline">{translateStatus(order.status)}</Badge>
+            {order.paymentMode === 'CREDIT' ? (
+              <Badge variant="outline">Modalidad: fiado</Badge>
+            ) : (
+              <Badge variant="outline">Modalidad: contado</Badge>
+            )}
           </div>
         </header>
 
@@ -100,6 +105,26 @@ export function QuotationPrint({
             <p className="text-xs uppercase text-muted-foreground">Fecha</p>
             <p className="font-medium">{formatDate(order.createdAt)}</p>
           </div>
+          {order.paymentMode === 'CREDIT' ? (
+            <>
+              <div>
+                <p className="text-xs uppercase text-muted-foreground">Pago inicial</p>
+                <p className="font-medium">{formatCurrency(Number(order.initialPaymentAmount))}</p>
+              </div>
+              <div>
+                <p className="text-xs uppercase text-muted-foreground">Saldo financiado</p>
+                <p className="font-medium">
+                  {formatCurrency(Number(order.total) - Number(order.initialPaymentAmount))}
+                </p>
+              </div>
+              {order.dueDate ? (
+                <div>
+                  <p className="text-xs uppercase text-muted-foreground">Vencimiento previsto</p>
+                  <p className="font-medium">{formatDate(order.dueDate)}</p>
+                </div>
+              ) : null}
+            </>
+          ) : null}
         </section>
 
         <table className="w-full text-sm">

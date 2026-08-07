@@ -1,7 +1,8 @@
 'use client';
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ChevronDown, ChevronUp, DoorClosed, DoorOpen } from 'lucide-react';
+import { ArrowUpRight, ChevronDown, ChevronUp, DoorClosed, DoorOpen } from 'lucide-react';
+import Link from 'next/link';
 import { Fragment, FormEvent, useEffect, useState } from 'react';
 import { toast } from 'sonner';
 import { Badge } from '@/components/ui/badge';
@@ -141,6 +142,8 @@ export function CashSessionsView() {
     return <SessionRequired session={session} />;
   }
 
+  const readOnly = session.role === 'ACCOUNTANT';
+
   async function invalidateCash() {
     await queryClient.invalidateQueries({ queryKey: ['cash-sessions'] });
     await queryClient.invalidateQueries({ queryKey: ['cash-session-current'] });
@@ -249,67 +252,71 @@ export function CashSessionsView() {
         </Card>
       ) : null}
 
-      <Card>
-        <CardHeader>
-          <CardTitle>Cerrar caja</CardTitle>
-          <CardDescription>
-            {openSessions.length
-              ? `${openSessions.length} sesion(es) abierta(s). Selecciona una para cierre.`
-              : 'No hay cajas abiertas en este momento.'}
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          {openSessions.length ? (
-            <form className="grid gap-4 md:grid-cols-[1fr_1fr_auto]" onSubmit={submitClose}>
-              <div className="space-y-2">
-                <Label htmlFor="openSession">Sesion abierta</Label>
-                <select
-                  id="openSession"
-                  value={selectedClosingSessionId}
-                  onChange={(event) => setSelectedClosingSessionId(event.target.value)}
-                  className="h-10 w-full rounded-md border border-input bg-card px-3 text-sm"
-                  required
-                >
-                  {openSessions.map((cashSession) => (
-                    <option key={cashSession.id} value={cashSession.id}>
-                      {cashSession.cashRegister.name} - {cashSession.openedBy?.name ?? 'Empleado'}
-                    </option>
-                  ))}
-                </select>
-                {selectedOpenSession ? (
-                  <p className="text-xs text-muted-foreground">
-                    Abierta el {formatDateTime(selectedOpenSession.openedAt)} con{' '}
-                    {formatCurrency(Number(selectedOpenSession.openingAmount))}.
-                  </p>
-                ) : null}
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="closingAmount">Monto contado para cierre</Label>
-                <Input
-                  id="closingAmount"
-                  type="text"
-                  inputMode="decimal"
-                  value={closingAmount}
-                  onChange={(event) => setClosingAmount(sanitizeCurrencyInput(event.target.value))}
-                  onBlur={(event) => setClosingAmount(formatCurrencyInput(event.target.value))}
-                  onFocus={(event) => event.currentTarget.select()}
-                  required
-                />
-              </div>
-              <div className="flex items-end">
-                <Button type="submit" variant="outline" disabled={closeMutation.isPending}>
-                  <DoorClosed className="h-4 w-4" />
-                  Cerrar caja
-                </Button>
-              </div>
-            </form>
-          ) : (
-            <p className="rounded-md bg-zinc-50 px-3 py-2 text-sm text-muted-foreground">
-              Abre una caja para comenzar a registrar ventas y movimientos.
-            </p>
-          )}
-        </CardContent>
-      </Card>
+      {!readOnly ? (
+        <Card>
+          <CardHeader>
+            <CardTitle>Cerrar caja</CardTitle>
+            <CardDescription>
+              {openSessions.length
+                ? `${openSessions.length} sesion(es) abierta(s). Selecciona una para cierre.`
+                : 'No hay cajas abiertas en este momento.'}
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            {openSessions.length ? (
+              <form className="grid gap-4 md:grid-cols-[1fr_1fr_auto]" onSubmit={submitClose}>
+                <div className="space-y-2">
+                  <Label htmlFor="openSession">Sesion abierta</Label>
+                  <select
+                    id="openSession"
+                    value={selectedClosingSessionId}
+                    onChange={(event) => setSelectedClosingSessionId(event.target.value)}
+                    className="h-10 w-full rounded-md border border-input bg-card px-3 text-sm"
+                    required
+                  >
+                    {openSessions.map((cashSession) => (
+                      <option key={cashSession.id} value={cashSession.id}>
+                        {cashSession.cashRegister.name} - {cashSession.openedBy?.name ?? 'Empleado'}
+                      </option>
+                    ))}
+                  </select>
+                  {selectedOpenSession ? (
+                    <p className="text-xs text-muted-foreground">
+                      Abierta el {formatDateTime(selectedOpenSession.openedAt)} con{' '}
+                      {formatCurrency(Number(selectedOpenSession.openingAmount))}.
+                    </p>
+                  ) : null}
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="closingAmount">Monto contado para cierre</Label>
+                  <Input
+                    id="closingAmount"
+                    type="text"
+                    inputMode="decimal"
+                    value={closingAmount}
+                    onChange={(event) =>
+                      setClosingAmount(sanitizeCurrencyInput(event.target.value))
+                    }
+                    onBlur={(event) => setClosingAmount(formatCurrencyInput(event.target.value))}
+                    onFocus={(event) => event.currentTarget.select()}
+                    required
+                  />
+                </div>
+                <div className="flex items-end">
+                  <Button type="submit" variant="outline" disabled={closeMutation.isPending}>
+                    <DoorClosed className="h-4 w-4" />
+                    Cerrar caja
+                  </Button>
+                </div>
+              </form>
+            ) : (
+              <p className="rounded-md bg-zinc-50 px-3 py-2 text-sm text-muted-foreground">
+                Abre una caja para comenzar a registrar ventas y movimientos.
+              </p>
+            )}
+          </CardContent>
+        </Card>
+      ) : null}
 
       <Card>
         <CardHeader>
@@ -458,36 +465,6 @@ function CashSessionReport({
           tone="sale"
         />
         <ReportMetric
-          label="Facturas desde tickets"
-          value={`${orderInvoices.length} / ${formatCurrency(sumInvoiceTotals(orderInvoices))}`}
-          tone="order"
-        />
-        <ReportMetric
-          label="Cotizaciones cobradas"
-          value={`${quotationInvoices.length} / ${formatCurrency(sumInvoiceTotals(quotationInvoices))}`}
-          tone="quote"
-        />
-        <ReportMetric
-          label="Ventas directas"
-          value={`${directInvoices.length} / ${formatCurrency(sumInvoiceTotals(directInvoices))}`}
-          tone="admin"
-        />
-        <ReportMetric
-          label="Pagos efectivo"
-          value={formatCurrency(paymentTotals.CASH)}
-          tone="cash"
-        />
-        <ReportMetric
-          label="Pagos tarjeta"
-          value={formatCurrency(paymentTotals.CARD)}
-          tone="card"
-        />
-        <ReportMetric
-          label="Pagos transferencia"
-          value={formatCurrency(paymentTotals.TRANSFER)}
-          tone="transfer"
-        />
-        <ReportMetric
           label="Entradas manuales"
           value={formatCurrency(summary.cashIn)}
           tone="cashIn"
@@ -496,11 +473,6 @@ function CashSessionReport({
           label="Salidas y devoluciones"
           value={formatCurrency(summary.cashOut + summary.refunds)}
           tone="cashOut"
-        />
-        <ReportMetric
-          label="Ordenes cobradas"
-          value={String(salesOrders.filter((order) => order.status === 'COMPLETED').length)}
-          tone="order"
         />
         <ReportMetric
           label="Ajustes"
@@ -526,93 +498,162 @@ function CashSessionReport({
         />
       </div>
 
-      <div className="overflow-x-auto rounded-md border border-border bg-white">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="border-b border-border bg-zinc-50 text-left">
-              <th className="px-3 py-2">Origen</th>
-              <th className="px-3 py-2">Factura</th>
-              <th className="px-3 py-2">Cliente</th>
-              <th className="px-3 py-2">Cajero</th>
-              <th className="px-3 py-2">Metodo</th>
-              <th className="px-3 py-2 text-right">Pagado</th>
-              <th className="px-3 py-2 text-right">Total</th>
-            </tr>
-          </thead>
-          <tbody>
-            {invoices.length ? (
-              invoices.map((invoice) => (
-                <tr key={invoice.id} className="border-b border-border last:border-b-0">
-                  <td className="px-3 py-2">
-                    {invoice.salesOrder
-                      ? `Ticket ${invoice.salesOrder.orderNumber}`
-                      : 'Venta directa admin'}
-                  </td>
-                  <td className="px-3 py-2 font-medium">{invoice.invoiceNumber}</td>
-                  <td className="px-3 py-2">{invoice.customer?.name ?? 'Consumidor final'}</td>
-                  <td className="px-3 py-2">{invoice.issuedBy?.name ?? 'Empleado'}</td>
-                  <td className="px-3 py-2">{translatePaymentMethod(invoice.paymentMethod)}</td>
-                  <td className="px-3 py-2 text-right">
-                    {formatCurrency(Number(invoice.paidAmount))}
-                  </td>
-                  <td className="px-3 py-2 text-right font-medium">
-                    {formatCurrency(Number(invoice.total))}
-                  </td>
-                </tr>
-              ))
-            ) : (
-              <tr>
-                <td colSpan={7} className="px-3 py-4 text-center text-muted-foreground">
-                  Esta sesion no tiene facturas emitidas.
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
+      <details className="rounded-md border border-border bg-white">
+        <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-4 py-3 text-sm font-medium marker:content-none">
+          <span>Desglose comercial</span>
+          <span className="text-xs font-normal text-muted-foreground">
+            {invoices.length} factura(s) · {salesOrders.length} orden(es)
+          </span>
+        </summary>
+        <div className="grid gap-3 border-t border-border p-4 sm:grid-cols-2 xl:grid-cols-4">
+          <ReportMetric
+            label="Facturas desde tickets"
+            value={`${orderInvoices.length} / ${formatCurrency(sumInvoiceTotals(orderInvoices))}`}
+            tone="order"
+          />
+          <ReportMetric
+            label="Cotizaciones cobradas"
+            value={`${quotationInvoices.length} / ${formatCurrency(sumInvoiceTotals(quotationInvoices))}`}
+            tone="quote"
+          />
+          <ReportMetric
+            label="Ventas directas"
+            value={`${directInvoices.length} / ${formatCurrency(sumInvoiceTotals(directInvoices))}`}
+            tone="admin"
+          />
+          <ReportMetric
+            label="Órdenes cobradas"
+            value={String(salesOrders.filter((order) => order.status === 'COMPLETED').length)}
+            tone="order"
+          />
+          <ReportMetric
+            label="Pagos en efectivo"
+            value={formatCurrency(paymentTotals.CASH)}
+            tone="cash"
+          />
+          <ReportMetric
+            label="Pagos con tarjeta"
+            value={formatCurrency(paymentTotals.CARD)}
+            tone="card"
+          />
+          <ReportMetric
+            label="Pagos por transferencia"
+            value={formatCurrency(paymentTotals.TRANSFER)}
+            tone="transfer"
+          />
+        </div>
+      </details>
+
+      <div className="flex flex-col gap-3 rounded-md border border-zinc-200 bg-zinc-50 px-4 py-3 text-sm sm:flex-row sm:items-center sm:justify-between">
+        <p className="text-muted-foreground">
+          El arqueo y los movimientos de efectivo permanecen aquí. Las acciones comerciales se
+          consultan en Logs operativos.
+        </p>
+        <Button type="button" variant="outline" size="sm" className="shrink-0" asChild>
+          <Link href="/operations/logs">
+            Ver logs operativos
+            <ArrowUpRight className="h-4 w-4" />
+          </Link>
+        </Button>
       </div>
 
-      <div className="overflow-x-auto rounded-md border border-border bg-white">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="border-b border-border bg-zinc-50 text-left">
-              <th className="px-3 py-2">Orden</th>
-              <th className="px-3 py-2">Cliente</th>
-              <th className="px-3 py-2">Estado</th>
-              <th className="px-3 py-2">Ordenanza</th>
-              <th className="px-3 py-2">Factura</th>
-              <th className="px-3 py-2 text-right">Total</th>
-            </tr>
-          </thead>
-          <tbody>
-            {salesOrders.length ? (
-              salesOrders.map((order) => (
-                <tr key={order.id} className="border-b border-border last:border-b-0">
-                  <td className="px-3 py-2 font-medium">{order.orderNumber}</td>
-                  <td className="px-3 py-2">{order.customer?.name ?? 'Consumidor final'}</td>
-                  <td className="px-3 py-2">
-                    <Badge variant={getStatusVariant(order.status)}>
-                      {translateStatus(order.status)}
-                    </Badge>
-                  </td>
-                  <td className="px-3 py-2">{order.createdBy.name}</td>
-                  <td className="px-3 py-2">{order.invoice?.invoiceNumber ?? '-'}</td>
-                  <td className="px-3 py-2 text-right font-medium">
-                    {formatCurrency(Number(order.total))}
-                  </td>
+      <details className="rounded-md border border-border bg-white">
+        <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-4 py-3 text-sm font-medium marker:content-none">
+          <span>Detalle comercial de esta sesión</span>
+          <span className="text-xs font-normal text-muted-foreground">
+            {invoices.length} factura(s) · {salesOrders.length} orden(es)
+          </span>
+        </summary>
+        <div className="space-y-4 border-t border-border p-4">
+          <div className="surface-scrollbar max-h-80 overflow-auto rounded-md border border-border bg-white">
+            <table className="w-full min-w-[48rem] text-sm">
+              <thead className="sticky top-0 z-10 bg-zinc-50">
+                <tr className="border-b border-border text-left">
+                  <th className="px-3 py-2">Origen</th>
+                  <th className="px-3 py-2">Factura</th>
+                  <th className="px-3 py-2">Cliente</th>
+                  <th className="px-3 py-2">Cajero</th>
+                  <th className="px-3 py-2">Método</th>
+                  <th className="px-3 py-2 text-right">Pagado</th>
+                  <th className="px-3 py-2 text-right">Total</th>
                 </tr>
-              ))
-            ) : (
-              <tr>
-                <td colSpan={6} className="px-3 py-4 text-center text-muted-foreground">
-                  Esta sesion no tiene ordenes tomadas en caja.
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-      </div>
+              </thead>
+              <tbody>
+                {invoices.length ? (
+                  invoices.map((invoice) => (
+                    <tr key={invoice.id} className="border-b border-border last:border-b-0">
+                      <td className="px-3 py-2">
+                        {invoice.salesOrder
+                          ? `Ticket ${invoice.salesOrder.orderNumber}`
+                          : 'Venta directa admin'}
+                      </td>
+                      <td className="px-3 py-2 font-medium">{invoice.invoiceNumber}</td>
+                      <td className="px-3 py-2">{invoice.customer?.name ?? 'Consumidor final'}</td>
+                      <td className="px-3 py-2">{invoice.issuedBy?.name ?? 'Empleado'}</td>
+                      <td className="px-3 py-2">{translatePaymentMethod(invoice.paymentMethod)}</td>
+                      <td className="px-3 py-2 text-right">
+                        {formatCurrency(Number(invoice.paidAmount))}
+                      </td>
+                      <td className="px-3 py-2 text-right font-medium">
+                        {formatCurrency(Number(invoice.total))}
+                      </td>
+                    </tr>
+                  ))
+                ) : (
+                  <tr>
+                    <td colSpan={7} className="px-3 py-4 text-center text-muted-foreground">
+                      Esta sesión no tiene facturas emitidas.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
 
-      <div className="overflow-x-auto rounded-md border border-border bg-white">
+          <div className="surface-scrollbar max-h-80 overflow-auto rounded-md border border-border bg-white">
+            <table className="w-full min-w-[44rem] text-sm">
+              <thead className="sticky top-0 z-10 bg-zinc-50">
+                <tr className="border-b border-border text-left">
+                  <th className="px-3 py-2">Orden</th>
+                  <th className="px-3 py-2">Cliente</th>
+                  <th className="px-3 py-2">Estado</th>
+                  <th className="px-3 py-2">Ordenanza</th>
+                  <th className="px-3 py-2">Factura</th>
+                  <th className="px-3 py-2 text-right">Total</th>
+                </tr>
+              </thead>
+              <tbody>
+                {salesOrders.length ? (
+                  salesOrders.map((order) => (
+                    <tr key={order.id} className="border-b border-border last:border-b-0">
+                      <td className="px-3 py-2 font-medium">{order.orderNumber}</td>
+                      <td className="px-3 py-2">{order.customer?.name ?? 'Consumidor final'}</td>
+                      <td className="px-3 py-2">
+                        <Badge variant={getStatusVariant(order.status)}>
+                          {translateStatus(order.status)}
+                        </Badge>
+                      </td>
+                      <td className="px-3 py-2">{order.createdBy.name}</td>
+                      <td className="px-3 py-2">{order.invoice?.invoiceNumber ?? '-'}</td>
+                      <td className="px-3 py-2 text-right font-medium">
+                        {formatCurrency(Number(order.total))}
+                      </td>
+                    </tr>
+                  ))
+                ) : (
+                  <tr>
+                    <td colSpan={6} className="px-3 py-4 text-center text-muted-foreground">
+                      Esta sesión no tiene órdenes tomadas en caja.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </details>
+
+      <div className="surface-scrollbar max-h-96 overflow-auto rounded-md border border-border bg-white">
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b border-border bg-zinc-50 text-left">
