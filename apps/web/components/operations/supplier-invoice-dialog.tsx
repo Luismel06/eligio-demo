@@ -65,7 +65,7 @@ export function SupplierInvoiceDialog({
 
   return (
     <div
-      className={`fixed inset-0 ${layer === 'overlay' ? 'z-[110]' : 'z-[90]'} flex items-center justify-center bg-primary/65 p-3 backdrop-blur-sm sm:p-5`}
+      className={`fixed inset-0 ${layer === 'overlay' ? 'z-[110]' : 'z-[90]'} flex items-center justify-center bg-primary/70 p-3 sm:p-5`}
       onMouseDown={(event) => {
         if (event.target === event.currentTarget) onClose();
       }}

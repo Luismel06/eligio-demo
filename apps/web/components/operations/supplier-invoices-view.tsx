@@ -11,7 +11,7 @@ import {
   Search,
   Trash2,
 } from 'lucide-react';
-import { useEffect, useMemo, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -80,6 +80,8 @@ const blankItem = (): EditableInvoiceItem => ({
   taxPercent: '18',
   discountTotal: '0',
 });
+
+const emptyProductSearchTerms: string[] = [];
 
 type SupplierInvoiceActionDialog =
   | { action: 'cancel-invoice'; invoice: SupplierInvoice }
@@ -199,8 +201,31 @@ export function SupplierInvoicesView() {
       (!order.supplierInvoice || order.supplierInvoice.id === editingId) &&
       (!supplierId || order.supplierId === supplierId),
   );
-  const productOptions = (productsQuery.data ?? []).filter(
-    (product) => product.status === 'ACTIVE',
+  const productOptions = useMemo(
+    () => (productsQuery.data ?? []).filter((product) => product.status === 'ACTIVE'),
+    [productsQuery.data],
+  );
+  const productById = useMemo(
+    () => new Map(productOptions.map((product) => [product.id, product])),
+    [productOptions],
+  );
+  const supplierProductSearchTerms = useMemo(() => {
+    const termsByProductId = new Map<string, string[]>();
+
+    for (const supplierProduct of selectedSupplierQuery.data?.products ?? []) {
+      const supplierSku = supplierProduct.supplierSku?.trim();
+      if (!supplierProduct.active || !supplierSku) continue;
+
+      const productTerms = termsByProductId.get(supplierProduct.productId) ?? [];
+      productTerms.push(supplierSku);
+      termsByProductId.set(supplierProduct.productId, productTerms);
+    }
+
+    return termsByProductId;
+  }, [selectedSupplierQuery.data?.products]);
+  const getSupplierProductSearchText = useCallback(
+    (product: Product) => supplierProductSearchTerms.get(product.id) ?? emptyProductSearchTerms,
+    [supplierProductSearchTerms],
   );
   const activeSuppliers = useMemo(
     () => (suppliersQuery.data ?? []).filter((supplier) => supplier.status === 'ACTIVE'),
@@ -676,7 +701,7 @@ export function SupplierInvoicesView() {
         if (item.key !== key) return item;
         const next = { ...item, ...patch };
         if (patch.productId) {
-          const product = productOptions.find((candidate) => candidate.id === patch.productId);
+          const product = productById.get(patch.productId);
           next.unitCostNet = String(Number(product?.cost ?? item.unitCostNet ?? 0));
           next.taxPercent = String(Number(product?.taxRate ?? 0.18) * 100);
         }
@@ -1170,15 +1195,7 @@ export function SupplierInvoicesView() {
                           disabledProductIds={items
                             .filter((other) => other.key !== item.key && Boolean(other.productId))
                             .map((other) => other.productId)}
-                          getSearchText={(product) =>
-                            (selectedSupplierQuery.data?.products ?? [])
-                              .filter(
-                                (supplierProduct) =>
-                                  supplierProduct.active &&
-                                  supplierProduct.productId === product.id,
-                              )
-                              .map((supplierProduct) => supplierProduct.supplierSku ?? '')
-                          }
+                          getSearchText={getSupplierProductSearchText}
                           onValueChange={(productId) => updateItem(item.key, { productId })}
                         />
                         {!purchaseOrderId && !item.productId ? (
