@@ -47,13 +47,11 @@ import {
   type SupplierPayment,
 } from '@/lib/api';
 import { isAdminSession } from '@/lib/authorization';
-import type {
-  SupplierInvoiceOcrItem,
-  SupplierInvoiceOcrResult,
-} from '@/lib/supplier-invoice-ocr';
+import type { SupplierInvoiceOcrItem, SupplierInvoiceOcrResult } from '@/lib/supplier-invoice-ocr';
 import { formatCurrency, formatDate, formatDateTime } from '@/lib/utils';
 import { CancelReasonModal } from './cancel-reason-modal';
 import { ModuleHeader } from './module-header';
+import { ProductCombobox } from './product-combobox';
 import { FormField, ProcurementStatusBadge, QueryState, selectClassName } from './procurement-ui';
 import { SessionRequired, useCurrentSession } from './session-required';
 import { SupplierInvoiceEntryPanel } from './supplier-invoice-entry-panel';
@@ -213,11 +211,7 @@ export function SupplierInvoicesView() {
     () =>
       (ocrResult?.items ?? []).map((item) => ({
         item,
-        product: findProductForOcrItem(
-          item,
-          productOptions,
-          selectedSupplierQuery.data?.products,
-        ),
+        product: findProductForOcrItem(item, productOptions, selectedSupplierQuery.data?.products),
       })),
     [ocrResult, productOptions, selectedSupplierQuery.data?.products],
   );
@@ -227,8 +221,7 @@ export function SupplierInvoicesView() {
   );
   const ocrTotalDifference =
     ocrResult?.total === undefined ? null : roundCurrency(totals.total - ocrResult.total);
-  const hasOcrTotalMismatch =
-    ocrTotalDifference !== null && Math.abs(ocrTotalDifference) > 0.02;
+  const hasOcrTotalMismatch = ocrTotalDifference !== null && Math.abs(ocrTotalDifference) > 0.02;
   const orderReconciliation = useMemo(() => {
     const purchaseOrder = purchaseOrderId
       ? ordersQuery.data?.find((order) => order.id === purchaseOrderId)
@@ -288,7 +281,13 @@ export function SupplierInvoicesView() {
         : createSupplierInvoice(session.tenantId, session.accessToken, payload);
     },
     onSuccess: async (invoice) => {
+      const learnedMappings = await learnConfirmedOcrMappings();
       await invalidateInvoices(queryClient);
+      if (learnedMappings > 0 && session && supplierId) {
+        await queryClient.invalidateQueries({
+          queryKey: ['supplier', session.tenantId, supplierId],
+        });
+      }
       resetDetailInputs();
       setSelectedId(invoice.id);
       setDetailStage('review');
@@ -298,6 +297,11 @@ export function SupplierInvoicesView() {
       toast.success(
         `Factura ${invoice.invoiceNumber} guardada. Completa la confirmación de factura y entrada.`,
       );
+      if (learnedMappings > 0) {
+        toast.success(
+          `${learnedMappings} ${learnedMappings === 1 ? 'producto fue vinculado' : 'productos fueron vinculados'} al suplidor para mejorar próximas lecturas OCR.`,
+        );
+      }
     },
     onError: showError,
   });
@@ -496,7 +500,9 @@ export function SupplierInvoicesView() {
 
   function applyOcrProductSuggestions() {
     if (purchaseOrderId) {
-      toast.error('La orden de compra ya define sus productos. Revisa sus diferencias manualmente.');
+      toast.error(
+        'La orden de compra ya define sus productos. Revisa sus diferencias manualmente.',
+      );
       return;
     }
     const suggestedItems = ocrProductMatches.map(({ item, product }) => ({
@@ -505,14 +511,14 @@ export function SupplierInvoicesView() {
       ocrItem: item,
       quantity: item.quantity === undefined ? '1' : String(item.quantity),
       unitCostNet: item.unitCostNet === undefined ? '' : String(item.unitCostNet),
-      taxPercent: String(
-        roundCurrency((item.taxRate ?? Number(product?.taxRate ?? 0.18)) * 100),
-      ),
+      taxPercent: String(roundCurrency((item.taxRate ?? Number(product?.taxRate ?? 0.18)) * 100)),
       discountTotal: String(item.discountTotal ?? 0),
     }));
 
     if (!suggestedItems.length) {
-      toast.error('No se detectaron líneas utilizables. Agrega los productos manualmente antes de guardar.');
+      toast.error(
+        'No se detectaron líneas utilizables. Agrega los productos manualmente antes de guardar.',
+      );
       return;
     }
 
@@ -696,6 +702,61 @@ export function SupplierInvoicesView() {
     }
   }
 
+  /**
+   * Una factura guardada es la confirmación explícita de la persona que la
+   * revisó. Solo entonces convertimos un código OCR en una relación
+   * producto-suplidor; así el siguiente OCR reconoce el producto sin guardar
+   * la foto ni aprender sugerencias que todavía no fueron aceptadas.
+   */
+  async function learnConfirmedOcrMappings() {
+    if (!session || !supplierId || !ocrResult) return 0;
+
+    const alreadyLinked = new Set(
+      (selectedSupplierQuery.data?.products ?? [])
+        .filter((supplierProduct) => supplierProduct.active)
+        .map((supplierProduct) => supplierProduct.productId),
+    );
+    const candidates = new Map<string, EditableInvoiceItem>();
+
+    for (const item of items) {
+      const supplierSku = item.ocrItem?.code?.trim();
+      if (
+        !item.productId ||
+        !supplierSku ||
+        alreadyLinked.has(item.productId) ||
+        candidates.has(item.productId)
+      ) {
+        continue;
+      }
+      candidates.set(item.productId, item);
+    }
+
+    let learned = 0;
+    for (const item of candidates.values()) {
+      const costNet = Number(item.unitCostNet);
+      const taxRate = Number(item.taxPercent || 0) / 100;
+      try {
+        await addSupplierProduct(session.tenantId, session.accessToken, supplierId, {
+          productId: item.productId,
+          supplierSku: item.ocrItem?.code?.trim() || undefined,
+          lastCostNet: Number.isFinite(costNet) && costNet >= 0 ? costNet : undefined,
+          lastCostWithTax:
+            Number.isFinite(costNet) && costNet >= 0
+              ? roundCurrency(costNet * (1 + Math.max(taxRate, 0)))
+              : undefined,
+        });
+        alreadyLinked.add(item.productId);
+        learned += 1;
+      } catch {
+        // La factura ya fue registrada correctamente. Un vínculo que choque
+        // con una relación existente se omite para no modificarla ni crear
+        // duplicados; podrá revisarse desde Suplidores.
+      }
+    }
+
+    return learned;
+  }
+
   return (
     <div className="space-y-6">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
@@ -756,10 +817,10 @@ export function SupplierInvoicesView() {
                     <OcrDetected label="Total detectado" value={formatCurrency(ocrResult.total)} />
                   ) : null}
                 </div>
-                {(ocrResult.supplierName ||
-                  ocrResult.paymentDueDate ||
-                  ocrResult.ncfValidUntil ||
-                  ocrResult.paymentCondition) ? (
+                {ocrResult.supplierName ||
+                ocrResult.paymentDueDate ||
+                ocrResult.ncfValidUntil ||
+                ocrResult.paymentCondition ? (
                   <div className="mt-3 grid gap-3 text-sm sm:grid-cols-2 xl:grid-cols-4">
                     {ocrResult.supplierName ? (
                       <OcrDetected
@@ -794,12 +855,17 @@ export function SupplierInvoicesView() {
                     <div>
                       <p className="font-medium">El suplidor detectado aún no está registrado</p>
                       <p className="mt-1 text-muted-foreground">
-                        Revísalo y regístralo sin salir de esta factura. Antes validaremos el RNC o la
-                        cédula para no duplicarlo.
+                        Revísalo y regístralo sin salir de esta factura. Antes validaremos el RNC o
+                        la cédula para no duplicarlo.
                       </p>
                     </div>
                     {admin ? (
-                      <Button type="button" variant="outline" size="sm" onClick={() => setQuickSupplierOpen(true)}>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setQuickSupplierOpen(true)}
+                      >
                         <Plus className="h-4 w-4" />
                         Registrar suplidor
                       </Button>
@@ -822,7 +888,8 @@ export function SupplierInvoicesView() {
                       <div>
                         <p className="font-medium">Productos sugeridos por OCR</p>
                         <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                          Las coincidencias se seleccionan; los que no existan quedan listos para elegir o registrar, sin crear duplicados automáticamente.
+                          Las coincidencias se seleccionan; los que no existan quedan listos para
+                          elegir o registrar, sin crear duplicados automáticamente.
                         </p>
                       </div>
                       {!purchaseOrderId ? (
@@ -843,7 +910,9 @@ export function SupplierInvoicesView() {
                           className="grid gap-2 rounded-md border bg-muted/15 p-2.5 text-sm md:grid-cols-[minmax(0,1fr)_auto_auto] md:items-center"
                         >
                           <div className="min-w-0">
-                            <p className="truncate font-medium">{item.description ?? 'Descripción por confirmar'}</p>
+                            <p className="truncate font-medium">
+                              {item.description ?? 'Descripción por confirmar'}
+                            </p>
                             <p className="truncate text-xs text-muted-foreground">
                               {product
                                 ? `Coincide con: ${product.name}${product.sku ? ` · ${product.sku}` : ''}`
@@ -852,7 +921,9 @@ export function SupplierInvoicesView() {
                           </div>
                           <p className="text-xs text-muted-foreground">
                             {item.quantity ?? '—'} ×{' '}
-                            {item.unitCostNet === undefined ? '—' : formatCurrency(item.unitCostNet)}
+                            {item.unitCostNet === undefined
+                              ? '—'
+                              : formatCurrency(item.unitCostNet)}
                           </p>
                           <span
                             className={
@@ -883,9 +954,12 @@ export function SupplierInvoicesView() {
                 <p className="font-medium">Fechas importantes de la factura</p>
                 <p className="mt-1 leading-6 text-muted-foreground">
                   <strong className="font-medium text-foreground">Fecha límite de pago</strong>{' '}
-                  corresponde a <em>Vence</em> o <em>Vencimiento</em> y controla la cuenta por pagar.
+                  corresponde a <em>Vence</em> o <em>Vencimiento</em> y controla la cuenta por
+                  pagar.
                   <span className="mx-1.5 text-border">|</span>
-                  <strong className="font-medium text-foreground">Vigencia fiscal del NCF/e-NCF</strong>{' '}
+                  <strong className="font-medium text-foreground">
+                    Vigencia fiscal del NCF/e-NCF
+                  </strong>{' '}
                   corresponde únicamente a <em>Válido hasta</em> o <em>NCF vencimiento</em>.
                 </p>
               </div>
@@ -897,85 +971,88 @@ export function SupplierInvoicesView() {
                   </p>
                 </div>
                 <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-                <FormField label="Suplidor">
-                  <div className="space-y-2">
+                  <FormField label="Suplidor">
+                    <div className="space-y-2">
+                      <select
+                        required
+                        className={selectClassName}
+                        value={supplierId}
+                        onChange={(event) => {
+                          setSupplierId(event.target.value);
+                          setPurchaseOrderId('');
+                          if (!editingId) {
+                            setItems([blankItem()]);
+                          }
+                        }}
+                      >
+                        <option value="">Selecciona...</option>
+                        {activeSuppliers.map((supplier) => (
+                          <option key={supplier.id} value={supplier.id}>
+                            {supplier.commercialName}
+                          </option>
+                        ))}
+                      </select>
+                      {!purchaseOrderId && admin ? (
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          className="h-auto px-0 text-primary hover:bg-transparent hover:text-primary/80"
+                          onClick={() => setQuickSupplierOpen(true)}
+                        >
+                          <Plus className="h-4 w-4" />
+                          Registrar suplidor sin salir
+                        </Button>
+                      ) : null}
+                      {!purchaseOrderId && !admin ? (
+                        <p className="text-xs text-muted-foreground">
+                          Un administrador puede registrar un suplidor nuevo desde esta misma
+                          factura.
+                        </p>
+                      ) : null}
+                    </div>
+                  </FormField>
+                  <FormField
+                    label="Orden de compra"
+                    hint="Opcional. Solo se muestran órdenes emitidas sin factura."
+                  >
                     <select
-                      required
                       className={selectClassName}
-                      value={supplierId}
-                      onChange={(event) => {
-                        setSupplierId(event.target.value);
-                        setPurchaseOrderId('');
-                        if (!editingId) setItems([blankItem()]);
-                      }}
+                      value={purchaseOrderId}
+                      onChange={(event) => selectOrder(event.target.value)}
                     >
-                      <option value="">Selecciona...</option>
-                      {activeSuppliers.map((supplier) => (
-                        <option key={supplier.id} value={supplier.id}>
-                          {supplier.commercialName}
+                      <option value="">Sin orden previa</option>
+                      {eligibleOrders.map((order) => (
+                        <option key={order.id} value={order.id}>
+                          {order.orderNumber} · {formatCurrency(Number(order.total))}
                         </option>
                       ))}
                     </select>
-                    {!purchaseOrderId && admin ? (
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="sm"
-                        className="h-auto px-0 text-primary hover:bg-transparent hover:text-primary/80"
-                        onClick={() => setQuickSupplierOpen(true)}
-                      >
-                        <Plus className="h-4 w-4" />
-                        Registrar suplidor sin salir
-                      </Button>
-                    ) : null}
-                    {!purchaseOrderId && !admin ? (
-                      <p className="text-xs text-muted-foreground">
-                        Un administrador puede registrar un suplidor nuevo desde esta misma factura.
-                      </p>
-                    ) : null}
-                  </div>
-                </FormField>
-                <FormField
-                  label="Orden de compra"
-                  hint="Opcional. Solo se muestran órdenes emitidas sin factura."
-                >
-                  <select
-                    className={selectClassName}
-                    value={purchaseOrderId}
-                    onChange={(event) => selectOrder(event.target.value)}
-                  >
-                    <option value="">Sin orden previa</option>
-                    {eligibleOrders.map((order) => (
-                      <option key={order.id} value={order.id}>
-                        {order.orderNumber} · {formatCurrency(Number(order.total))}
-                      </option>
-                    ))}
-                  </select>
-                </FormField>
-                <FormField label="Factura / documento #">
-                  <Input
-                    required
-                    maxLength={100}
-                    value={invoiceNumber}
-                    onChange={(event) => setInvoiceNumber(event.target.value)}
-                  />
-                </FormField>
-                <FormField label="NCF / e-NCF">
-                  <Input
-                    maxLength={50}
-                    value={ncf}
-                    onChange={(event) => setNcf(event.target.value.toUpperCase())}
-                    placeholder="B01... o E31..."
-                  />
-                </FormField>
-                <FormField label="Fecha de emisión">
-                  <Input
-                    required
-                    type="date"
-                    value={issueDate}
-                    onChange={(event) => setIssueDate(event.target.value)}
-                  />
-                </FormField>
+                  </FormField>
+                  <FormField label="Factura / documento #">
+                    <Input
+                      required
+                      maxLength={100}
+                      value={invoiceNumber}
+                      onChange={(event) => setInvoiceNumber(event.target.value)}
+                    />
+                  </FormField>
+                  <FormField label="NCF / e-NCF">
+                    <Input
+                      maxLength={50}
+                      value={ncf}
+                      onChange={(event) => setNcf(event.target.value.toUpperCase())}
+                      placeholder="B01... o E31..."
+                    />
+                  </FormField>
+                  <FormField label="Fecha de emisión">
+                    <Input
+                      required
+                      type="date"
+                      value={issueDate}
+                      onChange={(event) => setIssueDate(event.target.value)}
+                    />
+                  </FormField>
                 </div>
 
                 <div className="border-t border-border/70 pt-4">
@@ -985,50 +1062,50 @@ export function SupplierInvoicesView() {
                   </p>
                 </div>
                 <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-                <FormField
-                  label="Fecha límite de pago"
-                  hint="Obligatoria. Copia “Vence” o “Vencimiento”; controla cuentas por pagar."
-                >
-                  <Input
-                    required
-                    type="date"
-                    min={issueDate}
-                    value={dueDate}
-                    onChange={(event) => setDueDate(event.target.value)}
-                  />
-                </FormField>
-                <FormField
-                  label="Condición de pago"
-                  hint="Por ejemplo: contado, crédito 30 días o pago por adelantado."
-                >
-                  <Input
-                    maxLength={120}
-                    value={paymentCondition}
-                    onChange={(event) => setPaymentCondition(event.target.value)}
-                    placeholder="Ej.: Crédito 30 días"
-                  />
-                </FormField>
-                <FormField
-                  label="Vigencia fiscal del NCF / e-NCF"
-                  hint="Opcional. Copia solo “Válido hasta” o “NCF vencimiento”; no afecta el pago."
-                >
-                  <Input
-                    type="date"
-                    min={issueDate}
-                    value={ncfValidUntil}
-                    onChange={(event) => setNcfValidUntil(event.target.value)}
-                  />
-                </FormField>
-                <FormField label="Moneda">
-                  <Input value="DOP / RD$" disabled />
-                </FormField>
-                <FormField label="Notas">
-                  <Input
-                    value={notes}
-                    onChange={(event) => setNotes(event.target.value)}
-                    maxLength={2000}
-                  />
-                </FormField>
+                  <FormField
+                    label="Fecha límite de pago"
+                    hint="Obligatoria. Copia “Vence” o “Vencimiento”; controla cuentas por pagar."
+                  >
+                    <Input
+                      required
+                      type="date"
+                      min={issueDate}
+                      value={dueDate}
+                      onChange={(event) => setDueDate(event.target.value)}
+                    />
+                  </FormField>
+                  <FormField
+                    label="Condición de pago"
+                    hint="Por ejemplo: contado, crédito 30 días o pago por adelantado."
+                  >
+                    <Input
+                      maxLength={120}
+                      value={paymentCondition}
+                      onChange={(event) => setPaymentCondition(event.target.value)}
+                      placeholder="Ej.: Crédito 30 días"
+                    />
+                  </FormField>
+                  <FormField
+                    label="Vigencia fiscal del NCF / e-NCF"
+                    hint="Opcional. Copia solo “Válido hasta” o “NCF vencimiento”; no afecta el pago."
+                  >
+                    <Input
+                      type="date"
+                      min={issueDate}
+                      value={ncfValidUntil}
+                      onChange={(event) => setNcfValidUntil(event.target.value)}
+                    />
+                  </FormField>
+                  <FormField label="Moneda">
+                    <Input value="DOP / RD$" disabled />
+                  </FormField>
+                  <FormField label="Notas">
+                    <Input
+                      value={notes}
+                      onChange={(event) => setNotes(event.target.value)}
+                      maxLength={2000}
+                    />
+                  </FormField>
                 </div>
               </section>
 
@@ -1059,28 +1136,26 @@ export function SupplierInvoicesView() {
                   >
                     <FormField label={`Producto ${index + 1}`} className="md:col-span-4">
                       <div className="space-y-2">
-                        <select
+                        <ProductCombobox
+                          products={productOptions}
+                          value={item.productId}
                           required
                           disabled={Boolean(purchaseOrderId)}
-                          className={selectClassName}
-                          value={item.productId}
-                          onChange={(event) =>
-                            updateItem(item.key, { productId: event.target.value })
+                          ariaLabel={`Buscar producto ${index + 1}`}
+                          disabledProductIds={items
+                            .filter((other) => other.key !== item.key && Boolean(other.productId))
+                            .map((other) => other.productId)}
+                          getSearchText={(product) =>
+                            (selectedSupplierQuery.data?.products ?? [])
+                              .filter(
+                                (supplierProduct) =>
+                                  supplierProduct.active &&
+                                  supplierProduct.productId === product.id,
+                              )
+                              .map((supplierProduct) => supplierProduct.supplierSku ?? '')
                           }
-                        >
-                          <option value="">Selecciona...</option>
-                          {productOptions.map((product) => (
-                            <option
-                              key={product.id}
-                              value={product.id}
-                              disabled={items.some(
-                                (other) => other.key !== item.key && other.productId === product.id,
-                              )}
-                            >
-                              {product.name} {product.sku ? `· ${product.sku}` : ''}
-                            </option>
-                          ))}
-                        </select>
+                          onValueChange={(productId) => updateItem(item.key, { productId })}
+                        />
                         {!purchaseOrderId && !item.productId ? (
                           <div className="space-y-1">
                             {admin ? (
@@ -1103,7 +1178,8 @@ export function SupplierInvoicesView() {
                             ) : null}
                             {!admin ? (
                               <p className="text-xs text-muted-foreground">
-                                Un administrador debe registrar los productos faltantes para proteger el catálogo.
+                                Un administrador debe registrar los productos faltantes para
+                                proteger el catálogo.
                               </p>
                             ) : null}
                             {item.ocrItem?.description ? (
@@ -1187,7 +1263,8 @@ export function SupplierInvoicesView() {
                     <p className="mt-1 text-muted-foreground">
                       OCR: {formatCurrency(ocrResult.total)} · factura actual:{' '}
                       {formatCurrency(totals.total)} · diferencia:{' '}
-                      {formatCurrency(Math.abs(ocrTotalDifference ?? 0))}. Corrige los datos o confirma explícitamente la diferencia al guardar.
+                      {formatCurrency(Math.abs(ocrTotalDifference ?? 0))}. Corrige los datos o
+                      confirma explícitamente la diferencia al guardar.
                     </p>
                   </div>
                 </div>
@@ -1763,7 +1840,9 @@ export function SupplierInvoicesView() {
             }}
             onExistingSupplier={(supplier) => {
               if (supplier.status !== 'ACTIVE') {
-                toast.error('Este suplidor existe, pero está inactivo. Reactívalo desde Suplidores antes de usarlo.');
+                toast.error(
+                  'Este suplidor existe, pero está inactivo. Reactívalo desde Suplidores antes de usarlo.',
+                );
                 return;
               }
               setSupplierId(supplier.id);
@@ -1942,7 +2021,9 @@ function OcrDetected({
   return (
     <div className="rounded-md border bg-card/70 p-3">
       <div className="flex items-center justify-between gap-2">
-        <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{label}</p>
+        <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+          {label}
+        </p>
         {confidence ? (
           <span
             className={

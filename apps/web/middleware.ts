@@ -94,7 +94,9 @@ function buildContentSecurityPolicy(nonce: string) {
 
   return [
     "default-src 'self'",
-    `script-src 'self' ${ocrAssetOrigin} 'nonce-${nonce}' 'strict-dynamic'${isProduction ? '' : " 'unsafe-eval'"}`,
+    // OpenCV.js y Tesseract ejecutan WebAssembly localmente. `wasm-unsafe-eval`
+    // permite compilar WASM sin habilitar el inseguro `unsafe-eval` en producción.
+    `script-src 'self' ${ocrAssetOrigin} 'nonce-${nonce}' 'strict-dynamic' 'wasm-unsafe-eval'${isProduction ? '' : " 'unsafe-eval'"}`,
     "style-src 'self' 'unsafe-inline'",
     "img-src 'self' data: blob: https:",
     "font-src 'self' data:",

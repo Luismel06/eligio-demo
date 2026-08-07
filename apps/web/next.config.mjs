@@ -19,6 +19,17 @@ const nextConfig = {
       config.output = config.output || {};
       // Ensure server chunks are emitted under the `chunks/` folder
       config.output.chunkFilename = 'chunks/[id].js';
+    } else {
+      // OpenCV.js contains guarded Node branches for its standalone runtime.
+      // OCR is imported dynamically only in the browser, so those built-ins
+      // must resolve to empty client fallbacks instead of pulling polyfills.
+      config.resolve = config.resolve || {};
+      config.resolve.fallback = {
+        ...config.resolve.fallback,
+        crypto: false,
+        fs: false,
+        path: false,
+      };
     }
     return config;
   },

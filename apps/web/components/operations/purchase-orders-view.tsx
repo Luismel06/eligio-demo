@@ -24,7 +24,6 @@ import {
   getSuppliers,
   transitionPurchaseOrder,
   updatePurchaseOrder,
-  type Product,
   type PurchaseOrder,
   type PurchaseOrderPayload,
   type PurchaseOrderStatus,
@@ -33,6 +32,7 @@ import { isAdminSession } from '@/lib/authorization';
 import { formatCurrency, formatDate, formatDateTime } from '@/lib/utils';
 import { CancelReasonModal } from './cancel-reason-modal';
 import { ModuleHeader } from './module-header';
+import { ProductCombobox } from './product-combobox';
 import {
   FormField,
   ProcurementStatusBadge,
@@ -300,7 +300,9 @@ export function PurchaseOrdersView() {
                     value={supplierId}
                     onChange={(event) => {
                       setSupplierId(event.target.value);
-                      if (!editingId) setItems([blankItem()]);
+                      if (!editingId) {
+                        setItems([blankItem()]);
+                      }
                     }}
                   >
                     <option value="">Selecciona un suplidor...</option>
@@ -355,27 +357,16 @@ export function PurchaseOrdersView() {
                     className="grid gap-3 rounded-md border bg-muted/10 p-3 md:grid-cols-12"
                   >
                     <FormField label={`Producto ${index + 1}`} className="md:col-span-4">
-                      <select
-                        required
-                        className={selectClassName}
+                      <ProductCombobox
+                        products={productOptions}
                         value={item.productId}
-                        onChange={(event) =>
-                          updateItem(item.key, { productId: event.target.value })
-                        }
-                      >
-                        <option value="">Selecciona...</option>
-                        {productOptions.map((product) => (
-                          <option
-                            key={product.id}
-                            value={product.id}
-                            disabled={items.some(
-                              (other) => other.key !== item.key && other.productId === product.id,
-                            )}
-                          >
-                            {product.name} {product.sku ? `· ${product.sku}` : ''}
-                          </option>
-                        ))}
-                      </select>
+                        required
+                        ariaLabel={`Buscar producto para la línea ${index + 1}`}
+                        disabledProductIds={items
+                          .filter((other) => other.key !== item.key && Boolean(other.productId))
+                          .map((other) => other.productId)}
+                        onValueChange={(productId) => updateItem(item.key, { productId })}
+                      />
                     </FormField>
                     <FormField label="Cantidad" className="md:col-span-2">
                       <Input

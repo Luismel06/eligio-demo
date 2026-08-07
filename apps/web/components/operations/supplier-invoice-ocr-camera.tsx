@@ -1,16 +1,14 @@
 'use client';
 
-import {
-  Camera,
-  ImagePlus,
-  LoaderCircle,
-  RefreshCw,
-  ScanText,
-  Trash2,
-} from 'lucide-react';
+import { Camera, ImagePlus, LoaderCircle, RefreshCw, ScanText, Trash2 } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
-import { preprocessSupplierInvoiceImage } from '@/lib/supplier-invoice-ocr-image';
+import {
+  assessSupplierInvoiceImageQuality,
+  createSupplierInvoiceOcrRegions,
+  preprocessSupplierInvoiceImage,
+  type SupplierInvoiceImageQuality,
+} from '@/lib/supplier-invoice-ocr-image';
 import { readSupplierInvoiceQr } from '@/lib/supplier-invoice-qr';
 import {
   extractSupplierInvoiceOcr,
@@ -30,6 +28,7 @@ type CapturedPage = {
   image: Blob;
   previewUrl: string;
   label: string;
+  quality?: SupplierInvoiceImageQuality;
 };
 
 type SupplierInvoiceOcrCameraProps = {
@@ -58,7 +57,9 @@ export function SupplierInvoiceOcrCamera({
   const [ocrProgress, setOcrProgress] = useState<OcrProgress | null>(null);
   const [processing, setProcessing] = useState(false);
 
-  const selectedPage = activeView === 'camera' ? null : pages.find((page) => page.id === activeView);
+  const selectedPage =
+    activeView === 'camera' ? null : pages.find((page) => page.id === activeView);
+  const lowQualityPages = pages.filter((page) => page.quality?.status === 'warning');
 
   useEffect(() => {
     if (!open) {
@@ -95,7 +96,9 @@ export function SupplierInvoiceOcrCamera({
     setCameraError(null);
 
     if (!navigator.mediaDevices?.getUserMedia) {
-      setCameraError('Este navegador no permite acceder a la cámara. Puedes seleccionar imágenes en su lugar.');
+      setCameraError(
+        'Este navegador no permite acceder a la cámara. Puedes seleccionar imágenes en su lugar.',
+      );
       return;
     }
 
@@ -177,6 +180,18 @@ export function SupplierInvoiceOcrCamera({
     setOcrError(null);
     setCapturePages([...pagesRef.current, ...newPages]);
     setActiveView(newPages.at(-1)?.id ?? 'camera');
+    newPages.forEach((page) => {
+      // This check only reads pixels in memory and is intentionally advisory:
+      // the user can still continue with a legitimate low-contrast invoice.
+      void assessSupplierInvoiceImageQuality(page.image).then((quality) => {
+        if (!pagesRef.current.some((currentPage) => currentPage.id === page.id)) return;
+        setCapturePages(
+          pagesRef.current.map((currentPage) =>
+            currentPage.id === page.id ? { ...currentPage, quality } : currentPage,
+          ),
+        );
+      });
+    });
   }
 
   function takePhoto() {
@@ -227,7 +242,9 @@ export function SupplierInvoiceOcrCamera({
   }
 
   function handleFileSelection(event: React.ChangeEvent<HTMLInputElement>) {
-    const images = Array.from(event.target.files ?? []).filter((file) => file.type.startsWith('image/'));
+    const images = Array.from(event.target.files ?? []).filter((file) =>
+      file.type.startsWith('image/'),
+    );
     if (!images.length && event.target.files?.length) {
       setOcrError('Selecciona solamente imágenes de la factura para usar el OCR.');
     } else {
@@ -242,7 +259,12 @@ export function SupplierInvoiceOcrCamera({
 
     setProcessing(true);
     setOcrError(null);
-    setOcrProgress({ status: 'Preparando OCR local', value: 0, page: 1, totalPages: capturePages.length });
+    setOcrProgress({
+      status: 'Preparando OCR local',
+      value: 0,
+      page: 1,
+      totalPages: capturePages.length,
+    });
     let worker: Awaited<ReturnType<(typeof import('tesseract.js'))['createWorker']>> | null = null;
 
     try {
@@ -251,10 +273,23 @@ export function SupplierInvoiceOcrCamera({
         logger: (message) => {
           const page = Math.min(capturePages.length, Math.max(1, currentOcrPageRef.current));
           const progress = Number.isFinite(message.progress) ? message.progress : 0;
-          setOcrProgress({ status: message.status, value: progress, page, totalPages: capturePages.length });
+          setOcrProgress({
+            status: message.status,
+            value: progress,
+            page,
+            totalPages: capturePages.length,
+          });
         },
       });
-      await worker.setParameters({ tessedit_pageseg_mode: PSM.SPARSE_TEXT });
+      const recognizeImage = async (
+        image: Blob,
+        pageSegmentationMode: (typeof PSM)[keyof typeof PSM],
+      ) => {
+        if (!worker) return '';
+        await worker.setParameters({ tessedit_pageseg_mode: pageSegmentationMode });
+        const { data } = await worker.recognize(image);
+        return data.text.trim();
+      };
 
       const pageTexts: string[] = [];
       const qrValues: string[] = [];
@@ -271,16 +306,45 @@ export function SupplierInvoiceOcrCamera({
         const preparedImage = await preprocessSupplierInvoiceImage(capturePages[index].image);
         const qrValue = await readSupplierInvoiceQr(capturePages[index].image);
         if (qrValue) qrValues.push(qrValue);
-        const { data } = await worker.recognize(preparedImage);
-        let pageText = data.text.trim();
+        let generalText = await recognizeImage(preparedImage, PSM.SPARSE_TEXT);
         // Una factura muy clara o ya digitalizada puede perder detalle al
         // aumentar el contraste. En ese caso hacemos un único intento con la
         // toma original y conservamos la lectura más completa.
-        if (pageText.length < 24) {
-          const fallback = await worker.recognize(capturePages[index].image);
-          const fallbackText = fallback.data.text.trim();
-          if (fallbackText.length > pageText.length) pageText = fallbackText;
+        if (generalText.length < 24) {
+          const fallbackText = await recognizeImage(capturePages[index].image, PSM.SPARSE_TEXT);
+          if (fallbackText.length > generalText.length) generalText = fallbackText;
         }
+
+        const requiredRegions = getRequiredOcrRegions(generalText, capturePages[index].quality);
+        const regionalTexts: string[] = [];
+        if (requiredRegions.length) {
+          setOcrProgress({
+            status: 'Revisando encabezado y totales',
+            value: 0.74,
+            page: index + 1,
+            totalPages: capturePages.length,
+          });
+          const regions = await createSupplierInvoiceOcrRegions(preparedImage);
+          for (const region of regions) {
+            if (!requiredRegions.includes(region.id)) continue;
+            const pageSegmentationMode =
+              region.id === 'footer' ? PSM.SINGLE_BLOCK : PSM.SPARSE_TEXT;
+            const text = await recognizeImage(region.image, pageSegmentationMode);
+            if (text.length >= 8) {
+              regionalTexts.push(
+                `--- REGIÓN ${region.id === 'header' ? 'ENCABEZADO' : 'TOTALES'} (PRIORIDAD) ---\n${text}`,
+              );
+            }
+          }
+        }
+
+        const pageText = [
+          ...regionalTexts.filter((text) => text.includes('ENCABEZADO')),
+          generalText ? `--- LECTURA GENERAL ---\n${generalText}` : '',
+          ...regionalTexts.filter((text) => text.includes('TOTALES')),
+        ]
+          .filter(Boolean)
+          .join('\n\n');
         if (pageText) {
           pageTexts.push(`--- PÁGINA ${index + 1} ---\n${pageText}`);
         }
@@ -292,7 +356,9 @@ export function SupplierInvoiceOcrCamera({
         pageCount: capturePages.length,
       };
       if (!result.rawText) {
-        throw new Error('No se pudo leer texto en las imágenes. Prueba con mejor iluminación o usa el ingreso manual.');
+        throw new Error(
+          'No se pudo leer texto en las imágenes. Prueba con mejor iluminación o usa el ingreso manual.',
+        );
       }
 
       clearPages();
@@ -358,7 +424,8 @@ export function SupplierInvoiceOcrCamera({
             <div className="flex aspect-[4/3] flex-col items-center justify-center gap-3 bg-muted/40 p-6 text-center">
               <Camera className="h-8 w-8 text-muted-foreground" />
               <p className="max-w-md text-sm leading-6 text-muted-foreground">
-                Puedes volver a intentar la cámara o seleccionar una o varias imágenes de la factura.
+                Puedes volver a intentar la cámara o seleccionar una o varias imágenes de la
+                factura.
               </p>
             </div>
           ) : (
@@ -387,7 +454,9 @@ export function SupplierInvoiceOcrCamera({
               <p className="text-sm font-medium">
                 Páginas capturadas <span className="text-muted-foreground">({pages.length})</span>
               </p>
-              <span className="text-xs text-muted-foreground">Temporales: no se adjuntarán a la factura</span>
+              <span className="text-xs text-muted-foreground">
+                Temporales: no se adjuntarán a la factura
+              </span>
             </div>
             <div className="flex gap-2 overflow-x-auto pb-1">
               {pages.map((page, index) => {
@@ -440,6 +509,13 @@ export function SupplierInvoiceOcrCamera({
                 Agregar
               </button>
             </div>
+            {lowQualityPages.length ? (
+              <p className="mt-3 rounded-lg bg-warning/10 px-2.5 py-2 text-xs leading-5 text-warning">
+                {lowQualityPages.length === 1
+                  ? lowQualityPages[0].quality?.message
+                  : `${lowQualityPages.length} páginas podrían leerse mejor. Puedes repetirlas antes de usar OCR.`}
+              </p>
+            ) : null}
           </div>
         ) : null}
 
@@ -459,7 +535,9 @@ export function SupplierInvoiceOcrCamera({
               </span>
               <span className="text-muted-foreground">{Math.round(ocrProgress.value * 100)}%</span>
             </div>
-            <p className="mt-1 text-xs text-muted-foreground">{humanizeOcrStatus(ocrProgress.status)}</p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              {humanizeOcrStatus(ocrProgress.status)}
+            </p>
             <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-muted">
               <div
                 className="h-full rounded-full bg-accent transition-[width]"
@@ -477,9 +555,9 @@ export function SupplierInvoiceOcrCamera({
         ) : null}
 
         <p className="text-sm leading-6 text-muted-foreground">
-          Puedes añadir varias páginas si la factura continúa al reverso o en una hoja adicional. Procura que cada
-          página esté completa, recta y bien iluminada. Siempre podrás revisar y corregir los datos antes de
-          confirmar la compra.
+          Puedes añadir varias páginas si la factura continúa al reverso o en una hoja adicional.
+          Procura que cada página esté completa, recta y bien iluminada. Siempre podrás revisar y
+          corregir los datos antes de confirmar la compra.
         </p>
 
         <div className="flex flex-col-reverse gap-2 border-t pt-4 sm:flex-row sm:flex-wrap sm:justify-end">
@@ -506,15 +584,24 @@ export function SupplierInvoiceOcrCamera({
               Repetir página
             </Button>
           ) : (
-            <Button type="button" onClick={() => (cameraError ? void activateCamera() : takePhoto())}>
+            <Button
+              type="button"
+              onClick={() => (cameraError ? void activateCamera() : takePhoto())}
+            >
               <Camera className="h-4 w-4" />
               {cameraError ? 'Reintentar cámara' : 'Tomar foto'}
             </Button>
           )}
           {pages.length ? (
             <Button type="button" onClick={() => void recognizePages()} disabled={processing}>
-              {processing ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <ScanText className="h-4 w-4" />}
-              {processing ? 'Procesando OCR…' : `Leer ${pages.length} ${pages.length === 1 ? 'página' : 'páginas'} con OCR`}
+              {processing ? (
+                <LoaderCircle className="h-4 w-4 animate-spin" />
+              ) : (
+                <ScanText className="h-4 w-4" />
+              )}
+              {processing
+                ? 'Procesando OCR…'
+                : `Leer ${pages.length} ${pages.length === 1 ? 'página' : 'páginas'} con OCR`}
             </Button>
           ) : null}
         </div>
@@ -531,6 +618,29 @@ function createPageId() {
 
 function revokePageUrls(capturedPages: CapturedPage[]) {
   capturedPages.forEach((page) => URL.revokeObjectURL(page.previewUrl));
+}
+
+function getRequiredOcrRegions(
+  generalText: string,
+  quality: SupplierInvoiceImageQuality | undefined,
+): Array<'header' | 'footer'> {
+  const normalizedText = generalText
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toUpperCase();
+  const needsHeader =
+    generalText.length < 180 ||
+    !/(?:\bRNC\b|\bNCF\b|E-?NCF|FACTURA(?:\s+DE)?\s+(?:CREDITO|CONSUMO))/.test(normalizedText);
+  const needsFooter =
+    generalText.length < 240 ||
+    !/(?:\bITBIS\b|SUB\s*-?\s*TOTAL|TOTAL\s+(?:A\s+PAGAR|RD\$|DOP))/.test(normalizedText);
+
+  // A weak photograph earns an extra, small reading pass even if it found a
+  // keyword. This is cheaper than running every zone for every clean image.
+  if (quality?.status === 'warning') return ['header', 'footer'];
+  return [needsHeader ? 'header' : null, needsFooter ? 'footer' : null].filter(
+    (region): region is 'header' | 'footer' => Boolean(region),
+  );
 }
 
 function humanizeOcrStatus(status: string) {
