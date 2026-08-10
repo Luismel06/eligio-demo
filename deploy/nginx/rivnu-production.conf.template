@@ -1,23 +1,64 @@
-# Replace the two required domain placeholders only after DNS is decided.
-# Obtain and validate TLS certificates before enabling the HTTPS servers.
+# RIVNU public origin. The certificate is obtained by the administrative
+# installer before this configuration is enabled.
 
 server {
     listen 80;
     listen [::]:80;
-    server_name __RIVNU_WEB_DOMAIN__;
+    server_name rivnu.corestack-systems.com;
     return 301 https://$host$request_uri;
 }
 
 server {
     listen 80;
     listen [::]:80;
-    server_name __RIVNU_API_DOMAIN__;
+    server_name rivnu-api.corestack-systems.com;
     return 301 https://$host$request_uri;
 }
 
-# The corresponding TLS vhosts must proxy Web to 10.0.0.3:3001 and API to
-# 10.0.0.3:4001, set client_max_body_size 20M, and overwrite these headers:
-#   proxy_set_header Host $host;
-#   proxy_set_header X-Real-IP $remote_addr;
-#   proxy_set_header X-Forwarded-For $remote_addr;
-#   proxy_set_header X-Forwarded-Proto $scheme;
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    server_name rivnu.corestack-systems.com;
+
+    ssl_certificate /etc/letsencrypt/live/rivnu.corestack-systems.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/rivnu.corestack-systems.com/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    client_max_body_size 20M;
+
+    location / {
+        proxy_pass http://10.0.0.3:3001;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_connect_timeout 10s;
+        proxy_send_timeout 60s;
+        proxy_read_timeout 60s;
+    }
+}
+
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    server_name rivnu-api.corestack-systems.com;
+
+    ssl_certificate /etc/letsencrypt/live/rivnu.corestack-systems.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/rivnu.corestack-systems.com/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    client_max_body_size 20M;
+
+    location / {
+        proxy_pass http://10.0.0.3:4001;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_connect_timeout 10s;
+        proxy_send_timeout 120s;
+        proxy_read_timeout 120s;
+    }
+}
