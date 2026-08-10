@@ -44,6 +44,10 @@ FROM node:22-bookworm-slim AS api
 ENV NODE_ENV=production
 WORKDIR /app
 
+RUN apt-get update \
+    && apt-get install --no-install-recommends --yes ca-certificates openssl \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY --from=build --chown=node:node /app /app
 
 USER node
