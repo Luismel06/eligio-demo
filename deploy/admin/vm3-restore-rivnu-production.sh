@@ -98,6 +98,7 @@ SQL
     sudo -u postgres createdb -p 5432 --owner="$MIGRATOR_ROLE" --encoding=UTF8 --template=template0 "$DATABASE_NAME"
     created_database=true
     "${psql_admin[@]}" -c "REVOKE ALL ON DATABASE ${DATABASE_NAME} FROM PUBLIC; GRANT CONNECT, TEMPORARY ON DATABASE ${DATABASE_NAME} TO ${RUNTIME_ROLE};"
+    "${psql_admin[@]}" --dbname="$DATABASE_NAME" -c 'DROP SCHEMA public;'
     sudo -u postgres pg_restore --dbname="$DATABASE_NAME" --role="$MIGRATOR_ROLE" --no-owner --no-privileges --exit-on-error "$backup_dir/rivnu-production-final.dump"
     "${psql_admin[@]}" --dbname="$DATABASE_NAME" <<SQL
 REVOKE CREATE ON SCHEMA public FROM PUBLIC;
