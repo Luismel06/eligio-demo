@@ -1,0 +1,77 @@
+name: rivnu
+
+services:
+  rivnu-api:
+    image: corestack/rivnu-api:${RIVNU_IMAGE_TAG:?RIVNU_IMAGE_TAG is required}
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      target: api
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:?NEXT_PUBLIC_API_URL is required}
+        NEXT_PUBLIC_APP_URL: ${NEXT_PUBLIC_APP_URL:?NEXT_PUBLIC_APP_URL is required}
+    container_name: rivnu-api
+    init: true
+    restart: unless-stopped
+    env_file:
+      - path: /opt/corestack/apps/rivnu/secrets/api.env
+        required: true
+    ports:
+      - "10.0.0.3:4001:4000"
+    networks:
+      - rivnu-network
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:4000/health').then((response) => { if (!response.ok) process.exit(1); }).catch(() => process.exit(1));"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+
+  rivnu-web:
+    image: corestack/rivnu-web:${RIVNU_IMAGE_TAG:?RIVNU_IMAGE_TAG is required}
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      target: web
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:?NEXT_PUBLIC_API_URL is required}
+        NEXT_PUBLIC_APP_URL: ${NEXT_PUBLIC_APP_URL:?NEXT_PUBLIC_APP_URL is required}
+    container_name: rivnu-web
+    init: true
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      INTERNAL_ALLOWED_IPS: ${INTERNAL_ALLOWED_IPS:-}
+    ports:
+      - "10.0.0.3:3001:3000"
+    networks:
+      - rivnu-network
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:3000/login').then((response) => { if (response.status >= 500) process.exit(1); }).catch(() => process.exit(1));"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 45s
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+
+networks:
+  rivnu-network:
+    external: true
+    name: rivnu-network

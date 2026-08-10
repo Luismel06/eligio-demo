@@ -1,0 +1,671 @@
+CORESTACK / RIVNU
+GUIA OPERATIVA PARA CODEX EN VM2
+
+Fecha de preparacion: 2026-08-10
+Estado: plan de migracion. No ejecutar un corte a produccion sin completar
+las validaciones y los puntos de aprobacion indicados aqui.
+
+===============================================================================
+1. OBJETIVO
+===============================================================================
+
+Migrar la aplicacion RIVNU desde la infraestructura temporal:
+
+  Vercel Web + Vercel API + PostgreSQL/Supabase
+
+hacia infraestructura privada CoreStack, manteniendo la aplicacion, la base de
+datos, los usuarios, roles, tenant y configuracion de empresa.
+
+CoreStack es una plataforma multi-tenant. RIVNU es uno de sus tenants, no una
+aplicacion aislada ni una excepcion arquitectonica. Esta migracion prepara el
+workload inicial de RIVNU, pero debe preservar la capacidad de CoreStack de
+servir futuras empresas desde el mismo producto:
+
+  - las reglas de negocio siguen siendo tenant-aware;
+  - las tablas operativas siguen aisladas por tenantId y por guards de la API;
+  - no se crean forks de codigo, schemas por cliente ni atajos de acceso directo
+    a la base para RIVNU;
+  - cualquier configuracion exclusiva de RIVNU debe quedar externalizada como
+    configuracion/despliegue, no incrustada en logica compartida.
+
+El resultado objetivo es:
+
+  Internet
+    -> VM1 Gateway (Nginx + TLS)
+    -> VM2 App (Next.js Web + NestJS API)
+    -> VM3 SQL DB (PostgreSQL privado)
+
+VM4 Billing Gateway queda reservado para una futura integracion de pagos/AZUL y
+DGII. No debe recibir trafico ni codigo operativo de RIVNU durante esta
+migracion.
+
+La empresa/plataforma se llama CoreStack. Algunos nombres tecnicos historicos,
+por ejemplo paquetes @qorvex, pueden seguir existiendo en el codigo. NO deben
+renombrarse como parte de esta migracion: seria una tarea separada y riesgosa.
+
+
+===============================================================================
+2. TOPOLOGIA Y RUTAS
+===============================================================================
+
+VM1 - Gateway
+  IP privada: 10.0.0.2
+  Responsabilidad: unico punto de entrada publico, Nginx, TLS, redireccion
+  HTTP -> HTTPS, proxy inverso, limites de carga y cabeceras de seguridad.
+
+VM2 - App
+  IP privada: 10.0.0.3
+  Responsabilidad: repositorio, build reproducible, contenedores/procesos de:
+    - Web Next.js (solo accesible desde VM1)
+    - API NestJS (solo accesible desde VM1 y VM3 si hiciera falta)
+  Ruta prevista:
+    /opt/corestack/apps/rivnu/repo
+  Datos persistentes locales previstos:
+    /opt/corestack/apps/rivnu/data
+
+Red Docker existente en VM2:
+  rivnu-network
+  Driver: bridge
+  Scope: local
+
+Esta red es la red de workload/despliegue de RIVNU, NO el mecanismo de
+aislamiento del tenant. El aislamiento multi-tenant real permanece en la API,
+los guards, los permisos y PostgreSQL. No crear redes Docker distintas como
+sustituto de tenantId.
+
+Diseno Docker objetivo para RIVNU (todavia no desplegar):
+
+  rivnu-network
+    ├── rivnu-web  (Next.js, escucha 3000 dentro del contenedor)
+    └── rivnu-api  (NestJS, escucha 4000 dentro del contenedor)
+
+Cada contenedor tendra un solo puerto publicado en la IP privada de VM2, solo
+para que VM1 pueda hacer proxy:
+
+  rivnu-web: 10.0.0.3:3001 -> contenedor:3000
+  rivnu-api: 10.0.0.3:4001 -> contenedor:4000
+
+Los puertos 3000 y 4000 no deben exponerse a Internet. VM1 sera quien reciba
+80/443 y haga proxy a esos dos puertos privados. La regla de firewall exacta se
+definira luego del inventario: solo VM1 debe poder alcanzar 3001/4001 en VM2.
+
+Referencia historica recibida:
+
+  image: qorvex/rivnu:latest
+  container_name: qorvex-rivnu
+  ports: 3001:3000
+
+Ese era un modelo de un solo contenedor y nombre historico. No reutilizarlo ni
+reemplazar contenedores existentes a ciegas. El objetivo nuevo es separar Web y
+API en rivnu-web y rivnu-api dentro de rivnu-network.
+
+VM3 - SQL DB
+  IP privada: 10.0.0.4
+  Responsabilidad: PostgreSQL exclusivo de produccion RIVNU/CoreStack.
+  PostgreSQL no debe quedar accesible desde Internet; solo VM2 y administracion
+  controlada por SSH/VPN/red privada.
+
+VM4 - Billing Gateway
+  IP privada: 10.0.0.1
+  Responsabilidad futura: integracion aislada de AZUL/Verifone/DGII.
+  Estado para esta fase: inventariar y dejar aislada; NO desplegar RIVNU aqui.
+
+Estructura CoreStack ya creada en VM2:
+  /opt/corestack/apps/rivnu/repo
+  /opt/corestack/apps/rivnu/data
+  /opt/corestack/configs/infrastructure
+  /opt/corestack/configs/docker
+  /opt/corestack/scripts/deploy
+  /opt/corestack/scripts/backup
+  /opt/corestack/scripts/restore
+  /opt/corestack/backups
+  /opt/corestack/logs
+
+
+===============================================================================
+3. APLICACION QUE SE MIGRA
+===============================================================================
+
+Repositorio: monorepo pnpm CoreStack.
+
+  apps/web             Next.js 15, interfaz web.
+  apps/api             NestJS 11, API REST y reglas de negocio.
+  packages/database    Prisma 6, esquema y migraciones PostgreSQL.
+
+Comandos relevantes desde la raiz del repositorio:
+
+  corepack pnpm install --frozen-lockfile
+  corepack pnpm db:generate
+  corepack pnpm --filter @qorvex/database build
+  corepack pnpm --filter @qorvex/api build
+  corepack pnpm --filter @qorvex/web build
+  corepack pnpm lint
+  corepack pnpm db:migrate:deploy
+
+Requisitos de runtime:
+
+  - Node.js 22 LTS.
+  - Corepack.
+  - pnpm 10.12.4 (esta fijado en package.json).
+  - PostgreSQL 17 recomendado en VM3, o una version compatible validada.
+  - Docker Engine + Docker Compose plugin en VM2 si se elige Compose.
+
+El docker-compose.yml actual del repositorio es SOLO para PostgreSQL local de
+desarrollo y publica 5432. No usarlo ni adaptarlo a ciegas para produccion. El
+repositorio aun no tiene Dockerfiles, Compose productivo, unidades systemd ni
+configuracion Nginx de produccion: deben diseniarse como artefactos nuevos,
+revisables y separados del compose de desarrollo.
+
+La arquitectura es un monolito modular: no convertirla en microservicios ni
+separar Web/API/DB en proyectos de codigo distintos durante la migracion.
+
+Antes de modificar infraestructura, Codex debe analizar TODO el repositorio y
+entregar un mapa de arquitectura que distinga claramente:
+
+  - componentes globales CoreStack;
+  - limites de tenant y uso de tenantId;
+  - modulos RIVNU configurables versus logica compartida;
+  - Web, API, Prisma/migraciones y dependencias externas;
+  - configuracion Vercel/Supabase heredada que se reemplazara;
+  - puntos donde una futura empresa podria agregarse sin copiar codigo.
+
+Autenticacion y datos:
+
+  - La autenticacion es propia: JWT + bcrypt + NestJS + Prisma.
+  - NO se usa Supabase Auth, Supabase REST, Realtime ni Edge Functions.
+  - El frontend siempre debe hablar con la API NestJS; nunca directamente con
+    PostgreSQL.
+  - OCR de facturas se ejecuta en el navegador. La captura movil QR no guarda
+    fotografias; devuelve temporalmente datos OCR estructurados.
+  - La integracion fiscal/pagos actual es MOCK; VM4 queda para el futuro.
+
+Almacenamiento de imagenes:
+
+  - La aplicacion puede usar Supabase Storage para imagenes de productos.
+  - Los objetos de Storage NO viajan en un pg_dump.
+  - No bloquear la primera migracion por Storage si no hay catalogo productivo
+    cargado todavia. Mantener Supabase Storage temporalmente o preparar un
+    almacenamiento privado persistente posteriormente; no cambiar URLs de
+    imagenes sin un plan de migracion de objetos.
+  - Si se opta por almacenamiento local, no guardar archivos dentro de una
+    imagen efimera: montar un volumen persistente y servirlo de forma segura.
+
+
+===============================================================================
+4. ESTADO INTENCIONAL DE DATOS RIVNU
+===============================================================================
+
+La base RIVNU fue preparada para comenzar catalogo productivo desde cero.
+Los datos operativos de prueba se limpiaron intencionalmente.
+
+Se conservaron:
+  - Tenant y configuracion de empresa.
+  - Branding.
+  - Caja fisica/configuracion de caja.
+  - Cuentas, membresias y roles existentes.
+  - Secuencias fiscales y sus contadores actuales.
+
+Se limpiaron intencionalmente:
+  - Productos, inventario, clientes y suplidores.
+  - Ventas, caja/sesiones, ordenes, devoluciones y pagos.
+  - Ordenes de compra, facturas de suplidor, recepciones e importaciones.
+  - Logs de prueba.
+
+Una base con catalogos y listas vacias en este punto NO es un error: es el
+estado esperado antes de cargar los productos reales de produccion.
+
+El estado limpio de RIVNU no implica borrar, recrear o alterar otros tenants de
+CoreStack. Toda consulta, dump de validacion y operacion de datos debe declarar
+de forma explicita si abarca la base completa o solo el tenant RIVNU.
+
+NUNCA ejecutar en la base objetivo de produccion:
+
+  - pnpm db:seed
+  - prisma migrate reset
+  - db:cleanup:rivnu
+  - db:cleanup:rivnu:operational
+  - docker compose down -v
+
+Las secuencias fiscales no deben resetearse ni reutilizarse sin autorizacion
+fiscal expresa.
+
+
+===============================================================================
+5. PRINCIPIOS OBLIGATORIOS DE SEGURIDAD
+===============================================================================
+
+1. No guardar, mostrar, registrar ni poner en Git contrasenas, tokens,
+   DATABASE_URL completas, JWT_SECRET, llaves SSH ni contenido de archivos .env.
+
+2. Si una clave o contrasena fue compartida en una conversacion, considerarla
+   expuesta y pedir que sea rotada. No reutilizarla en scripts.
+
+3. Usar llaves SSH ed25519, no contrasena, entre VM2 y las demas VMs.
+   Configurar aliases concretos en ~/.ssh/config y validar fingerprints.
+
+4. Emplear cuentas de minimo privilegio:
+   - usuario administrativo para preparacion controlada;
+   - usuario runtime de aplicacion separado;
+   - usuario migrador de PostgreSQL separado del usuario runtime.
+
+5. No exponer directamente al Internet:
+   - PostgreSQL (5432),
+   - Next.js (3000),
+   - NestJS (4000),
+   - Docker daemon,
+   - puertos de desarrollo,
+   - transportes internos de Codex.
+
+6. VM1 sera el unico host con 80/443 publicos. VM2 y VM3 deben aceptar solo
+   trafico privado necesario. Verificar UFW/iptables/nftables y no aplicar una
+   regla sin saber primero el estado actual.
+
+   Si se habilita TRUST_PROXY=1 en la API, Nginx de VM1 debe establecer y
+   sobrescribir X-Forwarded-For, X-Real-IP y X-Forwarded-Proto correctamente.
+   La aplicacion puede usar allowlists de IP internas; no permitir que clientes
+   externos falsifiquen estas cabeceras llegando directo a VM2.
+
+7. Antes de cualquier accion destructiva, mostrar el plan, el alcance, el
+   backup disponible y pedir aprobacion explicita.
+
+8. No hacer git reset --hard, git clean, checkout destructivo, migraciones
+   reset, borrados recursivos ni restauraciones sobre una base no vacia sin una
+   aprobacion explicita y una ruta de rollback.
+
+
+===============================================================================
+5.1. MARCA CORESTACK Y REFERENCIAS HISTORICAS "QORVEX"
+===============================================================================
+
+El producto ahora se llama CoreStack. El codigo puede contener referencias
+historicas "Qorvex"/"qorvex". Codex debe inventariarlas antes de renombrar nada
+y clasificarlas en un reporte:
+
+  A. Criticas/de compatibilidad: NO cambiar durante la migracion.
+     Ejemplos: nombres de paquetes @qorvex, QORVEX_SUPER_ADMIN, schema Prisma y directorios de
+     migracion, identificadores de base de datos, imports runtime, variables de
+     entorno ya utilizadas, rutas API, tags de imagen ya desplegados, datos
+     historicos, dominios DNS activos y configuraciones que un servicio consume.
+
+  B. No criticas y de marca: cambiar a CoreStack en un commit separado y
+     verificable. Ejemplos: documentacion, README, textos visibles al usuario,
+     comentarios, titulos, mensajes y archivos no referenciados por runtime.
+
+  C. Dudosas: no cambiar; documentar la dependencia y pedir decision.
+
+Nunca hacer reemplazos globales con sed, find/replace masivo o cambios de
+mayusculas/minusculas sin clasificacion. No mezclar un rebranding con el corte
+de infraestructura. El nombre de red existente rivnu-network se conserva en
+esta fase; @qorvex puede seguir como nombre tecnico interno hasta una migracion
+de paquetes planificada y probada.
+
+
+===============================================================================
+6. FORMA DE TRABAJAR DE CODEX
+===============================================================================
+
+Codex esta ejecutandose en VM2. Debe trabajar por fases y detenerse al final de
+cada fase para reportar evidencia y pedir el siguiente visto bueno cuando haya
+un cambio de infraestructura, base de datos, red, DNS, TLS o datos.
+
+Permitido sin pedir aprobacion adicional:
+  - Lecturas, inventario, validaciones, pruebas de conectividad y reportes.
+  - Crear documentacion, archivos de configuracion candidatos y scripts que no
+    se ejecuten automaticamente.
+  - Revisar el repositorio, Docker, Prisma, dependencias y configuracion
+    existente.
+  - Auditar rivnu-network y contenedores existentes con docker network inspect,
+    docker ps y docker compose config, sin crear, borrar, reiniciar ni conectar
+    contenedores.
+
+Requiere confirmar antes de ejecutar:
+  - Instalar/actualizar paquetes del sistema.
+  - Cambiar usuarios, sudo, SSH, firewall, red, Docker o Nginx.
+  - Crear/modificar bases de datos o roles PostgreSQL.
+  - Generar/restaurar dumps, ejecutar migraciones o hacer corte de datos.
+  - Cambiar DNS, certificados TLS, variables de produccion o servicios.
+  - Arrancar/reiniciar servicios que puedan afectar produccion.
+
+PUNTO DE PARADA OBLIGATORIO: cuando termine el diseno y vaya a empezar cualquier
+trabajo Docker (crear/modificar compose, Dockerfile, imagen, contenedor, red,
+puerto, volumen o servicio), DETENERSE y avisar al responsable. Debe presentar:
+
+  - resultado de docker network inspect rivnu-network;
+  - nombres de imagenes y contenedores propuestos;
+  - compose/Dockerfile o diff propuesto;
+  - puertos exactos 3001 -> 3000 y 4001 -> 4000;
+  - reglas de firewall/proxy que necesitara VM1;
+  - volumenes persistentes, secretos y rollback;
+  - confirmacion de que no afectara otros workloads/tenants.
+
+No crear ni levantar rivnu-web/rivnu-api hasta recibir esa aprobacion explicita.
+
+Cada fase debe dejar:
+  - comandos ejecutados;
+  - resultados sin secretos;
+  - archivos creados/modificados;
+  - validacion realizada;
+  - rollback concreto.
+
+
+===============================================================================
+7. FASE 0 - PREFLIGHT (PRIMERA TAREA)
+===============================================================================
+
+Objetivo: conocer con evidencia el estado de las cuatro VMs antes de alterar
+infraestructura.
+
+En VM2 y por SSH a VM1, VM3 y VM4, recopilar sin modificar:
+
+  - hostname, sistema operativo, kernel, uptime, fecha, NTP y zona horaria;
+  - usuario actual, grupos y disponibilidad de sudo sin ejecutar cambios;
+  - CPU, RAM, swap, discos, particiones, mounts e inodos;
+  - interfaces IP, rutas, DNS y conectividad privada entre VMs;
+  - versiones de git, Docker, Docker Compose, Nginx, Node, Corepack, pnpm,
+    PostgreSQL y psql;
+  - puertos escuchando y servicios systemd activos/relevantes;
+  - estado del firewall;
+  - permisos, propietarios y contenido de alto nivel de /opt/corestack;
+  - espacio disponible en /opt/corestack, /var/lib y destino de backups;
+  - conectividad VM2 -> VM3:5432 y VM1 -> VM2:3001/4001 solo como pruebas TCP.
+  - estado de rivnu-network, sus contenedores conectados y cualquier publicacion
+    de puertos existente, sin modificarlo.
+  - estructura completa del repositorio clonado en VM2, incluyendo AGENTS.md,
+    README, package scripts, apps, packages, Prisma, Docker/Vercel, docs y
+    limites de tenant. El informe debe explicar por que RIVNU es un tenant de
+    CoreStack y no una aplicacion que deba bifurcarse.
+  - inventario de referencias Qorvex/CoreStack, clasificadas segun la seccion
+    5.1; no renombrar durante el preflight.
+
+No leer contenido de .env ni imprimir secretos. Puede listar solo nombres de
+variables presentes.
+
+Entregable:
+  /opt/corestack/apps/rivnu/data/preflight-corestack-rivnu.md
+
+Si no tiene permisos para escribir ese reporte, mostrarlo en la conversacion y
+detenerse. No intentar corregir permisos sin aprobacion.
+
+
+===============================================================================
+8. FASE 1 - ACCESO SSH SEGURO
+===============================================================================
+
+Despues del preflight y de una aprobacion, preparar conectividad desde VM2:
+
+  - Crear una llave ed25519 dedicada para administracion/despliegue RIVNU.
+  - Proteger ~/.ssh y la llave privada con permisos correctos.
+  - Instalar solamente la llave publica en VM1, VM3 y VM4 usando el usuario
+    autorizado; nunca sobrescribir authorized_keys existente.
+  - Crear aliases concretos:
+      corestack-vm1 -> 10.0.0.2
+      corestack-vm3 -> 10.0.0.4
+      corestack-vm4 -> 10.0.0.1
+  - Confirmar acceso SSH por llave y registrar fingerprints.
+
+No incluir contrasenas en comandos, scripts, historiales, archivos o mensajes.
+Cuando el acceso por llave este validado, recomendar rotar/deshabilitar el uso
+de la contrasena compartida segun la politica de CoreStack.
+
+
+===============================================================================
+9. FASE 2 - DISENO Y PREPARACION DE LA PLATAFORMA
+===============================================================================
+
+Proponer Docker Compose como primera opcion para VM2 porque CoreStack ya tiene
+rutas para configuracion Docker. Antes de implementarlo, revisar si Docker
+Engine/Compose estan instalados y si hay estandares ya existentes en
+/opt/corestack/configs/docker.
+
+No iniciar esta fase sin avisar al responsable mediante el PUNTO DE PARADA
+OBLIGATORIO de la seccion 6. La persona responsable quiere acompanamiento al
+momento de crear imagenes, contenedores, puertos y reglas de red.
+
+Preparar configuracion versionada y revisable, sin secretos, para:
+
+  VM2:
+    - imagen/contenedor rivnu-web para Next.js, puerto interno 3000;
+    - imagen/contenedor rivnu-api para NestJS, puerto interno 4000;
+    - ambos unidos a la red bridge existente rivnu-network;
+    - publicar solo 10.0.0.3:3001 -> rivnu-web:3000 y
+      10.0.0.3:4001 -> rivnu-api:4000, una vez aprobados;
+    - no incluir PostgreSQL como tercer contenedor: la base reside en VM3;
+    - volumen persistente solo cuando se necesite;
+    - healthchecks para API y Web;
+    - reinicio controlado;
+    - logs en rutas CoreStack o journald;
+    - script de build/deploy reproducible.
+
+  VM3:
+    - PostgreSQL en red privada;
+    - directorio de datos persistente y permisos correctos;
+    - database y roles separados: runtime y migrador;
+    - pg_hba.conf restrictivo para VM2;
+    - backups logicos y, si aplica, WAL/snapshots;
+    - no publicar 5432 hacia Internet.
+
+  VM1:
+    - Nginx con virtual hosts para Web y API;
+    - proxy a IP privada de VM2;
+    - cabeceras X-Forwarded-* correctas;
+    - limite de cuerpo >= 16 MB para importaciones e imagenes;
+    - TLS/Let’s Encrypt solo despues de conocer dominios finales;
+    - redireccion HTTP -> HTTPS;
+    - no exponer rutas o puertos internos innecesarios.
+
+  VM4:
+    - no instalar componentes de RIVNU ahora;
+    - documentar conectividad privada futura con VM2;
+    - reservar un contrato claro para pagos antes de integrar AZUL/Verifone.
+
+No decidir ni configurar DNS, certificados o valores NEXT_PUBLIC_* hasta que el
+responsable entregue los dominios finales. Para pruebas internas usar nombres
+temporales documentados o /etc/hosts, sin presentarlo como produccion.
+
+
+===============================================================================
+10. VARIABLES DE ENTORNO DE PRODUCCION
+===============================================================================
+
+Crear un mecanismo seguro para variables (por ejemplo archivos .env con
+permisos 600 fuera del repositorio, secrets de Docker o gestor de secretos).
+No crear secretos ficticios para produccion ni versionarlos.
+
+Variables API esperadas, con valores reales proporcionados fuera de Git:
+
+  DATABASE_URL
+  DIRECT_URL
+  JWT_SECRET                <- conservar el secreto actual si se desea mantener
+                               sesiones existentes; durante un corte limpio se
+                               puede rotar con plan de relogin.
+  JWT_EXPIRES_IN
+  CORS_ORIGIN               <- dominio HTTPS exacto del Web, sin '*'.
+  NODE_ENV=production
+  TRUST_PROXY=1             <- solo tras confirmar el proxy de VM1.
+
+Variables Web esperadas al construir:
+
+  NEXT_PUBLIC_API_URL       <- URL HTTPS final de la API.
+  NEXT_PUBLIC_APP_URL       <- URL HTTPS final del Web; necesaria para QR OCR.
+  NODE_ENV=production
+
+Importante: las variables NEXT_PUBLIC_* quedan incorporadas al build de Next.js.
+Definir dominios finales antes del build de produccion y reconstruir si cambian.
+
+No incluir variables NEXT_PUBLIC_SUPABASE_* en Web. La aplicacion no usa
+Supabase Auth ni acceso directo a tablas.
+
+En produccion, usar un JWT_SECRET fuerte (minimo 32 caracteres, no conocido ni
+vacio) y un CORS_ORIGIN HTTPS explicito. Si se preserva el JWT actual, validar
+primero que cumple estas condiciones; si se rota, incluir el relogin dentro del
+plan de corte.
+
+
+===============================================================================
+11. FASE 3 - MIGRACION DE POSTGRESQL (ENSAYO PRIMERO)
+===============================================================================
+
+La migracion debe realizarse primero como ensayo completo a una base aislada en
+VM3. Nunca aplicar migraciones Prisma antes de restaurar un dump completo del
+schema origen: el dump ya incluye schema, datos, funciones, triggers y tabla
+_prisma_migrations.
+
+Procedimiento de ensayo:
+
+  1. Instalar/usar cliente pg_dump compatible con la version del PostgreSQL
+     origen. Confirmar versiones antes de empezar.
+  2. Crear backup completo de la base origen en formato custom, sin propietarios
+     ni privilegios:
+
+       pg_dump --schema=public --format=custom --no-owner --no-privileges ...
+
+     La URL/credencial debe llegar por un archivo protegido o prompt seguro,
+     nunca aparecer en logs, comandos persistidos ni Git.
+
+  3. Calcular SHA-256, guardar fecha, tamano y salida de pg_restore --list.
+  4. Restaurar en una database temporal/vacia de VM3.
+  5. Comparar:
+       - prisma migrate status;
+       - numero de tablas y migraciones;
+       - conteos por tablas clave;
+       - tenant RIVNU, usuarios/membresias, branding, caja y secuencias;
+       - login y endpoints de solo lectura contra la API de ensayo.
+  6. Ejecutar db:migrate:deploy SOLO si existen migraciones posteriores al dump.
+  7. Documentar duracion, errores, comandos y rollback.
+
+No se debe usar seed para poblar la base de produccion.
+
+Datos/Storage:
+
+  - pg_dump no migra objetos de Supabase Storage.
+  - Inventariar objectos y URLs antes de decidir MinIO/S3/almacenamiento privado.
+  - No eliminar buckets ni imagenes origen durante el ensayo.
+
+
+===============================================================================
+12. FASE 4 - DESPLIEGUE DE ENSAYO EN VMS
+===============================================================================
+
+Con la base de ensayo validada:
+
+  1. Clonar en VM2 un commit/tag exacto y limpio del repositorio remoto.
+     No desplegar desde un arbol local con cambios sin commit.
+  2. Instalar dependencias bloqueadas:
+
+       corepack enable
+       corepack pnpm install --frozen-lockfile
+
+  3. Generar Prisma y construir, sin ejecutar seed:
+
+       corepack pnpm db:generate
+       corepack pnpm --filter @qorvex/database build
+       corepack pnpm --filter @qorvex/api build
+       corepack pnpm --filter @qorvex/web build
+       corepack pnpm lint
+
+  4. Antes de levantar Docker, avisar y obtener aprobacion del plan concreto
+     de rivnu-network, rivnu-web, rivnu-api, puertos, volumenes y rollback.
+  5. Levantar Web y API en VM2 sin exponerlos publicamente.
+  6. Configurar VM1 como proxy interno de ensayo.
+  7. Comprobar API /health, login, dashboard, roles, caja, productos vacios,
+     importacion de prueba controlada y OCR movil por HTTPS cuando haya dominio
+     o entorno HTTPS valido.
+  8. Revisar logs, consumo de CPU/RAM, errores 5xx, CORS y cabeceras de proxy.
+
+Para OCR movil, comprobar tambien que el navegador puede llegar a los recursos
+del OCR local (incluido cdn.jsdelivr.net), que las rutas publicas QR no quedan
+bloqueadas por una allowlist de IP y que el telefono puede acceder por HTTPS al
+Web y al API.
+
+No apuntar DNS de produccion ni detener Vercel/Supabase durante el ensayo.
+
+
+===============================================================================
+13. FASE 5 - CORTE A PRODUCCION
+===============================================================================
+
+Solo iniciar cuando ensayo, backups, dominios, TLS, monitoreo y rollback hayan
+sido aprobados.
+
+Secuencia de corte:
+
+  1. Anunciar ventana de mantenimiento y congelar escrituras en Vercel/API
+     origen. Evitar que caja, ventas o importaciones generen diferencias.
+  2. Hacer backup final del origen, verificar hash y catalogo de restore.
+  3. Restaurar ese backup final en la database final vacia de VM3.
+  4. Validar migraciones y conteos contra el origen.
+  5. Aplicar solamente migraciones posteriores si corresponde.
+  6. Desplegar el commit/tag ya validado en VM2 con variables finales.
+  7. Activar Nginx/TLS en VM1 y validar por URL final antes del cambio DNS.
+  8. Ejecutar smoke tests funcionales:
+       - /health;
+       - login de cada rol;
+       - dashboard;
+       - productos/inventario;
+       - caja y sesion;
+       - importacion controlada;
+       - compras/facturas de suplidor;
+       - OCR movil por QR;
+       - CORS y cookies/token;
+       - logs y auditoria.
+  9. Cambiar DNS solo tras los smoke tests correctos.
+ 10. Vigilar logs y metricas durante el periodo acordado.
+
+Rollback:
+
+  - Conservar Vercel/Supabase sin cambios destructivos hasta cerrar el periodo
+    de estabilizacion.
+  - Si falla la nueva plataforma antes de recibir escrituras, revertir DNS a la
+    infraestructura anterior.
+  - Si hubo escrituras nuevas, detener y evaluar reconciliacion antes de mover
+    DNS o restaurar datos. Nunca sobrescribir datos nuevos a ciegas.
+
+
+===============================================================================
+14. BACKUPS, OBSERVABILIDAD Y OPERACION POSTERIOR
+===============================================================================
+
+Antes y despues del corte:
+
+  - Backups PostgreSQL diarios, cifrados y fuera de VM3.
+  - Retencion definida y pruebas periodicas de restauracion.
+  - Verificacion de hash y alerta si un backup falla.
+  - Monitoreo de espacio de disco, RAM, CPU, PostgreSQL, API, Web y certificados.
+  - Rotacion de logs para /opt/corestack/logs.
+  - Runbook de deploy/rollback en /opt/corestack/scripts.
+  - Una ruta /health y una readiness que confirme base de datos antes de
+    automatizar reinicios o failover.
+
+No considerar snapshots de VM como sustituto de backups restaurables de
+PostgreSQL.
+
+
+===============================================================================
+15. INFORMACION QUE CODEX DEBE PEDIR ANTES DE LAS FASES FINALES
+===============================================================================
+
+  - Dominio final para Web y API.
+  - Sistema operativo, capacidad de CPU/RAM/disco de cada VM.
+  - Version de PostgreSQL que se usara en VM3.
+  - Ubicacion externa/segura para backups.
+  - Politica de acceso SSH, sudo y usuarios de despliegue.
+  - Si el corte debe preservar sesiones JWT actuales o puede forzar relogin.
+  - Decision sobre almacenamiento de imagenes de productos.
+  - Ventana de mantenimiento para el corte final.
+
+
+===============================================================================
+16. PRIMER MENSAJE DE EJECUCION PARA CODEX
+===============================================================================
+
+Lee este documento completo. Empieza exclusivamente por la FASE 0 (preflight)
+y el analisis completo de arquitectura multi-tenant del repositorio. RIVNU es
+un tenant de CoreStack: no bifurques codigo, no rompas tenantId ni conviertas
+rivnu-network en un supuesto limite de seguridad de tenants.
+
+No hagas cambios de infraestructura, no uses contrasenas en texto, no instales
+paquetes y no despliegues nada aun. Inspecciona rivnu-network sin modificarlo,
+clasifica las referencias Qorvex/CoreStack y genera el informe solicitado.
+Presenta el plan concreto de FASE 1 y detente antes de cualquier modificacion.
+Cuando llegue el momento de Docker, cumple el PUNTO DE PARADA OBLIGATORIO de la
+seccion 6 y espera aprobacion explicita.

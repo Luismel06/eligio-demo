@@ -1,0 +1,23 @@
+# Replace the two required domain placeholders only after DNS is decided.
+# Obtain and validate TLS certificates before enabling the HTTPS servers.
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name __RIVNU_WEB_DOMAIN__;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name __RIVNU_API_DOMAIN__;
+    return 301 https://$host$request_uri;
+}
+
+# The corresponding TLS vhosts must proxy Web to 10.0.0.3:3001 and API to
+# 10.0.0.3:4001, set client_max_body_size 20M, and overwrite these headers:
+#   proxy_set_header Host $host;
+#   proxy_set_header X-Real-IP $remote_addr;
+#   proxy_set_header X-Forwarded-For $remote_addr;
+#   proxy_set_header X-Forwarded-Proto $scheme;
