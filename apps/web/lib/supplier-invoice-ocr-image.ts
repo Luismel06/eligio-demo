@@ -74,7 +74,7 @@ export type SupplierInvoiceImageQuality = {
 };
 
 export type SupplierInvoiceOcrRegion = {
-  id: 'header' | 'footer';
+  id: 'header' | 'table' | 'footer';
   image: Blob;
 };
 
@@ -141,6 +141,38 @@ export async function preprocessSupplierInvoiceImage(source: Blob): Promise<Blob
       workingCanvas.width = 1;
       workingCanvas.height = 1;
     }
+    if ('close' in bitmap && typeof bitmap.close === 'function') bitmap.close();
+  }
+}
+
+/**
+ * Rotates a captured page only in browser memory. This is intentionally a
+ * manual correction: a sideways photo is obvious to the operator, while
+ * guessing among four OCR orientations would make every capture slower and
+ * can select a wrong result on landscape supplier forms.
+ */
+export async function rotateSupplierInvoiceImage(
+  source: Blob,
+  angle: 90 | -90 = 90,
+): Promise<Blob> {
+  const bitmap = await loadImage(source);
+  const canvas = document.createElement('canvas');
+
+  try {
+    canvas.width = bitmap.height;
+    canvas.height = bitmap.width;
+    const context = canvas.getContext('2d');
+    if (!context) throw new Error('No se pudo girar la imagen para el OCR.');
+
+    context.fillStyle = '#ffffff';
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    context.translate(canvas.width / 2, canvas.height / 2);
+    context.rotate((angle * Math.PI) / 180);
+    context.drawImage(bitmap, -bitmap.width / 2, -bitmap.height / 2);
+    return await canvasToBlob(canvas);
+  } finally {
+    canvas.width = 1;
+    canvas.height = 1;
     if ('close' in bitmap && typeof bitmap.close === 'function') bitmap.close();
   }
 }
@@ -230,8 +262,8 @@ export async function assessSupplierInvoiceImageQuality(
 
 /**
  * Creates temporary OCR zones from the already corrected page. Header fields
- * such as RNC/NCF and footer totals benefit from a different page segmentation
- * mode. The Blobs are only kept for the current recognition call.
+ * such as RNC/NCF, table rows and footer totals benefit from different page
+ * segmentation modes. The Blobs are only kept for the current recognition call.
  */
 export async function createSupplierInvoiceOcrRegions(
   source: Blob,
@@ -248,9 +280,16 @@ export async function createSupplierInvoiceOcrRegions(
 
     context.drawImage(bitmap, 0, 0);
     const header = await cropCanvasToBlob(canvas, 0.025, 0.02, 0.95, 0.34);
+    // Most supplier formats place their line table between the company/client
+    // header and the footer totals. Reading it as a single block preserves
+    // horizontal rows better than sparse-text OCR, especially on multipage
+    // invoices. It intentionally remains a generous crop because every
+    // supplier arranges its header differently.
+    const table = await cropCanvasToBlob(canvas, 0.015, 0.12, 0.97, 0.78);
     const footer = await cropCanvasToBlob(canvas, 0.025, 0.62, 0.95, 0.35);
     return [
       { id: 'header', image: header },
+      { id: 'table', image: table },
       { id: 'footer', image: footer },
     ];
   } catch {

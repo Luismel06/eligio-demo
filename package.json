@@ -15,6 +15,7 @@
     "db:migrate": "pnpm --filter @qorvex/database migrate",
     "db:migrate:deploy": "pnpm --filter @qorvex/database migrate:deploy",
     "db:cleanup:rivnu": "pnpm --filter @qorvex/database cleanup:rivnu",
+    "db:cleanup:rivnu:operational": "pnpm --filter @qorvex/database cleanup:rivnu:operational",
     "db:seed": "pnpm --filter @qorvex/database seed",
     "db:studio": "pnpm --filter @qorvex/database studio"
   },

@@ -17,6 +17,7 @@
     "migrate": "dotenv -e ../../.env -- prisma migrate dev --schema prisma/schema.prisma",
     "migrate:deploy": "dotenv -e ../../.env -- prisma migrate deploy --schema prisma/schema.prisma",
     "cleanup:rivnu": "dotenv -e ../../.env -- tsx prisma/cleanup-rivnu-for-launch.ts",
+    "cleanup:rivnu:operational": "dotenv -e ../../.env -- tsx prisma/cleanup-rivnu-operational-data.ts",
     "seed": "dotenv -e ../../.env -- tsx prisma/seed.ts",
     "studio": "dotenv -e ../../.env -- prisma studio --schema prisma/schema.prisma",
     "lint": "tsc -p tsconfig.json --noEmit"

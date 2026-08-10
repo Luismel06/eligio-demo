@@ -152,7 +152,9 @@ const amountExpression = /(?:RD\$?\s*)?(?:\d{1,3}(?:[.,]\d{3})+[.,]\d{2}|\d+(?:[
  * Convierte el texto producido por Tesseract en sugerencias conservadoras.
  * Este parser no crea productos ni asume que los resultados sean definitivos:
  * cualquier campo ambiguo se deja vacío o se acompaña de una advertencia.
+ *
  */
+
 export function extractSupplierInvoiceOcr(
   rawText: string,
   options: SupplierInvoiceOcrOptions = {},

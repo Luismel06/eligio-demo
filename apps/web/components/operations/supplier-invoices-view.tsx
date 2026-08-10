@@ -83,6 +83,35 @@ const blankItem = (): EditableInvoiceItem => ({
 
 const emptyProductSearchTerms: string[] = [];
 
+/**
+ * El resultado del OCR nunca crea un producto ni modifica el catalogo. Esta
+ * informacion explica por que una linea pudo sugerir un producto, para que la
+ * persona pueda revisarlo antes de confirmar la factura.
+ */
+type OcrProductMatchSource =
+  | 'SUPPLIER_SKU'
+  | 'SUPPLIER_PRIMARY'
+  | 'SUPPLIER_PRODUCT'
+  | 'CATALOG_CODE'
+  | 'CATALOG_DESCRIPTION';
+
+type OcrProductMatch = {
+  product?: Product;
+  source?: OcrProductMatchSource;
+  isPrimarySupplierProduct?: boolean;
+  highConfidence?: boolean;
+  warning?: string;
+};
+
+type PurchaseOrderOcrSuggestion = {
+  ocrItem: SupplierInvoiceOcrItem;
+  quantity?: number;
+  costTotal: number;
+  costWeight: number;
+  taxRate?: number | null;
+  discountTotal?: number;
+};
+
 type SupplierInvoiceActionDialog =
   | { action: 'cancel-invoice'; invoice: SupplierInvoice }
   | {
@@ -91,6 +120,11 @@ type SupplierInvoiceActionDialog =
       invoiceNumber: string;
       payment: SupplierPayment;
     };
+
+type OcrMappingLearningResult = {
+  learned: number;
+  skippedDuplicateCodes: string[];
+};
 
 export function SupplierInvoicesView() {
   const session = useCurrentSession();
@@ -106,6 +140,7 @@ export function SupplierInvoicesView() {
   const [quickSupplierOpen, setQuickSupplierOpen] = useState(false);
   const [quickProductItemKey, setQuickProductItemKey] = useState<string | null>(null);
   const [ocrResult, setOcrResult] = useState<SupplierInvoiceOcrResult | null>(null);
+  const [ocrUnconfirmedOrderItemIds, setOcrUnconfirmedOrderItemIds] = useState<string[]>([]);
   const [detailStage, setDetailStage] = useState<'capture' | 'review'>('capture');
   const [editingId, setEditingId] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -185,6 +220,8 @@ export function SupplierInvoicesView() {
     queryFn: () => getSupplier(session?.tenantId ?? '', session?.accessToken ?? '', supplierId),
     enabled: Boolean(session && supplierId),
   });
+  const supplierProductMappingsLoading =
+    Boolean(supplierId) && (selectedSupplierQuery.isLoading || selectedSupplierQuery.isFetching);
   const ordersQuery = useQuery({
     queryKey: ['purchase-orders', session?.tenantId, 'supplier-invoice'],
     queryFn: () => getPurchaseOrders(session?.tenantId ?? '', session?.accessToken ?? ''),
@@ -239,7 +276,7 @@ export function SupplierInvoicesView() {
     () =>
       (ocrResult?.items ?? []).map((item) => ({
         item,
-        product: findProductForOcrItem(item, productOptions, selectedSupplierQuery.data?.products),
+        ...findProductForOcrItem(item, productOptions, selectedSupplierQuery.data?.products),
       })),
     [ocrResult, productOptions, selectedSupplierQuery.data?.products],
   );
@@ -255,7 +292,13 @@ export function SupplierInvoicesView() {
       ? ordersQuery.data?.find((order) => order.id === purchaseOrderId)
       : undefined;
     if (!purchaseOrder) {
-      return { purchaseOrder: null, missingItems: [], quantityDifferences: [] };
+      return {
+        purchaseOrder: null,
+        missingItems: [],
+        quantityDifferences: [],
+        costDifferences: [],
+        ocrUnconfirmedItems: [],
+      };
     }
 
     const invoiceItemsByOrderItem = new Map(
@@ -271,12 +314,41 @@ export function SupplierInvoicesView() {
       if (!invoiceItem || Number(invoiceItem.quantity) === Number(orderItem.quantity)) return [];
       return [{ orderItem, invoiceItem }];
     });
+    const costDifferences = purchaseOrder.items.flatMap((orderItem) => {
+      const invoiceItem = invoiceItemsByOrderItem.get(orderItem.id);
+      if (!invoiceItem) return [];
 
-    return { purchaseOrder, missingItems, quantityDifferences };
-  }, [items, ordersQuery.data, purchaseOrderId]);
+      const costChanged = !numbersMatch(orderItem.unitCostNet, invoiceItem.unitCostNet, 0.005);
+      const taxChanged = !numbersMatch(
+        orderItem.taxRate,
+        Number(invoiceItem.taxPercent || 0) / 100,
+        0.00005,
+      );
+      const discountChanged = !numbersMatch(
+        orderItem.discountTotal,
+        invoiceItem.discountTotal,
+        0.005,
+      );
+      if (!costChanged && !taxChanged && !discountChanged) return [];
+      return [{ orderItem, invoiceItem, costChanged, taxChanged, discountChanged }];
+    });
+    const ocrUnconfirmedItems = purchaseOrder.items.filter((orderItem) =>
+      ocrUnconfirmedOrderItemIds.includes(orderItem.id),
+    );
+
+    return {
+      purchaseOrder,
+      missingItems,
+      quantityDifferences,
+      costDifferences,
+      ocrUnconfirmedItems,
+    };
+  }, [items, ocrUnconfirmedOrderItemIds, ordersQuery.data, purchaseOrderId]);
   const hasOrderReconciliationWarning =
     orderReconciliation.missingItems.length > 0 ||
-    orderReconciliation.quantityDifferences.length > 0;
+    orderReconciliation.quantityDifferences.length > 0 ||
+    orderReconciliation.costDifferences.length > 0 ||
+    orderReconciliation.ocrUnconfirmedItems.length > 0;
   const hasInvoiceReconciliationWarning = hasOrderReconciliationWarning || hasOcrTotalMismatch;
 
   useEffect(() => {
@@ -309,9 +381,9 @@ export function SupplierInvoicesView() {
         : createSupplierInvoice(session.tenantId, session.accessToken, payload);
     },
     onSuccess: async (invoice) => {
-      const learnedMappings = await learnConfirmedOcrMappings();
+      const mappingLearning = await learnConfirmedOcrMappings();
       await invalidateInvoices(queryClient);
-      if (learnedMappings > 0 && session && supplierId) {
+      if (mappingLearning.learned > 0 && session && supplierId) {
         await queryClient.invalidateQueries({
           queryKey: ['supplier', session.tenantId, supplierId],
         });
@@ -325,9 +397,19 @@ export function SupplierInvoicesView() {
       toast.success(
         `Factura ${invoice.invoiceNumber} guardada. Completa la confirmación de factura y entrada.`,
       );
-      if (learnedMappings > 0) {
+      if (mappingLearning.learned > 0) {
         toast.success(
-          `${learnedMappings} ${learnedMappings === 1 ? 'producto fue vinculado' : 'productos fueron vinculados'} al suplidor para mejorar próximas lecturas OCR.`,
+          `${mappingLearning.learned} ${mappingLearning.learned === 1 ? 'producto fue vinculado' : 'productos fueron vinculados'} al suplidor para mejorar próximas lecturas OCR.`,
+        );
+      }
+      if (mappingLearning.skippedDuplicateCodes.length > 0) {
+        const codes = mappingLearning.skippedDuplicateCodes.slice(0, 3).join(', ');
+        const remaining = mappingLearning.skippedDuplicateCodes.length - 3;
+        toast.warning(
+          `${mappingLearning.skippedDuplicateCodes.length} ${mappingLearning.skippedDuplicateCodes.length === 1 ? 'código no se vinculó' : 'códigos no se vincularon'} para evitar una coincidencia OCR incorrecta.`,
+          {
+            description: `Ya están asignados a otro producto activo de este suplidor: ${codes}${remaining > 0 ? ` y ${remaining} más` : ''}. Revísalos desde Suplidores si corresponde.`,
+          },
         );
       }
     },
@@ -449,6 +531,7 @@ export function SupplierInvoicesView() {
     setNotes('');
     setItems([blankItem()]);
     setOcrResult(null);
+    setOcrUnconfirmedOrderItemIds([]);
     setQuickSupplierOpen(false);
     setQuickProductItemKey(null);
     setPendingInvoicePayload(null);
@@ -519,6 +602,7 @@ export function SupplierInvoicesView() {
     const matchingSupplier = findMatchingSupplier(result, activeSuppliers);
 
     setOcrResult(result);
+    setOcrUnconfirmedOrderItemIds([]);
     if (result.invoiceNumber) {
       setInvoiceNumber((current) => current || result.invoiceNumber!);
     }
@@ -549,15 +633,163 @@ export function SupplierInvoicesView() {
   }
 
   function applyOcrProductSuggestions() {
-    if (purchaseOrderId) {
-      toast.error(
-        'La orden de compra ya define sus productos. Revisa sus diferencias manualmente.',
-      );
+    if (supplierProductMappingsLoading) {
+      toast.info('Esperando los productos vinculados a este suplidor antes de aplicar el OCR.');
       return;
     }
-    const suggestedItems = ocrProductMatches.map(({ item, product }) => ({
+
+    if (purchaseOrderId) {
+      const purchaseOrder = ordersQuery.data?.find((order) => order.id === purchaseOrderId);
+      if (!purchaseOrder) {
+        toast.info('Esperando los detalles de la orden de compra antes de aplicar el OCR.');
+        return;
+      }
+
+      const orderItemById = new Map(purchaseOrder.items.map((item) => [item.id, item]));
+      const orderLines = items.filter(
+        (line) => line.purchaseOrderItemId && orderItemById.has(line.purchaseOrderItemId),
+      );
+      if (!orderLines.length) {
+        toast.error('La orden de compra no tiene líneas disponibles para comparar con el OCR.');
+        return;
+      }
+
+      const suggestions = new Map<string, PurchaseOrderOcrSuggestion>();
+      const highConfidenceOccurrencesByProductId = new Map<string, number>();
+      for (const match of ocrProductMatches) {
+        if (!match.product || !match.highConfidence) continue;
+        highConfidenceOccurrencesByProductId.set(
+          match.product.id,
+          (highConfidenceOccurrencesByProductId.get(match.product.id) ?? 0) + 1,
+        );
+      }
+      let outsideOrder = 0;
+      let needsReview = 0;
+
+      for (const match of ocrProductMatches) {
+        const { item, product } = match;
+        if (!product || !match.highConfidence) {
+          needsReview += 1;
+          continue;
+        }
+        const candidateLines = orderLines.filter((line) => line.productId === product.id);
+        if (!candidateLines.length) {
+          outsideOrder += 1;
+          continue;
+        }
+
+        const targetLine = findPurchaseOrderLineForOcrItem(
+          item,
+          candidateLines,
+          orderItemById,
+          suggestions,
+          highConfidenceOccurrencesByProductId.get(product.id) ?? 0,
+        );
+        if (!targetLine?.purchaseOrderItemId) {
+          needsReview += 1;
+          continue;
+        }
+
+        const quantity = item.quantity;
+        const unitCostNet = item.unitCostNet;
+        const taxRate = item.taxRate;
+        const discountTotal = item.discountTotal;
+        const current = suggestions.get(targetLine.purchaseOrderItemId) ?? {
+          ocrItem: item,
+          costTotal: 0,
+          costWeight: 0,
+        };
+
+        if (quantity !== undefined && Number.isFinite(quantity) && quantity >= 0) {
+          current.quantity = (current.quantity ?? 0) + quantity;
+        }
+        if (unitCostNet !== undefined && Number.isFinite(unitCostNet) && unitCostNet >= 0) {
+          const weight =
+            quantity !== undefined && Number.isFinite(quantity) && quantity > 0 ? quantity : 1;
+          current.costTotal += unitCostNet * weight;
+          current.costWeight += weight;
+        }
+        if (taxRate !== undefined && Number.isFinite(taxRate) && taxRate >= 0) {
+          current.taxRate =
+            current.taxRate === undefined || current.taxRate === taxRate ? taxRate : null;
+        }
+        if (discountTotal !== undefined && Number.isFinite(discountTotal) && discountTotal >= 0) {
+          current.discountTotal = (current.discountTotal ?? 0) + discountTotal;
+        }
+        suggestions.set(targetLine.purchaseOrderItemId, current);
+      }
+
+      const unconfirmedOrderItemIds = orderLines.flatMap((line) =>
+        line.purchaseOrderItemId && !suggestions.has(line.purchaseOrderItemId)
+          ? [line.purchaseOrderItemId]
+          : [],
+      );
+      setOcrUnconfirmedOrderItemIds(unconfirmedOrderItemIds);
+
+      if (!suggestions.size) {
+        toast.error(
+          'No hay coincidencias OCR de alta confianza para aplicar a esta orden de compra.',
+        );
+        return;
+      }
+
+      setItems((current) =>
+        current.map((line) => {
+          const suggestion = line.purchaseOrderItemId
+            ? suggestions.get(line.purchaseOrderItemId)
+            : undefined;
+          if (!suggestion) return line;
+
+          return {
+            ...line,
+            // Conservamos key, productId y purchaseOrderItemId de la orden.
+            // El OCR solo actualiza valores de la factura para que las
+            // diferencias se muestren antes de confirmar la entrada.
+            ocrItem: suggestion.ocrItem,
+            quantity:
+              suggestion.quantity === undefined ? line.quantity : String(suggestion.quantity),
+            unitCostNet:
+              suggestion.costWeight > 0
+                ? String(roundCurrency(suggestion.costTotal / suggestion.costWeight))
+                : line.unitCostNet,
+            taxPercent:
+              suggestion.taxRate === undefined || suggestion.taxRate === null
+                ? line.taxPercent
+                : String(roundCurrency(suggestion.taxRate * 100)),
+            discountTotal:
+              suggestion.discountTotal === undefined
+                ? line.discountTotal
+                : String(roundCurrency(suggestion.discountTotal)),
+          };
+        }),
+      );
+
+      toast.success(
+        `${suggestions.size} ${suggestions.size === 1 ? 'línea de la orden fue actualizada' : 'líneas de la orden fueron actualizadas'} con datos OCR. Revisa las diferencias antes de guardar.`,
+      );
+      if (outsideOrder || needsReview) {
+        toast.warning(
+          [
+            outsideOrder
+              ? `${outsideOrder} ${outsideOrder === 1 ? 'producto leído no pertenece' : 'productos leídos no pertenecen'} a la orden y no se agregaron.`
+              : null,
+            needsReview
+              ? `${needsReview} ${needsReview === 1 ? 'línea requiere' : 'líneas requieren'} selección manual.`
+              : null,
+          ]
+            .filter(Boolean)
+            .join(' '),
+        );
+      }
+      return;
+    }
+    const suggestedItems = ocrProductMatches.map(({ item, product, highConfidence }) => ({
       key: crypto.randomUUID(),
-      productId: product?.id ?? '',
+      // Una sugerencia por descripción o por un fragmento de código sirve
+      // para orientar a quien revisa, pero no debe seleccionar un producto
+      // por sí sola. En ferretería muchos SKU comparten prefijos y una
+      // selección automática equivocada terminaría afectando inventario.
+      productId: product && highConfidence ? product.id : '',
       ocrItem: item,
       quantity: item.quantity === undefined ? '1' : String(item.quantity),
       unitCostNet: item.unitCostNet === undefined ? '' : String(item.unitCostNet),
@@ -583,6 +815,7 @@ export function SupplierInvoicesView() {
 
   function selectOrder(orderId: string) {
     setPurchaseOrderId(orderId);
+    setOcrUnconfirmedOrderItemIds([]);
     if (!orderId) return;
     const order = ordersQuery.data?.find((candidate) => candidate.id === orderId);
     if (!order) return;
@@ -666,6 +899,7 @@ export function SupplierInvoicesView() {
   function loadInvoiceIntoForm(invoice: SupplierInvoice) {
     if (!invoice.items?.length) return;
     setEditingId(invoice.id);
+    setOcrUnconfirmedOrderItemIds([]);
     setSupplierId(invoice.supplierId);
     setPurchaseOrderId(invoice.purchaseOrderId ?? '');
     setInvoiceNumber(invoice.invoiceNumber);
@@ -696,6 +930,18 @@ export function SupplierInvoicesView() {
   }
 
   function updateItem(key: string, patch: Partial<EditableInvoiceItem>) {
+    const currentItem = items.find((item) => item.key === key);
+    if (
+      currentItem?.purchaseOrderItemId &&
+      (patch.quantity !== undefined ||
+        patch.unitCostNet !== undefined ||
+        patch.taxPercent !== undefined ||
+        patch.discountTotal !== undefined)
+    ) {
+      setOcrUnconfirmedOrderItemIds((current) =>
+        current.filter((itemId) => itemId !== currentItem.purchaseOrderItemId),
+      );
+    }
     setItems((current) =>
       current.map((item) => {
         if (item.key !== key) return item;
@@ -758,18 +1004,31 @@ export function SupplierInvoicesView() {
    * producto-suplidor; así el siguiente OCR reconoce el producto sin guardar
    * la foto ni aprender sugerencias que todavía no fueron aceptadas.
    */
-  async function learnConfirmedOcrMappings() {
-    if (!session || !supplierId || !ocrResult) return 0;
+  async function learnConfirmedOcrMappings(): Promise<OcrMappingLearningResult> {
+    if (!session || !supplierId || !ocrResult) {
+      return { learned: 0, skippedDuplicateCodes: [] };
+    }
 
     const alreadyLinked = new Set(
       (selectedSupplierQuery.data?.products ?? [])
         .filter((supplierProduct) => supplierProduct.active)
         .map((supplierProduct) => supplierProduct.productId),
     );
+    const supplierSkuProductIds = new Map<string, string>();
+    for (const supplierProduct of selectedSupplierQuery.data?.products ?? []) {
+      const supplierSku = supplierProduct.supplierSku?.trim();
+      if (!supplierProduct.active || !supplierSku) continue;
+      const supplierSkuKey = normalizeSupplierSkuKey(supplierSku);
+      if (supplierSkuKey) {
+        supplierSkuProductIds.set(supplierSkuKey, supplierProduct.productId);
+      }
+    }
     const candidates = new Map<string, EditableInvoiceItem>();
+    const skippedDuplicateCodes = new Set<string>();
 
     for (const item of items) {
       const supplierSku = item.ocrItem?.code?.trim();
+      const supplierSkuKey = supplierSku ? normalizeSupplierSkuKey(supplierSku) : '';
       if (
         !item.productId ||
         !supplierSku ||
@@ -778,7 +1037,17 @@ export function SupplierInvoicesView() {
       ) {
         continue;
       }
+
+      const linkedProductId = supplierSkuProductIds.get(supplierSkuKey);
+      if (linkedProductId && linkedProductId !== item.productId) {
+        skippedDuplicateCodes.add(supplierSku);
+        continue;
+      }
+
       candidates.set(item.productId, item);
+      if (supplierSkuKey) {
+        supplierSkuProductIds.set(supplierSkuKey, item.productId);
+      }
     }
 
     let learned = 0;
@@ -797,14 +1066,20 @@ export function SupplierInvoicesView() {
         });
         alreadyLinked.add(item.productId);
         learned += 1;
-      } catch {
+      } catch (error) {
         // La factura ya fue registrada correctamente. Un vínculo que choque
         // con una relación existente se omite para no modificarla ni crear
         // duplicados; podrá revisarse desde Suplidores.
+        if (isDuplicateSupplierSkuError(error) && item.ocrItem?.code) {
+          skippedDuplicateCodes.add(item.ocrItem.code);
+        }
       }
     }
 
-    return learned;
+    return {
+      learned,
+      skippedDuplicateCodes: [...skippedDuplicateCodes],
+    };
   }
 
   return (
@@ -942,50 +1217,79 @@ export function SupplierInvoicesView() {
                           elegir o registrar, sin crear duplicados automáticamente.
                         </p>
                       </div>
-                      {!purchaseOrderId ? (
-                        <Button
-                          type="button"
-                          variant="outline"
-                          size="sm"
-                          onClick={applyOcrProductSuggestions}
-                        >
-                          Preparar líneas detectadas
-                        </Button>
-                      ) : null}
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        disabled={supplierProductMappingsLoading}
+                        onClick={applyOcrProductSuggestions}
+                      >
+                        {supplierProductMappingsLoading
+                          ? 'Cargando vínculos del suplidor…'
+                          : purchaseOrderId
+                            ? 'Aplicar a líneas de la orden'
+                            : 'Preparar líneas detectadas'}
+                      </Button>
                     </div>
                     <div className="mt-3 space-y-2">
-                      {ocrProductMatches.map(({ item, product }, index) => (
-                        <div
-                          key={`${item.rawText}-${index}`}
-                          className="grid gap-2 rounded-md border bg-muted/15 p-2.5 text-sm md:grid-cols-[minmax(0,1fr)_auto_auto] md:items-center"
-                        >
-                          <div className="min-w-0">
-                            <p className="truncate font-medium">
-                              {item.description ?? 'Descripción por confirmar'}
-                            </p>
-                            <p className="truncate text-xs text-muted-foreground">
-                              {product
-                                ? `Coincide con: ${product.name}${product.sku ? ` · ${product.sku}` : ''}`
-                                : 'Sin coincidencia automática: selección manual requerida'}
-                            </p>
-                          </div>
-                          <p className="text-xs text-muted-foreground">
-                            {item.quantity ?? '—'} ×{' '}
-                            {item.unitCostNet === undefined
-                              ? '—'
-                              : formatCurrency(item.unitCostNet)}
-                          </p>
-                          <span
-                            className={
-                              product
-                                ? 'w-fit rounded-full bg-success/10 px-2 py-1 text-xs font-medium text-success'
-                                : 'w-fit rounded-full bg-warning/10 px-2 py-1 text-xs font-medium text-warning'
-                            }
+                      {ocrProductMatches.map(
+                        (
+                          {
+                            item,
+                            product,
+                            source,
+                            isPrimarySupplierProduct,
+                            warning,
+                            highConfidence,
+                          },
+                          index,
+                        ) => (
+                          <div
+                            key={`${item.rawText}-${index}`}
+                            className="grid gap-2 rounded-md border bg-muted/15 p-2.5 text-sm md:grid-cols-[minmax(0,1fr)_auto_auto] md:items-center"
                           >
-                            {product ? 'Coincidencia' : 'Revisar'}
-                          </span>
-                        </div>
-                      ))}
+                            <div className="min-w-0">
+                              <p className="truncate font-medium">
+                                {item.description ?? 'Descripción por confirmar'}
+                              </p>
+                              <p className="truncate text-xs text-muted-foreground">
+                                {product
+                                  ? `Coincide con: ${product.name}${product.sku ? ` · ${product.sku}` : ''}`
+                                  : 'Sin coincidencia automática: selección manual requerida'}
+                              </p>
+                              {product ? (
+                                <p className="truncate text-xs text-muted-foreground">
+                                  {getOcrProductMatchDescription(source, isPrimarySupplierProduct)}
+                                </p>
+                              ) : null}
+                              {warning ? (
+                                <p className="truncate text-xs text-warning">{warning}</p>
+                              ) : null}
+                            </div>
+                            <p className="text-xs text-muted-foreground">
+                              {item.quantity ?? '—'} ×{' '}
+                              {item.unitCostNet === undefined
+                                ? '—'
+                                : formatCurrency(item.unitCostNet)}
+                            </p>
+                            <span
+                              className={
+                                source === 'SUPPLIER_PRIMARY'
+                                  ? 'w-fit rounded-full bg-primary/10 px-2 py-1 text-xs font-medium text-primary'
+                                  : source === 'SUPPLIER_SKU' || source === 'SUPPLIER_PRODUCT'
+                                    ? 'w-fit rounded-full bg-success/10 px-2 py-1 text-xs font-medium text-success'
+                                    : product
+                                      ? 'w-fit rounded-full bg-success/10 px-2 py-1 text-xs font-medium text-success'
+                                      : 'w-fit rounded-full bg-warning/10 px-2 py-1 text-xs font-medium text-warning'
+                              }
+                            >
+                              {product && highConfidence
+                                ? getOcrProductMatchBadge(source, isPrimarySupplierProduct)
+                                : 'Revisar'}
+                            </span>
+                          </div>
+                        ),
+                      )}
                     </div>
                   </div>
                 ) : null}
@@ -1030,6 +1334,7 @@ export function SupplierInvoicesView() {
                         onChange={(event) => {
                           setSupplierId(event.target.value);
                           setPurchaseOrderId('');
+                          setOcrUnconfirmedOrderItemIds([]);
                           if (!editingId) {
                             setItems([blankItem()]);
                           }
@@ -1286,9 +1591,14 @@ export function SupplierInvoicesView() {
                         variant="ghost"
                         size="icon"
                         disabled={items.length === 1}
-                        onClick={() =>
-                          setItems((current) => current.filter((entry) => entry.key !== item.key))
-                        }
+                        onClick={() => {
+                          if (item.purchaseOrderItemId) {
+                            setOcrUnconfirmedOrderItemIds((current) =>
+                              current.filter((itemId) => itemId !== item.purchaseOrderItemId),
+                            );
+                          }
+                          setItems((current) => current.filter((entry) => entry.key !== item.key));
+                        }}
                         aria-label="Eliminar línea"
                       >
                         <Trash2 className="h-4 w-4" />
@@ -1817,6 +2127,22 @@ export function SupplierInvoicesView() {
                 </ul>
               </div>
             ) : null}
+            {orderReconciliation.ocrUnconfirmedItems.length ? (
+              <div>
+                <p className="font-medium">Líneas de la orden que el OCR no pudo confirmar</p>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  Se conservan los valores solicitados hasta que los revises o los ajustes
+                  manualmente; no se agregaron ni cambiaron automáticamente.
+                </p>
+                <ul className="mt-1 list-disc space-y-1 pl-5 text-muted-foreground">
+                  {orderReconciliation.ocrUnconfirmedItems.map((item) => (
+                    <li key={item.id}>
+                      {item.descriptionSnapshot} · solicitado: {Number(item.quantity)}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
             {orderReconciliation.quantityDifferences.length ? (
               <div>
                 <p className="font-medium">Cantidades distintas</p>
@@ -1827,6 +2153,29 @@ export function SupplierInvoicesView() {
                       facturado: {Number(invoiceItem.quantity)}
                     </li>
                   ))}
+                </ul>
+              </div>
+            ) : null}
+            {orderReconciliation.costDifferences.length ? (
+              <div>
+                <p className="font-medium">Costos, ITBIS o descuentos distintos</p>
+                <ul className="mt-1 list-disc space-y-1 pl-5 text-muted-foreground">
+                  {orderReconciliation.costDifferences.map(
+                    ({ orderItem, invoiceItem, costChanged, taxChanged, discountChanged }) => (
+                      <li key={orderItem.id}>
+                        {orderItem.descriptionSnapshot}
+                        {costChanged
+                          ? ` · costo solicitado: ${formatCurrency(Number(orderItem.unitCostNet))} · facturado: ${formatCurrency(Number(invoiceItem.unitCostNet))}`
+                          : ''}
+                        {taxChanged
+                          ? ` · ITBIS solicitado: ${roundCurrency(Number(orderItem.taxRate) * 100)}% · facturado: ${roundCurrency(Number(invoiceItem.taxPercent || 0))}%`
+                          : ''}
+                        {discountChanged
+                          ? ` · descuento solicitado: ${formatCurrency(Number(orderItem.discountTotal))} · facturado: ${formatCurrency(Number(invoiceItem.discountTotal || 0))}`
+                          : ''}
+                      </li>
+                    ),
+                  )}
                 </ul>
               </div>
             ) : null}
@@ -2136,42 +2485,406 @@ function findMatchingSupplier(result: SupplierInvoiceOcrResult, suppliers: Suppl
   return matchingByName.length === 1 ? matchingByName[0] : undefined;
 }
 
+/**
+ * Una orden puede tener el mismo producto en más de una línea. La lectura no
+ * se agrupa por productId: primero intenta el código guardado en cada línea de
+ * la orden y, si no lo distingue, asigna cada aparición OCR a la siguiente
+ * línea todavía disponible. Así conservamos la trazabilidad de cada
+ * purchaseOrderItemId y no alteramos todas las líneas repetidas a la vez.
+ */
+function findPurchaseOrderLineForOcrItem(
+  item: SupplierInvoiceOcrItem,
+  candidateLines: EditableInvoiceItem[],
+  orderItemById: Map<string, PurchaseOrder['items'][number]>,
+  suggestions: Map<string, PurchaseOrderOcrSuggestion>,
+  ocrOccurrenceCount: number,
+) {
+  const orderLines = candidateLines.filter(
+    (line): line is EditableInvoiceItem & { purchaseOrderItemId: string } =>
+      Boolean(line.purchaseOrderItemId),
+  );
+  const code = item.code?.trim();
+
+  if (code) {
+    const rankedByCode = orderLines
+      .map((line) => {
+        const orderItem = orderItemById.get(line.purchaseOrderItemId);
+        const score = orderItem
+          ? Math.max(
+              catalogCodeMatchScore(code, orderItem.supplierSkuSnapshot),
+              catalogCodeMatchScore(code, orderItem.skuSnapshot),
+              catalogCodeMatchScore(code, orderItem.barcodeSnapshot),
+            )
+          : 0;
+        return { line, score };
+      })
+      // Una línea de una OC no puede cambiarse por un prefijo OCR. Solo un
+      // código normalizado idéntico identifica con seguridad la ocurrencia
+      // correcta cuando el mismo producto aparece más de una vez.
+      .filter((entry) => entry.score === 100);
+    const bestScore = Math.max(0, ...rankedByCode.map((entry) => entry.score));
+
+    if (bestScore) {
+      const matchingLines = rankedByCode
+        .filter((entry) => entry.score === bestScore)
+        .map((entry) => entry.line);
+      const nextUnassigned = matchingLines.find(
+        (line) => !suggestions.has(line.purchaseOrderItemId),
+      );
+      if (matchingLines.length === 1) {
+        return nextUnassigned ?? matchingLines[0];
+      }
+      // Códigos idénticos entre líneas repetidas no bastan por sí solos para
+      // distinguirlas. Solo usamos el orden de aparición si el OCR leyó la
+      // misma cantidad de apariciones del producto que la orden contiene.
+      if (ocrOccurrenceCount === orderLines.length && nextUnassigned) {
+        return nextUnassigned;
+      }
+    }
+  }
+
+  const nextUnassigned = orderLines.find((line) => !suggestions.has(line.purchaseOrderItemId));
+  if (orderLines.length === 1) return nextUnassigned ?? orderLines[0];
+  if (ocrOccurrenceCount === orderLines.length && nextUnassigned) return nextUnassigned;
+
+  // Con líneas repetidas y sin una coincidencia por código u ocurrencia
+  // completa, no es seguro decidir cuál línea de orden debe alterarse.
+  return undefined;
+}
+
 function findProductForOcrItem(
   item: SupplierInvoiceOcrItem,
   products: Product[],
   supplierProducts: Supplier['products'] | undefined,
-) {
-  const code = normalizeCatalogCode(item.code ?? '');
+): OcrProductMatch {
+  const productById = new Map(products.map((product) => [product.id, product]));
+  const activeSupplierProducts = (supplierProducts ?? []).filter(
+    (supplierProduct) => supplierProduct.active && productById.has(supplierProduct.productId),
+  );
+  const code = item.code?.trim();
+
   if (code) {
-    const linkedBySupplierSku = (supplierProducts ?? []).filter(
-      (supplierProduct) =>
-        supplierProduct.active && normalizeCatalogCode(supplierProduct.supplierSku ?? '') === code,
+    // El codigo propio del suplidor es la evidencia mas confiable. Los
+    // formatos de factura suelen separar ese codigo con guiones, espacios o
+    // una segunda referencia; por eso se comparan tambien sus fragmentos.
+    const bySupplierSku = pickOcrProductCandidate(
+      activeSupplierProducts.flatMap((supplierProduct) => {
+        const score = catalogCodeMatchScore(code, supplierProduct.supplierSku);
+        const product = productById.get(supplierProduct.productId);
+        if (!product || !score) return [];
+        return [
+          {
+            product,
+            source: 'SUPPLIER_SKU' as const,
+            score: 1_000 + score,
+            evidenceScore: score,
+            isPrimary: supplierProduct.isPrimary,
+          },
+        ];
+      }),
     );
-    if (linkedBySupplierSku.length === 1) {
-      return products.find((product) => product.id === linkedBySupplierSku[0].productId);
-    }
-    const byCode = products.filter(
-      (product) =>
-        normalizeCatalogCode(product.sku ?? '') === code ||
-        normalizeCatalogCode(product.barcode ?? '') === code,
+    if (bySupplierSku) return bySupplierSku;
+
+    // Algunos suplidores imprimen nuestro SKU o el codigo de barras en vez de
+    // su codigo propio. Si el producto ya esta vinculado a ese suplidor, ese
+    // vinculo sigue teniendo prioridad sobre otra coincidencia del catalogo.
+    const byLinkedCatalogCode = pickOcrProductCandidate(
+      activeSupplierProducts.flatMap((supplierProduct) => {
+        const product = productById.get(supplierProduct.productId);
+        if (!product) return [];
+        const score = Math.max(
+          catalogCodeMatchScore(code, product.sku),
+          catalogCodeMatchScore(code, product.barcode),
+        );
+        if (!score) return [];
+        return [
+          {
+            product,
+            source: supplierProduct.isPrimary
+              ? ('SUPPLIER_PRIMARY' as const)
+              : ('SUPPLIER_PRODUCT' as const),
+            score: 950 + score,
+            evidenceScore: score,
+            isPrimary: supplierProduct.isPrimary,
+          },
+        ];
+      }),
     );
-    if (byCode.length === 1) return byCode[0];
+    if (byLinkedCatalogCode) return byLinkedCatalogCode;
+
+    // Solo aceptamos un codigo del catalogo sin vinculo de suplidor cuando la
+    // coincidencia es exacta. Asi un fragmento OCR no selecciona por error un
+    // producto de otra marca o de otro suplidor.
+    const byCatalogCode = pickOcrProductCandidate(
+      products.flatMap((product) => {
+        const score = Math.max(
+          catalogCodeMatchScore(code, product.sku),
+          catalogCodeMatchScore(code, product.barcode),
+        );
+        if (score !== 100) return [];
+        return [
+          {
+            product,
+            source: 'CATALOG_CODE' as const,
+            score: 900 + score,
+            evidenceScore: score,
+            isPrimary: false,
+          },
+        ];
+      }),
+    );
+    if (byCatalogCode) return byCatalogCode;
   }
 
   const description = normalizeCatalogText(item.description ?? '');
-  if (description.length < 6) return undefined;
-  const byDescription = products.filter((product) => {
-    const names = [product.name, product.description]
-      .filter((name): name is string => Boolean(name))
-      .map(normalizeCatalogText);
-    return names.some(
-      (name) =>
-        name === description ||
-        (Math.min(name.length, description.length) >= 9 &&
-          (name.includes(description) || description.includes(name))),
-    );
-  });
-  return byDescription.length === 1 ? byDescription[0] : undefined;
+  if (description.length < 6) return {};
+
+  // Cuando no hay codigo confiable, primero se compara contra los productos
+  // que el suplidor seleccionado realmente distribuye. El producto marcado
+  // como principal solo desempata resultados practicamente equivalentes; no
+  // sustituye una descripcion claramente mas precisa.
+  const bySupplierDescription = pickOcrProductCandidate(
+    activeSupplierProducts.flatMap((supplierProduct) => {
+      const product = productById.get(supplierProduct.productId);
+      if (!product) return [];
+      const similarity = productDescriptionMatchScore(description, product);
+      if (similarity < 72) return [];
+      return [
+        {
+          product,
+          source: supplierProduct.isPrimary
+            ? ('SUPPLIER_PRIMARY' as const)
+            : ('SUPPLIER_PRODUCT' as const),
+          score: 600 + similarity,
+          evidenceScore: similarity,
+          isPrimary: supplierProduct.isPrimary,
+        },
+      ];
+    }),
+  );
+  if (bySupplierDescription) return bySupplierDescription;
+
+  const byCatalogDescription = pickOcrProductCandidate(
+    products.flatMap((product) => {
+      const similarity = productDescriptionMatchScore(description, product);
+      if (similarity < 82) return [];
+      return [
+        {
+          product,
+          source: 'CATALOG_DESCRIPTION' as const,
+          score: 400 + similarity,
+          evidenceScore: similarity,
+          isPrimary: false,
+        },
+      ];
+    }),
+  );
+  return byCatalogDescription ?? {};
+}
+
+type OcrProductMatchCandidate = {
+  product: Product;
+  source: OcrProductMatchSource;
+  score: number;
+  evidenceScore: number;
+  isPrimary: boolean;
+};
+
+function pickOcrProductCandidate(
+  candidates: OcrProductMatchCandidate[],
+): OcrProductMatch | undefined {
+  if (!candidates.length) return undefined;
+
+  // Una misma referencia puede coincidir a la vez con SKU y codigo de barras.
+  // Conservamos una sola candidatura por producto antes de evaluar ambiguedad.
+  const byProductId = new Map<string, OcrProductMatchCandidate>();
+  for (const candidate of candidates) {
+    const current = byProductId.get(candidate.product.id);
+    if (
+      !current ||
+      candidate.score > current.score ||
+      (candidate.score === current.score && candidate.isPrimary && !current.isPrimary)
+    ) {
+      byProductId.set(candidate.product.id, candidate);
+    }
+  }
+
+  const ranked = [...byProductId.values()].sort(
+    (left, right) =>
+      right.score - left.score ||
+      Number(right.isPrimary) - Number(left.isPrimary) ||
+      left.product.name.localeCompare(right.product.name, 'es'),
+  );
+  const best = ranked[0];
+  const next = ranked[1];
+
+  if (next && best.score === next.score && best.isPrimary === next.isPrimary) {
+    const supplierMatch = best.source.startsWith('SUPPLIER');
+    return {
+      warning: supplierMatch
+        ? 'El OCR coincide con varios productos de este suplidor. Selecciona el correcto.'
+        : 'El OCR coincide con varios productos del catalogo. Selecciona el correcto.',
+    };
+  }
+
+  const isExactCodeMatch =
+    best.evidenceScore === 100 &&
+    (best.source === 'SUPPLIER_SKU' ||
+      best.source === 'SUPPLIER_PRIMARY' ||
+      best.source === 'SUPPLIER_PRODUCT' ||
+      best.source === 'CATALOG_CODE');
+
+  return {
+    product: best.product,
+    source: best.source,
+    isPrimarySupplierProduct: best.isPrimary,
+    // Solo un código normalizado idéntico puede completar una línea sin
+    // intervención. Prefijos, fragmentos y descripciones se muestran como
+    // ayuda visual, pero se dejan para selección explícita.
+    highConfidence: isExactCodeMatch,
+    warning: isExactCodeMatch
+      ? undefined
+      : 'Coincidencia sugerida: confirma el producto manualmente antes de aplicarlo.',
+  };
+}
+
+function catalogCodeMatchScore(value: string, expected?: string | null) {
+  const detected = normalizedCodeVariants(value);
+  const candidate = normalizedCodeVariants(expected ?? '');
+  if (!detected.length || !candidate.length) return 0;
+
+  if (detected.some((left) => candidate.some((right) => left === right))) return 100;
+
+  if (
+    detected.some((left) =>
+      candidate.some(
+        (right) =>
+          Math.min(left.length, right.length) >= 7 &&
+          (left.startsWith(right) || right.startsWith(left)),
+      ),
+    )
+  ) {
+    // En varias facturas el OCR une al código del suplidor una segunda
+    // referencia. Un prefijo largo y exacto sigue siendo evidencia fuerte.
+    return 94;
+  }
+
+  return detected.some((left) =>
+    candidate.some(
+      (right) =>
+        Math.min(left.length, right.length) >= 7 && (left.includes(right) || right.includes(left)),
+    ),
+  )
+    ? 88
+    : 0;
+}
+
+function normalizedCodeVariants(value: string) {
+  const compact = normalizeCatalogCode(value);
+  const rawFragments = value
+    .split(/[\\s|/;,:]+/)
+    .map(normalizeCatalogCode)
+    .filter(Boolean);
+  const fragments = rawFragments.filter(
+    (fragment) => fragment.length >= 6 || (rawFragments.length === 1 && fragment.length >= 4),
+  );
+  return [...new Set([compact, ...fragments].filter((fragment) => fragment.length >= 4))];
+}
+
+function productDescriptionMatchScore(description: string, product: Product) {
+  const productTexts = [product.name, product.description]
+    .filter((value): value is string => Boolean(value?.trim()))
+    .map(normalizeCatalogText);
+  const bestTextScore = Math.max(
+    0,
+    ...productTexts.map((productText) => catalogTextSimilarity(description, productText)),
+  );
+  const brand = normalizeCatalogText(product.brand ?? '');
+  const brandBoost = brand.length >= 3 && description.includes(brand) ? 8 : 0;
+  return Math.min(100, bestTextScore + brandBoost);
+}
+
+function catalogTextSimilarity(left: string, right: string) {
+  if (!left || !right) return 0;
+  if (left === right) return 100;
+
+  const shorter = left.length <= right.length ? left : right;
+  const longer = left.length > right.length ? left : right;
+  if (shorter.length >= 6 && longer.includes(shorter)) return 94;
+
+  const leftTokens = meaningfulCatalogTokens(left);
+  const rightTokens = meaningfulCatalogTokens(right);
+  if (leftTokens.length < 2 || rightTokens.length < 2) return 0;
+
+  const rightSet = new Set(rightTokens);
+  const common = leftTokens.filter((token) => rightSet.has(token));
+  if (common.length < 2) return 0;
+
+  const coverage = common.length / Math.min(leftTokens.length, rightTokens.length);
+  const union = new Set([...leftTokens, ...rightTokens]).size;
+  const jaccard = common.length / union;
+  return Math.round(coverage * 70 + jaccard * 22 + (coverage === 1 ? 8 : 0));
+}
+
+function meaningfulCatalogTokens(value: string) {
+  const ignored = new Set([
+    'DE',
+    'DEL',
+    'LA',
+    'EL',
+    'LOS',
+    'LAS',
+    'CON',
+    'PARA',
+    'POR',
+    'UND',
+    'UNI',
+    'UNIDAD',
+    'PIEZA',
+    'PZA',
+    'REF',
+  ]);
+  return value.split(' ').filter((token) => token.length >= 2 && !ignored.has(token));
+}
+
+function getOcrProductMatchBadge(
+  source?: OcrProductMatchSource,
+  isPrimarySupplierProduct?: boolean,
+) {
+  switch (source) {
+    case 'SUPPLIER_SKU':
+      return isPrimarySupplierProduct ? 'Código suplidor · principal' : 'Código suplidor';
+    case 'SUPPLIER_PRIMARY':
+      return 'Principal del suplidor';
+    case 'SUPPLIER_PRODUCT':
+      return 'Vinculado';
+    case 'CATALOG_CODE':
+      return 'Código catálogo';
+    default:
+      return 'Coincidencia';
+  }
+}
+
+function getOcrProductMatchDescription(
+  source?: OcrProductMatchSource,
+  isPrimarySupplierProduct?: boolean,
+) {
+  switch (source) {
+    case 'SUPPLIER_SKU':
+      return isPrimarySupplierProduct
+        ? 'Reconocido por el código del producto marcado como principal para este suplidor.'
+        : 'Reconocido por el código registrado para este suplidor.';
+    case 'SUPPLIER_PRIMARY':
+      return 'Coincidencia con el producto marcado como principal para este suplidor.';
+    case 'SUPPLIER_PRODUCT':
+      return 'Coincidencia con un producto vinculado a este suplidor.';
+    case 'CATALOG_CODE':
+      return 'Reconocido por un código exacto del catálogo.';
+    case 'CATALOG_DESCRIPTION':
+      return 'Coincidencia por descripcion del catalogo.';
+    default:
+      return 'Coincidencia pendiente de revision.';
+  }
 }
 
 function normalizeCatalogText(value: string) {
@@ -2188,8 +2901,26 @@ function normalizeCatalogCode(value: string) {
   return value.toUpperCase().replace(/[^A-Z0-9]/g, '');
 }
 
+function normalizeSupplierSkuKey(value: string) {
+  return value
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, '');
+}
+
+function isDuplicateSupplierSkuError(error: unknown) {
+  if (!(error instanceof Error)) return false;
+  const message = normalizeSupplierSkuKey(error.message);
+  return message.includes('CODIGODESUPLIDOR') && message.includes('VINCULADOALPRODUCTO');
+}
+
 function roundCurrency(value: number) {
   return Math.round((value + Number.EPSILON) * 100) / 100;
+}
+
+function numbersMatch(left: string | number, right: string | number, tolerance: number) {
+  return Math.abs(Number(left) - Number(right)) <= tolerance;
 }
 
 function toPositiveCurrencyAmount(value: string) {

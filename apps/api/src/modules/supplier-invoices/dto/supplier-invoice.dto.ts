@@ -208,6 +208,21 @@ export class ConfirmSupplierInvoiceEntryDto {
   @MaxLength(1000)
   notes?: string;
 
+  /**
+   * Una factura ligada a una orden puede reflejar lo que realmente entregó el
+   * suplidor: cantidades distintas, líneas faltantes o costos diferentes. No
+   * se permite confirmar silenciosamente esas diferencias; la interfaz debe
+   * mostrarlas y el usuario debe aceptarlas de forma expresa.
+   */
+  @IsOptional()
+  @IsBoolean()
+  orderReconciliationAccepted?: boolean;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  orderReconciliationNote?: string;
+
   @IsArray()
   @ArrayMinSize(1)
   @ValidateNested({ each: true })

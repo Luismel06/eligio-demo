@@ -1360,6 +1360,13 @@ export type GoodsReceipt = {
 export type GoodsReceiptPayload = {
   supplierInvoiceId: string;
   notes?: string;
+  /**
+   * Se usa únicamente al confirmar una entrada desde una factura ligada a una
+   * orden de compra. El servidor vuelve a calcular las diferencias y exige
+   * esta aceptación cuando existen.
+   */
+  orderReconciliationAccepted?: boolean;
+  orderReconciliationNote?: string;
   items: Array<{
     supplierInvoiceItemId: string;
     quantityReceived: number;
@@ -1396,7 +1403,7 @@ const apiMessageTranslations: Record<string, string> = {
   'Invalid credentials.': 'Credenciales invalidas.',
   'Tenant not found.': 'Empresa no encontrada.',
   'This user already belongs to this tenant.': 'Este usuario ya pertenece a esta empresa.',
-  'Tenant user limit reached.': 'La empresa ya tiene el limite de 4 usuarios activos.',
+  'Tenant user limit reached.': 'La empresa ya tiene el limite de 5 usuarios activos.',
   'Employee not found for tenant.': 'Empleado no encontrado en esta empresa.',
   'Employee membership not found.': 'No se encontro la membresia del empleado.',
   'Employee management permission is required.': 'Necesitas permiso para gestionar empleados.',
@@ -1537,6 +1544,9 @@ const apiMessageTranslations: Record<string, string> = {
   'Select an open cash session for this refund.':
     'Selecciona la caja abierta que entregara el reembolso.',
   'Invalid return request status.': 'Estado de devolucion invalido.',
+  'Quotation requires client name.': 'El nombre del cliente es requerido para la cotizacion.',
+  'Quotation document type and document number must be provided together.':
+    'Si indicas un documento, selecciona su tipo y escribe el numero completo.',
   'Quotation requires document type and document number.':
     'La cotizacion requiere tipo y numero de documento.',
   'Quotation document type must be RNC or CEDULA.':

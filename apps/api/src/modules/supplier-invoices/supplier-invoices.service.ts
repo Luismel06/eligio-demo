@@ -581,6 +581,18 @@ export class SupplierInvoicesService {
             );
           }
 
+          // La factura conserva lo realmente entregado/facturado, pero nunca
+          // debe pasar de borrador sin que una persona revise explícitamente
+          // las diferencias frente a la orden de compra. Esto también protege
+          // las llamadas directas a la API, no solo la pantalla web.
+          await this.assertOrderReconciliationAccepted(
+            tx,
+            tenantId,
+            userId,
+            id,
+            dto,
+          );
+
           const receiptId = await this.receiptsService.createAndConfirmInTransaction(
             tx,
             tenantId,
@@ -609,6 +621,169 @@ export class SupplierInvoicesService {
     } catch (error) {
       this.rethrowTransactionError(error);
     }
+  }
+
+  /**
+   * Recalcula en el servidor las diferencias entre la factura y su orden de
+   * compra. La interfaz muestra este mismo control como ayuda, pero este
+   * guardia vive aquí para que nadie pueda registrar o recibir una factura
+   * diferente por una llamada directa a la API.
+   *
+   * La regla estructural se mantiene estricta: una factura asociada a una
+   * orden solo puede contener líneas de esa orden. Por eso una línea extra no
+   * se acepta como una "diferencia"; debe agregarse primero a la orden, con
+   * su trazabilidad normal.
+   */
+  private async assertOrderReconciliationAccepted(
+    tx: Prisma.TransactionClient,
+    tenantId: string,
+    userId: string,
+    invoiceId: string,
+    dto: ConfirmSupplierInvoiceEntryDto,
+  ) {
+    const invoice = await tx.supplierInvoice.findFirst({
+      where: { id: invoiceId, tenantId },
+      select: {
+        invoiceNumber: true,
+        purchaseOrder: {
+          select: {
+            id: true,
+            orderNumber: true,
+            items: {
+              select: {
+                id: true,
+                productId: true,
+                descriptionSnapshot: true,
+                quantity: true,
+                unitCostNet: true,
+                unitCostWithTax: true,
+                taxRate: true,
+                discountTotal: true,
+              },
+            },
+          },
+        },
+        items: {
+          select: {
+            id: true,
+            purchaseOrderItemId: true,
+            productId: true,
+            descriptionSnapshot: true,
+            quantity: true,
+            unitCostNet: true,
+            unitCostWithTax: true,
+            taxRate: true,
+            discountTotal: true,
+          },
+        },
+      },
+    });
+
+    if (!invoice) {
+      throw new NotFoundException('Supplier invoice not found for tenant.');
+    }
+    if (!invoice.purchaseOrder) return;
+
+    const orderItemsById = new Map(
+      invoice.purchaseOrder.items.map((item) => [item.id, item]),
+    );
+    const linkedOrderItemIds = new Set<string>();
+    const malformedLines: string[] = [];
+    const quantityDifferences: Array<Record<string, string>> = [];
+    const costDifferences: Array<Record<string, string>> = [];
+
+    for (const invoiceItem of invoice.items) {
+      const orderItem = invoiceItem.purchaseOrderItemId
+        ? orderItemsById.get(invoiceItem.purchaseOrderItemId)
+        : undefined;
+
+      if (
+        !orderItem ||
+        linkedOrderItemIds.has(orderItem.id) ||
+        orderItem.productId !== invoiceItem.productId
+      ) {
+        malformedLines.push(invoiceItem.descriptionSnapshot);
+        continue;
+      }
+
+      linkedOrderItemIds.add(orderItem.id);
+      if (!decimalEquals(orderItem.quantity, invoiceItem.quantity, 3)) {
+        quantityDifferences.push({
+          product: invoiceItem.descriptionSnapshot,
+          ordered: orderItem.quantity.toFixed(3),
+          invoiced: invoiceItem.quantity.toFixed(3),
+        });
+      }
+
+      const costChanged =
+        !decimalEquals(orderItem.unitCostNet, invoiceItem.unitCostNet, 2) ||
+        !decimalEquals(orderItem.unitCostWithTax, invoiceItem.unitCostWithTax, 2) ||
+        !decimalEquals(orderItem.taxRate, invoiceItem.taxRate, 4) ||
+        !decimalEquals(orderItem.discountTotal, invoiceItem.discountTotal, 2);
+      if (costChanged) {
+        costDifferences.push({
+          product: invoiceItem.descriptionSnapshot,
+          orderedUnitCostNet: orderItem.unitCostNet.toFixed(2),
+          invoicedUnitCostNet: invoiceItem.unitCostNet.toFixed(2),
+          orderedUnitCostWithTax: orderItem.unitCostWithTax.toFixed(2),
+          invoicedUnitCostWithTax: invoiceItem.unitCostWithTax.toFixed(2),
+          orderedTaxRate: orderItem.taxRate.toFixed(4),
+          invoicedTaxRate: invoiceItem.taxRate.toFixed(4),
+          orderedDiscount: orderItem.discountTotal.toFixed(2),
+          invoicedDiscount: invoiceItem.discountTotal.toFixed(2),
+        });
+      }
+    }
+
+    if (malformedLines.length) {
+      throw new ConflictException(
+        'La factura contiene productos que no pertenecen a la orden de compra. Agrega o corrige esas líneas en la orden antes de confirmar.',
+      );
+    }
+
+    const missingItems = invoice.purchaseOrder.items
+      .filter((item) => !linkedOrderItemIds.has(item.id))
+      .map((item) => ({
+        product: item.descriptionSnapshot,
+        ordered: item.quantity.toFixed(3),
+      }));
+    const hasDifferences = Boolean(
+      missingItems.length || quantityDifferences.length || costDifferences.length,
+    );
+
+    if (!hasDifferences) return;
+
+    if (!dto.orderReconciliationAccepted) {
+      throw new ConflictException(
+        'La factura no coincide con la orden de compra. Revisa y acepta explícitamente las cantidades, productos o costos distintos antes de confirmar.',
+      );
+    }
+
+    const note = normalizeOptionalText(dto.orderReconciliationNote);
+    if (!note) {
+      throw new BadRequestException(
+        'Explica la diferencia entre la factura y la orden de compra para dejarla auditada.',
+      );
+    }
+
+    await tx.auditLog.create({
+      data: {
+        tenantId,
+        userId,
+        action: 'SUPPLIER_INVOICE_ORDER_RECONCILIATION_ACCEPTED',
+        entity: 'SupplierInvoice',
+        entityId: invoiceId,
+        metadata: {
+          invoiceNumber: invoice.invoiceNumber,
+          purchaseOrderId: invoice.purchaseOrder.id,
+          purchaseOrderNumber: invoice.purchaseOrder.orderNumber,
+          note,
+          missingItems,
+          quantityDifferences,
+          costDifferences,
+        },
+      },
+    });
   }
 
   private async registerInTransaction(
@@ -1405,6 +1580,10 @@ function normalizeOptionalText(value?: string | null) {
 
 function sumDecimals(values: Prisma.Decimal[]) {
   return values.reduce((sum, value) => sum.add(value), new Prisma.Decimal(0)).toDecimalPlaces(2);
+}
+
+function decimalEquals(left: Prisma.Decimal, right: Prisma.Decimal, decimalPlaces: number) {
+  return left.toDecimalPlaces(decimalPlaces).eq(right.toDecimalPlaces(decimalPlaces));
 }
 
 function parseSupplierBusinessDate(value: string) {

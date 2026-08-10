@@ -186,7 +186,7 @@ export class OrdersService {
     const paymentMode = dto.paymentMode ?? SalePaymentMode.CASH;
 
     if (destination === SalesOrderDestination.QUOTATION) {
-      this.validateQuotationDocument(dto);
+      this.validateQuotationDetails(dto);
     }
 
     this.validatePaymentModeFields(paymentMode, dto);
@@ -241,9 +241,10 @@ export class OrdersService {
           destination,
           clientName,
           quotationDocumentType: isQuotation ? dto.quotationDocumentType : undefined,
-          quotationDocumentNumber: isQuotation
-            ? normalizeDominicanDocument(dto.quotationDocumentNumber ?? '')
-            : undefined,
+          quotationDocumentNumber:
+            isQuotation && dto.quotationDocumentNumber?.trim()
+              ? normalizeDominicanDocument(dto.quotationDocumentNumber)
+              : undefined,
           orderNumber: this.generateOrderNumber(isQuotation),
           status: isQuotation
             ? SalesOrderStatus.QUOTATION
@@ -756,7 +757,7 @@ export class OrdersService {
   async update(tenantId: string, user: AuthenticatedUser, id: string, dto: CreateSalesOrderDto) {
     const membership = await this.ensureCanTakeOrders(tenantId, user);
 
-    this.validateQuotationDocument(dto);
+    this.validateQuotationDetails(dto);
 
     return this.prisma.$transaction(async (tx) => {
       await this.lockSalesOrder(tx, tenantId, id);
@@ -818,8 +819,8 @@ export class OrdersService {
           customerId: dto.customerId || null,
           priceLevel,
           discountRate,
-          quotationDocumentType: dto.quotationDocumentType,
-          quotationDocumentNumber: dto.quotationDocumentNumber
+          quotationDocumentType: dto.quotationDocumentType ?? null,
+          quotationDocumentNumber: dto.quotationDocumentNumber?.trim()
             ? normalizeDominicanDocument(dto.quotationDocumentNumber)
             : null,
           subtotal: computed.subtotal,
@@ -1372,12 +1373,26 @@ export class OrdersService {
     return `${prefix}-${stamp}-${time}-${suffix}`;
   }
 
+  private validateQuotationDetails(dto: CreateSalesOrderDto) {
+    if (!dto.clientName?.trim()) {
+      throw new BadRequestException('Quotation requires client name.');
+    }
+
+    this.validateQuotationDocument(dto);
+  }
+
   private validateQuotationDocument(dto: CreateSalesOrderDto) {
     const documentType = dto.quotationDocumentType;
     const documentNumber = dto.quotationDocumentNumber?.trim();
 
+    if (!documentType && !documentNumber) {
+      return;
+    }
+
     if (!documentType || !documentNumber) {
-      throw new BadRequestException('Quotation requires document type and document number.');
+      throw new BadRequestException(
+        'Quotation document type and document number must be provided together.',
+      );
     }
 
     if (documentType !== DocumentType.RNC && documentType !== DocumentType.CEDULA) {

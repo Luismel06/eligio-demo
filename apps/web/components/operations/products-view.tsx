@@ -205,7 +205,7 @@ export function ProductsView() {
               <TableHeader className="sticky top-0 z-10 bg-card shadow-sm">
                 <TableRow>
                   <TableHead>Producto</TableHead>
-                  <TableHead>Categoria</TableHead>
+                  <TableHead>Marca</TableHead>
                   <TableHead>Precio</TableHead>
                   <TableHead>Codigo</TableHead>
                   <TableHead>Stock</TableHead>
@@ -226,7 +226,7 @@ export function ProductsView() {
                           {product.sku ?? 'Sin SKU'} {product.brand ? `- ${product.brand}` : ''}
                         </div>
                       </TableCell>
-                      <TableCell>{product.category?.name ?? 'Sin categoria'}</TableCell>
+                      <TableCell>{product.brand?.trim() || 'Sin marca'}</TableCell>
                       <TableCell>{formatCurrency(Number(product.price))}</TableCell>
                       <TableCell>
                         <div className="text-sm">{product.barcode ?? 'Sin codigo'}</div>

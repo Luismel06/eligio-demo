@@ -33,7 +33,7 @@ const permissionKeys = [
   'canReprintReceipt',
   'canTakeOrders',
 ] as const;
-const maxTenantUsers = 4;
+const maxTenantUsers = 5;
 const tenantAssignableRoles: Role[] = [Role.ADMIN, Role.ACCOUNTANT, Role.CASHIER, Role.ORDER_TAKER];
 
 @Injectable()
