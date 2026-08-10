@@ -61,4 +61,4 @@ COPY --from=build --chown=node:node /app /app
 USER node
 EXPOSE 3000
 
-CMD ["./node_modules/.bin/next", "start", "apps/web", "--port", "3000", "--hostname", "0.0.0.0"]
+CMD ["./apps/web/node_modules/.bin/next", "start", "apps/web", "--port", "3000", "--hostname", "0.0.0.0"]

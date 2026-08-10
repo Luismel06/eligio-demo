@@ -6,6 +6,10 @@ readonly SITE_AVAILABLE="/etc/nginx/sites-available/${SITE_NAME}"
 readonly SITE_ENABLED="/etc/nginx/sites-enabled/${SITE_NAME}"
 readonly BACKUP_ROOT="/opt/corestack/backups/nginx"
 readonly SOURCE_CONFIG="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/rivnu-internal.conf"
+readonly CERT_DIR="/etc/ssl/corestack"
+readonly KEY_DIR="${CERT_DIR}/private"
+readonly CERT_FILE="${CERT_DIR}/rivnu-internal.crt"
+readonly KEY_FILE="${KEY_DIR}/rivnu-internal.key"
 
 if [[ ${EUID} -ne 0 ]]; then
   echo "Run this script with sudo." >&2
@@ -44,6 +48,22 @@ case "$action" in
       cp -a "$SITE_ENABLED" "$backup_dir/site-enabled-file.previous"
     fi
 
+    if [[ -f "$CERT_FILE" ]]; then
+      cp -a "$CERT_FILE" "$backup_dir/certificate.previous"
+    fi
+    if [[ -f "$KEY_FILE" ]]; then
+      cp -a "$KEY_FILE" "$backup_dir/private-key.previous"
+    fi
+
+    install -d -m 0755 "$CERT_DIR"
+    install -d -m 0700 "$KEY_DIR"
+    openssl req -x509 -newkey rsa:3072 -sha256 -nodes -days 90 \
+      -subj "/CN=rivnu.internal" \
+      -addext "subjectAltName=DNS:rivnu.internal,DNS:api.rivnu.internal" \
+      -keyout "$KEY_FILE" -out "$CERT_FILE"
+    chmod 0600 "$KEY_FILE"
+    chmod 0644 "$CERT_FILE"
+
     install -m 0644 "$SOURCE_CONFIG" "$SITE_AVAILABLE"
     ln -sfn "$SITE_AVAILABLE" "$SITE_ENABLED"
 
@@ -59,6 +79,16 @@ case "$action" in
         cp -a "$backup_dir/site-enabled-file.previous" "$SITE_ENABLED"
       else
         unlink "$SITE_ENABLED"
+      fi
+      if [[ -f "$backup_dir/certificate.previous" ]]; then
+        cp -a "$backup_dir/certificate.previous" "$CERT_FILE"
+      else
+        unlink "$CERT_FILE" 2>/dev/null || true
+      fi
+      if [[ -f "$backup_dir/private-key.previous" ]]; then
+        cp -a "$backup_dir/private-key.previous" "$KEY_FILE"
+      else
+        unlink "$KEY_FILE" 2>/dev/null || true
       fi
       echo "Validation failed; previous state restored." >&2
       exit 3
@@ -86,6 +116,16 @@ case "$action" in
       cp -a "$backup_dir/site-enabled-file.previous" "$SITE_ENABLED"
     else
       unlink "$SITE_ENABLED" 2>/dev/null || true
+    fi
+    if [[ -f "$backup_dir/certificate.previous" ]]; then
+      cp -a "$backup_dir/certificate.previous" "$CERT_FILE"
+    else
+      unlink "$CERT_FILE" 2>/dev/null || true
+    fi
+    if [[ -f "$backup_dir/private-key.previous" ]]; then
+      cp -a "$backup_dir/private-key.previous" "$KEY_FILE"
+    else
+      unlink "$KEY_FILE" 2>/dev/null || true
     fi
     nginx -t
     systemctl reload nginx
