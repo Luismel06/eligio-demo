@@ -4,8 +4,6 @@ import {
   CashSessionStatus,
   CustomerStatus,
   DocumentType,
-  ElectronicDocumentProvider,
-  ElectronicDocumentStatus,
   EmployeeLogAction,
   EmployeeStatus,
   FiscalSequenceStatus,
@@ -664,32 +662,54 @@ async function main() {
     },
   });
 
-  await prisma.fiscalSequence.createMany({
-    data: [
-      {
+  const seedB02AuthorizationNumber = 'SEED-ONLY-B02-0001';
+  const seedB01AuthorizationNumber = 'SEED-ONLY-B01-0001';
+  const seedB01ValidUntil = new Date('2026-12-31T00:00:00.000Z');
+  const fiscalIssuerSnapshot = {
+    rnc: rivnuTenant.rnc,
+    legalName: rivnuTenant.legalName,
+    commercialName: rivnuTenant.commercialName,
+    address: rivnuTenant.address,
+    phone: rivnuTenant.phone,
+    email: rivnuTenant.email,
+    logoUrl: '/tenants/Ferreteria_RIVNU.jpeg',
+    pointOfSale: cashRegister.name,
+    pointOfSaleLocation: cashRegister.location,
+  };
+
+  const [consumerSequence, fiscalCreditSequence] = await Promise.all([
+    prisma.fiscalSequence.create({
+      data: {
         tenantId: rivnuTenant.id,
-        documentType: InvoiceDocumentType.CONSUMER_ELECTRONIC_32,
-        prefix: 'BA',
+        documentType: InvoiceDocumentType.CONSUMER_02,
+        prefix: 'B02',
         startNumber: 1,
-        endNumber: 25,
+        endNumber: 100,
         nextNumber: 3,
-        validUntil: new Date('2027-12-31T23:59:59.000Z'),
+        authorizationNumber: seedB02AuthorizationNumber,
+        issuerTaxId: rivnuTenant.rnc,
+        validUntil: null,
         status: FiscalSequenceStatus.ACTIVE,
       },
-      {
+    }),
+    prisma.fiscalSequence.create({
+      data: {
         tenantId: rivnuTenant.id,
-        documentType: InvoiceDocumentType.FISCAL_CREDIT_ELECTRONIC_31,
-        prefix: 'E31',
+        documentType: InvoiceDocumentType.FISCAL_CREDIT_01,
+        prefix: 'B01',
         startNumber: 1,
-        endNumber: 2500,
+        endNumber: 100,
         nextNumber: 2,
-        validUntil: new Date('2027-12-31T23:59:59.000Z'),
+        authorizationNumber: seedB01AuthorizationNumber,
+        issuerTaxId: rivnuTenant.rnc,
+        validUntil: seedB01ValidUntil,
         status: FiscalSequenceStatus.ACTIVE,
       },
-    ],
-  });
+    }),
+  ]);
 
   const bySku = new Map(products.map((product) => [product.sku, product]));
+  const productsById = new Map(products.map((product) => [product.id, product]));
   const now = new Date('2026-06-17T15:30:00.000Z');
   const yesterday = new Date('2026-06-16T16:45:00.000Z');
   const lastWeek = new Date('2026-06-10T14:20:00.000Z');
@@ -732,8 +752,10 @@ async function main() {
           barcode: line.barcode,
           description: line.description,
           quantity: line.quantity,
+          unit: bySku.get(line.sku!)?.unit ?? ProductUnit.UNIT,
           reservedQuantity: line.quantity,
           unitPrice: line.unitPrice,
+          taxCategory: bySku.get(line.sku!)?.taxCategory ?? TaxCategory.ITBIS_18,
           taxRate: line.taxRate,
           taxTotal: line.taxTotal,
           subtotal: line.subtotal,
@@ -777,12 +799,17 @@ async function main() {
     data: {
       tenantId: rivnuTenant.id,
       customerId: customers[2].id,
-      documentType: InvoiceDocumentType.CONSUMER_ELECTRONIC_32,
-      invoiceNumber: 'RIV-BA0001',
-      ncf: 'BA0001',
-      eNcf: 'BA0001',
+      documentType: InvoiceDocumentType.CONSUMER_02,
+      invoiceNumber: 'RIV-B0200000001',
+      ncf: 'B0200000001',
+      eNcf: null,
+      fiscalSequenceId: consumerSequence.id,
+      fiscalAuthorizationNumber: seedB02AuthorizationNumber,
+      fiscalValidUntil: null,
+      fiscalIssuerSnapshot,
+      fiscalCustomerSnapshot: Prisma.JsonNull,
       status: InvoiceStatus.PAID,
-      fiscalStatus: InvoiceFiscalStatus.SIGNED,
+      fiscalStatus: InvoiceFiscalStatus.LOCAL_ISSUED,
       subtotal: paidAmounts.subtotal,
       taxTotal: paidAmounts.taxTotal,
       discountTotal: zero,
@@ -801,7 +828,9 @@ async function main() {
           barcode: line.barcode,
           description: line.description,
           quantity: line.quantity,
+          unit: productsById.get(line.productId)?.unit ?? ProductUnit.UNIT,
           unitPrice: line.unitPrice,
+          taxCategory: productsById.get(line.productId)?.taxCategory ?? TaxCategory.ITBIS_18,
           taxRate: line.taxRate,
           taxTotal: line.taxTotal,
           discountTotal: zero,
@@ -863,12 +892,22 @@ async function main() {
     data: {
       tenantId: rivnuTenant.id,
       customerId: customers[1].id,
-      documentType: InvoiceDocumentType.FISCAL_CREDIT_ELECTRONIC_31,
-      invoiceNumber: 'RIV-E310000000001',
-      ncf: 'E310000000001',
-      eNcf: 'E310000000001',
+      documentType: InvoiceDocumentType.FISCAL_CREDIT_01,
+      invoiceNumber: 'RIV-B0100000001',
+      ncf: 'B0100000001',
+      eNcf: null,
+      fiscalSequenceId: fiscalCreditSequence.id,
+      fiscalAuthorizationNumber: seedB01AuthorizationNumber,
+      fiscalValidUntil: seedB01ValidUntil,
+      fiscalIssuerSnapshot,
+      fiscalCustomerSnapshot: {
+        id: customers[1].id,
+        name: customers[1].name,
+        documentType: customers[1].documentType,
+        documentNumber: customers[1].documentNumber,
+      },
       status: InvoiceStatus.ISSUED,
-      fiscalStatus: InvoiceFiscalStatus.SIGNED,
+      fiscalStatus: InvoiceFiscalStatus.LOCAL_ISSUED,
       subtotal: pendingAmounts.subtotal,
       taxTotal: pendingAmounts.taxTotal,
       discountTotal: zero,
@@ -886,7 +925,9 @@ async function main() {
           barcode: line.barcode,
           description: line.description,
           quantity: line.quantity,
+          unit: productsById.get(line.productId)?.unit ?? ProductUnit.UNIT,
           unitPrice: line.unitPrice,
+          taxCategory: productsById.get(line.productId)?.taxCategory ?? TaxCategory.ITBIS_18,
           taxRate: line.taxRate,
           taxTotal: line.taxTotal,
           discountTotal: zero,
@@ -912,10 +953,15 @@ async function main() {
     data: {
       tenantId: rivnuTenant.id,
       customerId: customers[0].id,
-      documentType: InvoiceDocumentType.CONSUMER_ELECTRONIC_32,
-      invoiceNumber: 'RIV-BA0002',
-      ncf: 'BA0002',
-      eNcf: 'BA0002',
+      documentType: InvoiceDocumentType.CONSUMER_02,
+      invoiceNumber: 'RIV-B0200000002',
+      ncf: 'B0200000002',
+      eNcf: null,
+      fiscalSequenceId: consumerSequence.id,
+      fiscalAuthorizationNumber: seedB02AuthorizationNumber,
+      fiscalValidUntil: null,
+      fiscalIssuerSnapshot,
+      fiscalCustomerSnapshot: Prisma.JsonNull,
       status: InvoiceStatus.CANCELLED,
       fiscalStatus: InvoiceFiscalStatus.CANCELLED,
       subtotal: cancelledAmounts.subtotal,
@@ -934,7 +980,9 @@ async function main() {
           barcode: line.barcode,
           description: line.description,
           quantity: line.quantity,
+          unit: productsById.get(line.productId)?.unit ?? ProductUnit.UNIT,
           unitPrice: line.unitPrice,
+          taxCategory: productsById.get(line.productId)?.taxCategory ?? TaxCategory.ITBIS_18,
           taxRate: line.taxRate,
           taxTotal: line.taxTotal,
           discountTotal: zero,
@@ -943,20 +991,6 @@ async function main() {
         })),
       },
     },
-  });
-
-  await prisma.electronicDocument.createMany({
-    data: [
-      {
-        tenantId: rivnuTenant.id,
-        invoiceId: paidInvoice.id,
-        provider: ElectronicDocumentProvider.DGII_DIRECT,
-        status: ElectronicDocumentStatus.SIGNED,
-        trackId: 'RIVNU-DEMO-TRACK-001',
-        requestPayload: { mode: 'demo', eNcf: paidInvoice.eNcf },
-        responsePayload: { mode: 'demo', status: 'SIGNED' },
-      },
-    ],
   });
 
   await prisma.employeeActivityLog.createMany({
@@ -1013,7 +1047,7 @@ async function main() {
         entityId: paidInvoice.id,
         invoiceId: paidInvoice.id,
         amount: paidAmounts.total,
-        metadata: { eNcf: paidInvoice.eNcf },
+        metadata: { ncf: paidInvoice.ncf },
         createdAt: now,
       },
       {

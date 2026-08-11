@@ -7,7 +7,13 @@ import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { addSupplierProduct, createProduct, type Product } from '@/lib/api';
+import {
+  addSupplierProduct,
+  createProduct,
+  type Product,
+  type ProductTaxCategory,
+  type ProductUnit,
+} from '@/lib/api';
 import type { AuthSession } from '@/lib/auth-session';
 import { selectClassName } from './procurement-ui';
 import { SupplierInvoiceDialog } from './supplier-invoice-dialog';
@@ -47,7 +53,7 @@ type ProductForm = {
   sku: string;
   barcode: string;
   supplierSku: string;
-  unit: string;
+  unit: ProductUnit;
   cost: string;
   salePrice: string;
   taxPercent: string;
@@ -99,7 +105,9 @@ export function QuickProductCreateDialog({
   const accessToken = session?.accessToken ?? accessTokenProp ?? '';
   const wasOpen = useRef(false);
   const [selectingExistingId, setSelectingExistingId] = useState<string | null>(null);
-  const [form, setForm] = useState<ProductForm>(() => createInitialForm(prefill, supplierId, linkSupplierByDefault));
+  const [form, setForm] = useState<ProductForm>(() =>
+    createInitialForm(prefill, supplierId, linkSupplierByDefault),
+  );
 
   useEffect(() => {
     if (open && !wasOpen.current) {
@@ -120,10 +128,12 @@ export function QuickProductCreateDialog({
     mutationFn: async () => {
       const validationError = validateForm(form);
       if (validationError) throw new Error(validationError);
-      if (!tenantId || !accessToken) throw new Error('La sesión activa es requerida para crear el producto.');
+      if (!tenantId || !accessToken)
+        throw new Error('La sesión activa es requerida para crear el producto.');
 
       const cost = Number(form.cost);
       const taxRate = Number(form.taxPercent) / 100;
+      const taxCategory = getTaxCategory(form.taxPercent);
       const product = await createProduct(tenantId, accessToken, {
         name: form.name.trim(),
         sku: optional(form.sku),
@@ -131,6 +141,7 @@ export function QuickProductCreateDialog({
         unit: form.unit,
         price: Number(form.salePrice),
         cost,
+        taxCategory,
         taxRate,
         stock: 0,
         minStock: 0,
@@ -175,7 +186,8 @@ export function QuickProductCreateDialog({
         });
       } else {
         toast.success('Producto creado correctamente.', {
-          description: supplierId && form.linkToSupplier ? 'También quedó vinculado al suplidor.' : undefined,
+          description:
+            supplierId && form.linkToSupplier ? 'También quedó vinculado al suplidor.' : undefined,
         });
       }
       onOpenChange(false);
@@ -207,7 +219,9 @@ export function QuickProductCreateDialog({
   function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (hasDuplicate) {
-      toast.error('Ya existe una coincidencia exacta. Selecciónala o corrige los datos antes de crear otro producto.');
+      toast.error(
+        'Ya existe una coincidencia exacta. Selecciónala o corrige los datos antes de crear otro producto.',
+      );
       return;
     }
     createMutation.mutate();
@@ -228,7 +242,8 @@ export function QuickProductCreateDialog({
     >
       {!canCreate ? (
         <div className="rounded-xl border border-danger/30 bg-danger/5 p-4 text-sm text-danger">
-          No hay una sesión válida para crear el producto. Cierra esta ventana e inicia sesión nuevamente.
+          No hay una sesión válida para crear el producto. Cierra esta ventana e inicia sesión
+          nuevamente.
         </div>
       ) : (
         <form className="space-y-5" onSubmit={submit}>
@@ -240,12 +255,17 @@ export function QuickProductCreateDialog({
           {hasDuplicate ? (
             <div className="rounded-xl border border-warning/40 bg-warning/10 p-4" role="alert">
               <div className="flex gap-3">
-                <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-warning" aria-hidden="true" />
+                <AlertTriangle
+                  className="mt-0.5 h-5 w-5 shrink-0 text-warning"
+                  aria-hidden="true"
+                />
                 <div className="min-w-0 flex-1">
-                  <p className="font-semibold text-foreground">Ya existe un producto que coincide exactamente.</p>
+                  <p className="font-semibold text-foreground">
+                    Ya existe un producto que coincide exactamente.
+                  </p>
                   <p className="mt-1 text-sm leading-5 text-muted-foreground">
-                    Para conservar un catálogo limpio, reutiliza la coincidencia o modifica los datos antes de
-                    crear uno nuevo.
+                    Para conservar un catálogo limpio, reutiliza la coincidencia o modifica los
+                    datos antes de crear uno nuevo.
                   </p>
                   <div className="mt-3 space-y-2">
                     {duplicateMatches.map(({ product, reasons }) => (
@@ -256,7 +276,8 @@ export function QuickProductCreateDialog({
                         <div className="min-w-0">
                           <p className="truncate font-medium text-foreground">{product.name}</p>
                           <p className="mt-0.5 text-xs text-muted-foreground">
-                            {duplicateReasonLabel(reasons)} · SKU {product.sku ?? '—'} · Código {product.barcode ?? '—'}
+                            {duplicateReasonLabel(reasons)} · SKU {product.sku ?? '—'} · Código{' '}
+                            {product.barcode ?? '—'}
                           </p>
                         </div>
                         {onSelectExisting ? (
@@ -313,7 +334,7 @@ export function QuickProductCreateDialog({
             <Field label="Unidad" required>
               <select
                 value={form.unit}
-                onChange={(event) => updateField('unit', event.target.value)}
+                onChange={(event) => updateField('unit', event.target.value as ProductUnit)}
                 className={selectClassName}
               >
                 {productUnits.map(([value, label]) => (
@@ -335,18 +356,17 @@ export function QuickProductCreateDialog({
                 required
               />
             </Field>
-            <Field label="ITBIS (%)" required hint="Ejemplo: 18 para ITBIS de 18 %; 0 si es exento.">
-              <Input
-                type="number"
-                min="0"
-                max="100"
-                step="0.01"
-                inputMode="decimal"
+            <Field label="Tratamiento de ITBIS" required>
+              <select
                 value={form.taxPercent}
                 onChange={(event) => updateField('taxPercent', event.target.value)}
-                placeholder="18"
+                className={selectClassName}
                 required
-              />
+              >
+                <option value="18">Gravado con ITBIS 18%</option>
+                <option value="16">Gravado con ITBIS 16%</option>
+                <option value="0">Exento de ITBIS</option>
+              </select>
             </Field>
             <Field
               label="Precio de venta (RD$)"
@@ -369,7 +389,10 @@ export function QuickProductCreateDialog({
           {supplierId ? (
             <div className="rounded-xl border border-accent/30 bg-accent/[0.06] p-4">
               <div className="flex items-start gap-3">
-                <Link2 className="mt-0.5 h-5 w-5 shrink-0 text-accent-foreground" aria-hidden="true" />
+                <Link2
+                  className="mt-0.5 h-5 w-5 shrink-0 text-accent-foreground"
+                  aria-hidden="true"
+                />
                 <div className="min-w-0 flex-1">
                   <label className="flex cursor-pointer items-center gap-2 text-sm font-semibold text-foreground">
                     <input
@@ -380,8 +403,8 @@ export function QuickProductCreateDialog({
                     Vincular al suplidor{supplierName ? `: ${supplierName}` : ''}
                   </label>
                   <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                    Guarda el código y el último costo que aparecen en esta factura para que el próximo OCR pueda
-                    reconocerlo mejor.
+                    Guarda el código y el último costo que aparecen en esta factura para que el
+                    próximo OCR pueda reconocerlo mejor.
                   </p>
                   {form.linkToSupplier ? (
                     <div className="mt-3">
@@ -411,7 +434,11 @@ export function QuickProductCreateDialog({
               Cancelar
             </Button>
             <Button type="submit" disabled={createMutation.isPending || hasDuplicate}>
-              {createMutation.isPending ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <PackagePlus className="h-4 w-4" />}
+              {createMutation.isPending ? (
+                <LoaderCircle className="h-4 w-4 animate-spin" />
+              ) : (
+                <PackagePlus className="h-4 w-4" />
+              )}
               {createMutation.isPending ? 'Creando...' : 'Crear producto'}
             </Button>
           </div>
@@ -464,7 +491,10 @@ function createInitialForm(
   };
 }
 
-function findDuplicateMatches(products: Product[], form: Pick<ProductForm, 'name' | 'sku' | 'barcode'>) {
+function findDuplicateMatches(
+  products: Product[],
+  form: Pick<ProductForm, 'name' | 'sku' | 'barcode'>,
+) {
   const name = normalizeText(form.name);
   const sku = normalizeCode(form.sku);
   const barcode = normalizeCode(form.barcode);
@@ -489,8 +519,8 @@ function validateForm(form: ProductForm) {
   const salePrice = Number(form.salePrice);
   if (!Number.isFinite(salePrice) || salePrice < 0.01) return 'Indica un precio de venta válido.';
   const taxPercent = Number(form.taxPercent);
-  if (!Number.isFinite(taxPercent) || taxPercent < 0 || taxPercent > 100) {
-    return 'Indica una tasa de ITBIS entre 0 y 100.';
+  if (![0, 16, 18].includes(taxPercent)) {
+    return 'Selecciona ITBIS 18%, ITBIS 16% o Exento.';
   }
   return null;
 }
@@ -531,7 +561,14 @@ function toDecimalInput(value: number | undefined) {
 
 function toTaxPercentInput(value: number | undefined) {
   if (value === undefined || !Number.isFinite(value)) return '18';
-  return String(roundCurrency(value <= 1 ? value * 100 : value));
+  const percent = roundCurrency(value <= 1 ? value * 100 : value);
+  return [0, 16, 18].includes(percent) ? String(percent) : '18';
+}
+
+function getTaxCategory(taxPercent: string): ProductTaxCategory {
+  if (taxPercent === '0') return 'EXEMPT';
+  if (taxPercent === '16') return 'ITBIS_16';
+  return 'ITBIS_18';
 }
 
 function optional(value: string) {

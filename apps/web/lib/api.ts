@@ -80,10 +80,16 @@ export type DashboardSummary = {
     id: string;
     documentType: string;
     prefix: string;
+    status: FiscalSequenceStatus | 'MISSING';
+    startNumber: number;
     nextNumber: number;
     endNumber: number;
     remaining: number;
+    authorizedCount: number;
+    alertThreshold: number;
+    severity: 'WARNING' | 'CRITICAL';
     validUntil: string | null;
+    hasQueuedReplacement: boolean;
   }>;
   employeeSummary: {
     activeEmployees: number;
@@ -144,6 +150,7 @@ export type ProductSalesMetric = {
   sku: string | null;
   brand: string | null;
   unit: string;
+  categoryId: string | null;
   categoryName: string;
   currentPrice: number;
   quantitySold: number;
@@ -154,11 +161,29 @@ export type ProductSalesMetric = {
 
 export type ProductSalesRanking = {
   generatedAt: string;
+  range: {
+    from: string | null;
+    to: string | null;
+  };
   productCount: number;
   productsWithSales: number;
   productsWithoutSales: number;
   mostSold: ProductSalesMetric[];
   leastSold: ProductSalesMetric[];
+};
+
+export type FiscalSequenceOperationalAlert = DashboardSummary['fiscalSequenceAlerts'][number];
+
+export type OperationalAlertsSummary = {
+  pendingInvoices: number;
+  lowStockProducts: number;
+  openCashSessions: number;
+  fiscalSequenceAlerts: FiscalSequenceOperationalAlert[];
+};
+
+export type ProductSalesQuery = {
+  from?: string;
+  to?: string;
 };
 
 export type LoginResponse = {
@@ -180,10 +205,50 @@ export type LoginResponse = {
   }>;
 };
 
+export type CustomerDocumentType = 'RNC' | 'CEDULA' | 'PASSPORT' | 'CONSUMER_FINAL' | 'OTHER';
+export type LocalNcfDocumentType = 'CONSUMER_02' | 'FISCAL_CREDIT_01';
+export type InvoiceDocumentType =
+  | LocalNcfDocumentType
+  | 'CONSUMER_ELECTRONIC_32'
+  | 'FISCAL_CREDIT_ELECTRONIC_31'
+  | 'DEBIT_NOTE_ELECTRONIC_33'
+  | 'CREDIT_NOTE_ELECTRONIC_34';
+export type InvoiceFiscalStatus =
+  | 'NOT_APPLICABLE'
+  | 'PENDING_SEQUENCE'
+  | 'LOCAL_ISSUED'
+  | 'LEGACY_UNVERIFIED'
+  | 'READY_TO_SEND'
+  | 'PENDING_SIGNATURE'
+  | 'SIGNED'
+  | 'SENT'
+  | 'ACCEPTED'
+  | 'REJECTED'
+  | 'FAILED'
+  | 'CANCELLED';
+export type ProductUnit =
+  | 'UNIT'
+  | 'BOX'
+  | 'PACK'
+  | 'BAG'
+  | 'ROLL'
+  | 'METER'
+  | 'FOOT'
+  | 'YARD'
+  | 'POUND'
+  | 'GALLON'
+  | 'LITER'
+  | 'KILOGRAM'
+  | 'SERVICE';
+export type PosPaymentMethod = 'CASH' | 'CARD' | 'TRANSFER';
+export type PaymentMethod = PosPaymentMethod | 'CHECK' | 'OTHER';
+export type FiscalSequenceStatus = 'ACTIVE' | 'INACTIVE' | 'EXPIRED' | 'EXHAUSTED';
+export type ReturnRequestStatus = 'REQUESTED' | 'APPROVED' | 'REJECTED' | 'COMPLETED' | 'CANCELLED';
+
 export type Customer = {
   id: string;
   name: string;
-  documentType: string;
+  documentType: CustomerDocumentType;
   documentNumber: string | null;
   email: string | null;
   phone: string | null;
@@ -199,6 +264,8 @@ export type Customer = {
   createdAt: string;
 };
 
+export type ProductTaxCategory = 'ITBIS_18' | 'ITBIS_16' | 'EXEMPT';
+
 export type Product = {
   id: string;
   name: string;
@@ -210,12 +277,13 @@ export type Product = {
   description: string | null;
   imageUrl: string | null;
   brand: string | null;
-  unit: string;
+  unit: ProductUnit;
   price: string;
   salePrice: string;
   cost: string | null;
   costWithTax?: string | null;
   margin?: string | null;
+  taxCategory: ProductTaxCategory;
   taxRate: string;
   trackInventory: boolean;
   stock: number;
@@ -227,6 +295,28 @@ export type Product = {
     name: string;
   } | null;
 };
+
+export type CreateProductPayload = {
+  categoryId?: string;
+  name: string;
+  sku?: string;
+  barcode?: string;
+  barcodeType?: string;
+  brand?: string;
+  unit?: ProductUnit;
+  description?: string;
+  imageUrl?: string;
+  price: number;
+  cost?: number;
+  taxCategory?: ProductTaxCategory;
+  taxRate?: number;
+  trackInventory?: boolean;
+  stock: number;
+  minStock: number;
+  status?: string;
+};
+
+export type UpdateProductPayload = Partial<CreateProductPayload>;
 
 export type InventoryMovement = {
   id: string;
@@ -245,11 +335,31 @@ export type Invoice = {
   tenantId: string;
   customerId: string | null;
   invoiceNumber: string;
-  documentType: string;
+  documentType: InvoiceDocumentType;
   eNcf: string | null;
   ncf: string | null;
+  fiscalSequenceId: string | null;
+  fiscalAuthorizationNumber: string | null;
+  fiscalValidUntil: string | null;
+  fiscalIssuerSnapshot: {
+    rnc: string;
+    legalName: string;
+    commercialName: string;
+    address: string;
+    phone: string;
+    email: string;
+    logoUrl: string | null;
+    pointOfSale: string;
+    pointOfSaleLocation: string | null;
+  } | null;
+  fiscalCustomerSnapshot: {
+    id: string;
+    name: string;
+    documentType: CustomerDocumentType;
+    documentNumber: string;
+  } | null;
   status: string;
-  fiscalStatus: string;
+  fiscalStatus: InvoiceFiscalStatus;
   subtotal: string;
   taxTotal: string;
   discountTotal: string;
@@ -259,18 +369,24 @@ export type Invoice = {
   changeAmount: string;
   balance: string;
   paymentMode: 'CASH' | 'CREDIT';
-  paymentMethod: string | null;
+  paymentMethod: PaymentMethod | null;
   dueDate: string | null;
   issuedAt: string | null;
   createdAt: string;
+  /** Present on invoice list/detail responses; POS create responses may omit it. */
+  receiptPrintCount?: number;
   tenant?: {
     id: string;
     name: string;
     commercialName: string | null;
     legalName: string | null;
     rnc: string | null;
+    email: string | null;
     phone: string | null;
     address: string | null;
+    branding?: {
+      logoUrl: string | null;
+    } | null;
   };
   customer: Customer | null;
   issuedBy?: {
@@ -278,9 +394,17 @@ export type Invoice = {
     name: string;
     email: string;
   } | null;
+  cashSession?: {
+    id: string;
+    cashRegister: {
+      id: string;
+      name: string;
+      location: string | null;
+    };
+  } | null;
   payments?: Array<{
     id: string;
-    method: string;
+    method: PaymentMethod;
     amount: string | number;
     status: string;
     receiptNumber?: string | null;
@@ -301,8 +425,10 @@ export type Invoice = {
     sku: string | null;
     barcode: string | null;
     quantity: string;
+    unit: ProductUnit;
     unitPrice: string;
     discountTotal: string;
+    taxCategory: ProductTaxCategory;
     taxRate: string;
     taxTotal: string;
     subtotal: string;
@@ -310,12 +436,19 @@ export type Invoice = {
   }>;
 };
 
+export type InvoicePrintRegistration = {
+  action: 'PRINT_RECEIPT' | 'REPRINT_RECEIPT';
+  printNumber: number;
+  isReprint: boolean;
+  registeredAt: string;
+};
+
 export type CreateInvoicePayload = {
   customerId?: string;
   invoiceNumber?: string;
-  documentType?: string;
-  paymentMethod?: string;
-  status: 'DRAFT' | 'ISSUED' | 'PAID';
+  documentType?: LocalNcfDocumentType;
+  paymentMethod?: PosPaymentMethod;
+  status?: 'DRAFT';
   issuedAt?: string;
   items: Array<{
     productId: string;
@@ -326,8 +459,8 @@ export type CreateInvoicePayload = {
 
 export type PosSalePayload = {
   customerId?: string;
-  documentType: string;
-  paymentMethod: string;
+  documentType: LocalNcfDocumentType;
+  paymentMethod: PosPaymentMethod;
   amountReceived?: number;
   cashSessionId?: string;
   orderId?: string;
@@ -362,7 +495,7 @@ export type ReturnRequest = {
   approvedById: string | null;
   rejectedById: string | null;
   cashSessionId: string | null;
-  status: string;
+  status: ReturnRequestStatus;
   reason: string;
   adminNote: string | null;
   refundMethod: string | null;
@@ -836,13 +969,24 @@ export type OperationalLog = {
 
 export type FiscalSequence = {
   id: string;
-  documentType: string;
+  documentType: InvoiceDocumentType;
   prefix: string;
   startNumber: number;
   endNumber: number;
   nextNumber: number;
+  authorizationNumber: string | null;
+  issuerTaxId: string | null;
   validUntil: string | null;
-  status: string;
+  status: FiscalSequenceStatus;
+};
+
+export type CreateFiscalSequencePayload = {
+  documentType: LocalNcfDocumentType;
+  startNumber: number;
+  endNumber: number;
+  nextNumber: number;
+  authorizationNumber: string;
+  validUntil?: string;
 };
 
 export type ImportBatch = {
@@ -1425,6 +1569,37 @@ const apiMessageTranslations: Record<string, string> = {
   'Sale must include at least one item.': 'La venta debe incluir al menos un producto.',
   'Fiscal credit invoices require an RNC customer.':
     'Las facturas de credito fiscal requieren un cliente con RNC.',
+  'Only local B01 and B02 invoices are enabled.':
+    'Solo estan habilitados los comprobantes locales B01 y B02.',
+  'B01 requires a customer with a valid RNC or Dominican ID.':
+    'La factura B01 requiere un cliente con RNC o cedula dominicana valida.',
+  'B02 invoices of RD$250,000 or more before ITBIS require an identified customer.':
+    'Una factura B02 de RD$250,000 o mas antes de ITBIS requiere identificar al cliente.',
+  'Issuer tax identity, legal name, commercial name, address, phone, and email must be configured.':
+    'Configura la identificacion fiscal, razon social, nombre comercial, direccion, telefono y correo del emisor.',
+  'B01 and B02 require the DGII authorization number.':
+    'B01 y B02 requieren el numero de autorizacion de la DGII.',
+  'B01 requires its DGII expiration date.':
+    'B01 requiere la fecha de vencimiento asignada por la DGII.',
+  'Configure a valid issuer RNC or Dominican ID before registering fiscal sequences.':
+    'Configura primero el RNC o la cédula válida del emisor.',
+  'The fiscal sequence authorization is already expired.':
+    'La autorizacion de la secuencia fiscal ya esta vencida.',
+  'Fiscal sequence start cannot exceed its end.':
+    'El inicio de la secuencia no puede superar el final.',
+  'Next fiscal number must be inside the authorized range.':
+    'El siguiente NCF debe estar dentro del rango autorizado.',
+  'An active fiscal sequence already exists for this type.':
+    'Ya existe una secuencia fiscal activa para este tipo.',
+  'The authorized range overlaps a sequence already registered.':
+    'El rango autorizado se superpone con otra secuencia registrada.',
+  'An active or overlapping fiscal sequence was created concurrently.':
+    'Otra sesion registro una secuencia activa o superpuesta al mismo tiempo.',
+  'Only issued local B01 or B02 invoices with a valid NCF can be printed.':
+    'Solo se pueden imprimir facturas locales B01 o B02 emitidas con un NCF valido.',
+  'The first print is restricted to the issuing cashier or an administrator.':
+    'La primera impresion solo puede realizarla el cajero emisor o un administrador.',
+  'Receipt reprint permission is required.': 'Necesitas permiso para reimprimir facturas.',
   'One or more POS products do not belong to tenant.':
     'Uno o mas productos de la venta no pertenecen a esta empresa.',
   'No active fiscal sequence available for this document type.':
@@ -1720,6 +1895,29 @@ function translateApiMessage(message: string) {
     return `Stock insuficiente para ${productName}.`;
   }
 
+  if (message.startsWith('No active B') && message.endsWith(' sequence is configured.')) {
+    const prefix = message.split(' ')[2];
+    return `No hay una secuencia ${prefix} activa configurada.`;
+  }
+
+  if (message.startsWith('The active B') && message.endsWith(' sequence is expired.')) {
+    const prefix = message.split(' ')[2];
+    return `La secuencia ${prefix} activa esta vencida.`;
+  }
+
+  if (message.startsWith('The active B') && message.endsWith(' sequence is exhausted.')) {
+    const prefix = message.split(' ')[2];
+    return `La secuencia ${prefix} activa esta agotada.`;
+  }
+
+  if (
+    message.startsWith('The active B') &&
+    message.endsWith(' sequence belongs to a different issuer tax identity.')
+  ) {
+    const prefix = message.split(' ')[2];
+    return `La secuencia ${prefix} pertenece a otro RNC o cédula del emisor.`;
+  }
+
   if (message.startsWith('Insufficient available stock for ') && message.endsWith('.')) {
     const productName = message.replace('Insufficient available stock for ', '').replace(/\.$/, '');
     return `Stock disponible insuficiente para ${productName}.`;
@@ -1776,8 +1974,23 @@ export function getDashboardSummary(tenantId: string, accessToken: string) {
   });
 }
 
-export function getProductSalesRanking(tenantId: string, accessToken: string) {
-  return fetchJson<ProductSalesRanking>('/dashboard/product-sales', {
+export function getOperationalAlerts(tenantId: string, accessToken: string) {
+  return fetchJson<OperationalAlertsSummary>('/dashboard/alerts', {
+    headers: tenantHeaders(tenantId, accessToken),
+  });
+}
+
+export function getProductSalesRanking(
+  tenantId: string,
+  accessToken: string,
+  query: ProductSalesQuery = {},
+) {
+  const searchParams = new URLSearchParams();
+  if (query.from) searchParams.set('from', query.from);
+  if (query.to) searchParams.set('to', query.to);
+  const suffix = searchParams.size ? `?${searchParams.toString()}` : '';
+
+  return fetchJson<ProductSalesRanking>(`/dashboard/product-sales${suffix}`, {
     headers: tenantHeaders(tenantId, accessToken),
   });
 }
@@ -1938,7 +2151,7 @@ export function getOrderProductByBarcode(tenantId: string, accessToken: string, 
 export function createProduct(
   tenantId: string,
   accessToken: string,
-  payload: Record<string, string | number | boolean | undefined>,
+  payload: CreateProductPayload,
 ) {
   return fetchJson<Product>('/products', {
     method: 'POST',
@@ -1951,7 +2164,7 @@ export function updateProduct(
   tenantId: string,
   accessToken: string,
   productId: string,
-  payload: Record<string, string | number | boolean | undefined>,
+  payload: UpdateProductPayload,
 ) {
   return fetchJson<Product>(`/products/${productId}`, {
     method: 'PATCH',
@@ -2066,6 +2279,13 @@ export function rejectReturnRequest(
 
 export function getInvoice(tenantId: string, accessToken: string, invoiceId: string) {
   return fetchJson<Invoice>(`/invoices/${invoiceId}`, {
+    headers: tenantHeaders(tenantId, accessToken),
+  });
+}
+
+export function registerInvoicePrint(tenantId: string, accessToken: string, invoiceId: string) {
+  return fetchJson<InvoicePrintRegistration>(`/invoices/${invoiceId}/print`, {
+    method: 'POST',
     headers: tenantHeaders(tenantId, accessToken),
   });
 }
@@ -2191,6 +2411,18 @@ export function getOperationalLogs(tenantId: string, accessToken: string) {
 export function getFiscalSequences(tenantId: string, accessToken: string) {
   return fetchJson<FiscalSequence[]>('/fiscal-sequences', {
     headers: tenantHeaders(tenantId, accessToken),
+  });
+}
+
+export function createFiscalSequence(
+  tenantId: string,
+  accessToken: string,
+  payload: CreateFiscalSequencePayload,
+) {
+  return fetchJson<FiscalSequence>('/fiscal-sequences', {
+    method: 'POST',
+    headers: tenantHeaders(tenantId, accessToken),
+    body: JSON.stringify(payload),
   });
 }
 

@@ -10,7 +10,14 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { createProduct, getProduct, updateProduct, uploadProductImage } from '@/lib/api';
+import {
+  createProduct,
+  getProduct,
+  type ProductTaxCategory,
+  type ProductUnit,
+  updateProduct,
+  uploadProductImage,
+} from '@/lib/api';
 import { ModuleHeader } from './module-header';
 import { BarcodeCameraScanner } from './barcode-camera-scanner';
 import {
@@ -28,10 +35,10 @@ type ProductFormState = {
   barcode: string;
   imageUrl: string;
   brand: string;
-  unit: string;
+  unit: ProductUnit;
   price: string;
   cost: string;
-  taxRate: string;
+  taxCategory: ProductTaxCategory;
   stock: string;
   minStock: string;
   status: string;
@@ -47,7 +54,7 @@ const defaultState: ProductFormState = {
   unit: 'UNIT',
   price: clearCurrencyInput(),
   cost: clearCurrencyInput(),
-  taxRate: '0.18',
+  taxCategory: 'ITBIS_18',
   stock: '0',
   minStock: '0',
   status: 'ACTIVE',
@@ -86,7 +93,7 @@ export function ProductForm({ productId }: { productId?: string }) {
           Number(productQuery.data.salePrice ?? productQuery.data.price ?? 0),
         ),
         cost: formatCurrencyInputFromNumber(Number(productQuery.data.cost ?? 0)),
-        taxRate: productQuery.data.taxRate,
+        taxCategory: productQuery.data.taxCategory,
         stock: String(productQuery.data.stock),
         minStock: String(productQuery.data.minStock),
         status: productQuery.data.status,
@@ -110,7 +117,8 @@ export function ProductForm({ productId }: { productId?: string }) {
         unit: form.unit,
         price: parseCurrencyInput(form.price),
         cost: parseCurrencyInput(form.cost),
-        taxRate: Number(form.taxRate),
+        taxCategory: form.taxCategory,
+        taxRate: getTaxRate(form.taxCategory),
         stock: Number(form.stock),
         minStock: Number(form.minStock),
         status: form.status,
@@ -316,10 +324,11 @@ export function ProductForm({ productId }: { productId?: string }) {
             <Field label="Unidad">
               <select
                 value={form.unit}
-                onChange={(event) => updateField('unit', event.target.value)}
+                onChange={(event) => updateField('unit', event.target.value as ProductUnit)}
                 className="h-10 w-full rounded-md border border-input bg-card px-3 text-sm"
               >
                 <option value="UNIT">Unidad</option>
+                <option value="BOX">Caja</option>
                 <option value="BAG">Saco</option>
                 <option value="METER">Metro (MT)</option>
                 <option value="FOOT">Pie (FT)</option>
@@ -327,7 +336,10 @@ export function ProductForm({ productId }: { productId?: string }) {
                 <option value="ROLL">Rollo</option>
                 <option value="POUND">Libra (LB/POUND)</option>
                 <option value="GALLON">Galon</option>
+                <option value="LITER">Litro</option>
+                <option value="KILOGRAM">Kilogramo</option>
                 <option value="PACK">Paquete</option>
+                <option value="SERVICE">Servicio</option>
               </select>
             </Field>
             <Field label="Estado">
@@ -388,14 +400,18 @@ export function ProductForm({ productId }: { productId?: string }) {
                 onFocus={(event) => event.currentTarget.select()}
               />
             </Field>
-            <Field label="ITBIS">
-              <Input
-                type="number"
-                min="0"
-                step="0.01"
-                value={form.taxRate}
-                onChange={(event) => updateField('taxRate', event.target.value)}
-              />
+            <Field label="Tratamiento de ITBIS" required>
+              <select
+                value={form.taxCategory}
+                onChange={(event) =>
+                  updateField('taxCategory', event.target.value as ProductTaxCategory)
+                }
+                className="h-10 w-full rounded-md border border-input bg-card px-3 text-sm"
+              >
+                <option value="ITBIS_18">Gravado con ITBIS 18%</option>
+                <option value="ITBIS_16">Gravado con ITBIS 16%</option>
+                <option value="EXEMPT">Exento de ITBIS</option>
+              </select>
             </Field>
             <Field label="Stock actual" required>
               <Input
@@ -438,6 +454,16 @@ export function ProductForm({ productId }: { productId?: string }) {
       </Card>
     </div>
   );
+}
+
+function getTaxRate(taxCategory: ProductTaxCategory) {
+  const rates: Record<ProductTaxCategory, number> = {
+    ITBIS_18: 0.18,
+    ITBIS_16: 0.16,
+    EXEMPT: 0,
+  };
+
+  return rates[taxCategory];
 }
 
 function Field({

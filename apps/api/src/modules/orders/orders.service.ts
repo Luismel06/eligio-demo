@@ -274,9 +274,11 @@ export class OrdersService {
               barcode: item.product.barcode,
               description: item.product.name,
               quantity: item.quantity,
+              unit: item.product.unit,
               reservedQuantity: isQuotation || isCredit ? 0 : item.reservedQuantity,
               unitPrice: item.unitPrice,
               discountTotal: item.discountTotal,
+              taxCategory: item.product.taxCategory,
               taxRate: item.product.taxRate,
               taxTotal: item.taxTotal,
               subtotal: item.subtotal,
@@ -842,9 +844,11 @@ export class OrdersService {
               barcode: item.product.barcode,
               description: item.product.name,
               quantity: item.quantity,
+              unit: item.product.unit,
               reservedQuantity: 0,
               unitPrice: item.unitPrice,
               discountTotal: item.discountTotal,
+              taxCategory: item.product.taxCategory,
               taxRate: item.product.taxRate,
               taxTotal: item.taxTotal,
               subtotal: item.subtotal,
@@ -1241,10 +1245,7 @@ export class OrdersService {
   private async ensureCanTakeOrders(tenantId: string, user: AuthenticatedUser) {
     const membership = this.getMembership(tenantId, user);
 
-    if (
-      !adminRoles.includes(membership.role) &&
-      membership.role !== Role.ORDER_TAKER
-    ) {
+    if (!adminRoles.includes(membership.role) && membership.role !== Role.ORDER_TAKER) {
       throw new ForbiddenException('Employee does not have permission to take orders.');
     }
 

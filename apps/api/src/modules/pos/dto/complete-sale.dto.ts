@@ -2,7 +2,6 @@ import { InvoiceDocumentType, PaymentMethod } from '@qorvex/database';
 import { Type } from 'class-transformer';
 import {
   IsArray,
-  IsEnum,
   IsIn,
   IsNumber,
   IsOptional,
@@ -10,6 +9,7 @@ import {
   Min,
   ValidateNested,
 } from 'class-validator';
+import { LOCAL_NCF_DOCUMENT_TYPES } from '../../fiscal-sequences/fiscal-number';
 
 export class PosSaleItemDto {
   @IsString()
@@ -27,7 +27,7 @@ export class CompleteSaleDto {
   customerId?: string;
 
   @IsOptional()
-  @IsEnum(InvoiceDocumentType)
+  @IsIn(LOCAL_NCF_DOCUMENT_TYPES)
   documentType?: InvoiceDocumentType;
 
   @IsIn([PaymentMethod.CASH, PaymentMethod.CARD, PaymentMethod.TRANSFER])

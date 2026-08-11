@@ -44,6 +44,8 @@ const statusLabels: Record<string, string> = {
   PENDING_ECF: 'Pendiente e-CF',
   NOT_APPLICABLE: 'No aplica',
   PENDING_SEQUENCE: 'Pendiente de secuencia',
+  LOCAL_ISSUED: 'NCF emitido',
+  LEGACY_UNVERIFIED: 'Legado no verificado',
   READY_TO_SEND: 'Lista para enviar',
   PENDING_SIGNATURE: 'Pendiente de firma',
   SIGNED: 'Firmada',
@@ -86,6 +88,8 @@ const statusVariants: Record<string, BadgeVariant> = {
   PROCESSING: 'warning',
   PENDING_ECF: 'warning',
   PENDING_SEQUENCE: 'warning',
+  LOCAL_ISSUED: 'success',
+  LEGACY_UNVERIFIED: 'warning',
   READY_TO_SEND: 'warning',
   PENDING_SIGNATURE: 'warning',
   SIGNED: 'warning',
@@ -123,6 +127,8 @@ const documentTypeLabels: Record<string, string> = {
 };
 
 const invoiceDocumentTypeLabels: Record<string, string> = {
+  CONSUMER_02: 'Factura de consumo B02',
+  FISCAL_CREDIT_01: 'Factura de credito fiscal B01',
   CONSUMER_ELECTRONIC_32: 'Factura de consumo e-CF 32',
   FISCAL_CREDIT_ELECTRONIC_31: 'Credito fiscal e-CF 31',
   DEBIT_NOTE_ELECTRONIC_33: 'Nota de debito e-CF 33',

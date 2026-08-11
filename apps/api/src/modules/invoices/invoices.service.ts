@@ -1,5 +1,11 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import {
+  BadRequestException,
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
+import {
+  EmployeeLogAction,
   InventoryMovementType,
   InvoiceDocumentType,
   InvoiceFiscalStatus,
@@ -7,7 +13,9 @@ import {
   Prisma,
   ProductStatus,
   ProductUnit,
+  Role,
 } from '@qorvex/database';
+import type { AuthenticatedUser } from '../../common/types/authenticated-request';
 import { PrismaService } from '../../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
 import { CreateInvoiceDto } from './dto/create-invoice.dto';
@@ -20,6 +28,17 @@ const inventoryAffectingStatuses: InvoiceStatus[] = [
   InvoiceStatus.PENDING_ECF,
   InvoiceStatus.ACCEPTED,
 ];
+const receiptPrintActions: EmployeeLogAction[] = [
+  EmployeeLogAction.PRINT_RECEIPT,
+  EmployeeLogAction.REPRINT_RECEIPT,
+];
+const printableInvoiceStatuses: InvoiceStatus[] = [
+  InvoiceStatus.ISSUED,
+  InvoiceStatus.PAID,
+  InvoiceStatus.PARTIALLY_PAID,
+];
+const administrativePrintRoles: Role[] = [Role.ADMIN, Role.SUPER_ADMIN, Role.QORVEX_SUPER_ADMIN];
+const platformPrintRoles: Role[] = [Role.SUPER_ADMIN, Role.QORVEX_SUPER_ADMIN];
 
 @Injectable()
 export class InvoicesService {
@@ -28,18 +47,30 @@ export class InvoicesService {
     private readonly audit: AuditService,
   ) {}
 
-  findAll(tenantId: string) {
-    return this.prisma.invoice.findMany({
+  async findAll(tenantId: string) {
+    const invoices = await this.prisma.invoice.findMany({
       where: { tenantId },
       include: {
         customer: true,
         items: true,
         issuedBy: { select: { id: true, name: true, email: true } },
+        _count: {
+          select: {
+            employeeActivityLogs: {
+              where: { action: { in: receiptPrintActions } },
+            },
+          },
+        },
       },
       orderBy: {
         createdAt: 'desc',
       },
     });
+
+    return invoices.map(({ _count, ...invoice }) => ({
+      ...invoice,
+      receiptPrintCount: _count.employeeActivityLogs,
+    }));
   }
 
   async create(tenantId: string, userId: string, dto: CreateInvoiceDto) {
@@ -52,7 +83,9 @@ export class InvoicesService {
     }
 
     if (dto.items.some((item) => !item.productId)) {
-      throw new BadRequestException('Invoice items must reference products so totals are recalculated from database.');
+      throw new BadRequestException(
+        'Invoice items must reference products so totals are recalculated from database.',
+      );
     }
 
     const productIds = dto.items.map((item) => item.productId!);
@@ -88,6 +121,11 @@ export class InvoicesService {
       .reduce((sum, item) => sum.add(item.total), new Prisma.Decimal(0))
       .toDecimalPlaces(2);
     const status = dto.status ?? InvoiceStatus.DRAFT;
+    if (status !== InvoiceStatus.DRAFT) {
+      throw new BadRequestException(
+        'Issued fiscal invoices must be completed through the POS fiscal workflow.',
+      );
+    }
     const shouldAffectInventory = inventoryAffectingStatuses.includes(status);
 
     const invoice = await this.prisma.$transaction(async (tx) => {
@@ -109,15 +147,15 @@ export class InvoicesService {
         }
       }
 
-      const paidAmount = status === InvoiceStatus.PAID ? total : new Prisma.Decimal(0);
+      const paidAmount = new Prisma.Decimal(0);
       const createdInvoice = await tx.invoice.create({
         data: {
           tenantId,
           customerId: dto.customerId,
-          documentType: dto.documentType ?? InvoiceDocumentType.CONSUMER_ELECTRONIC_32,
+          documentType: dto.documentType ?? InvoiceDocumentType.CONSUMER_02,
           invoiceNumber: dto.invoiceNumber ?? `RIV-MAN-${Date.now()}`,
           status,
-          fiscalStatus: InvoiceFiscalStatus.NOT_APPLICABLE,
+          fiscalStatus: InvoiceFiscalStatus.PENDING_SEQUENCE,
           subtotal,
           taxTotal,
           discountTotal: 0,
@@ -135,8 +173,10 @@ export class InvoicesService {
               barcode: item.product.barcode,
               description: item.product.name,
               quantity: item.quantity,
+              unit: item.product.unit,
               unitPrice: item.unitPrice,
               discountTotal: 0,
+              taxCategory: item.product.taxCategory,
               taxRate: item.product.taxRate,
               taxTotal: item.taxTotal,
               subtotal: item.subtotal,
@@ -206,7 +246,7 @@ export class InvoicesService {
     const invoice = await this.prisma.invoice.findFirst({
       where: { id, tenantId },
       include: {
-        tenant: true,
+        tenant: { include: { branding: true } },
         customer: true,
         items: true,
         payments: true,
@@ -217,6 +257,13 @@ export class InvoicesService {
         cashSession: {
           include: { cashRegister: true },
         },
+        _count: {
+          select: {
+            employeeActivityLogs: {
+              where: { action: { in: receiptPrintActions } },
+            },
+          },
+        },
       },
     });
 
@@ -224,11 +271,149 @@ export class InvoicesService {
       throw new NotFoundException('Invoice not found for tenant.');
     }
 
-    return invoice;
+    const { _count, ...invoiceData } = invoice;
+
+    return {
+      ...invoiceData,
+      receiptPrintCount: _count.employeeActivityLogs,
+    };
+  }
+
+  registerPrint(tenantId: string, user: AuthenticatedUser, id: string) {
+    return this.prisma.$transaction(async (tx) => {
+      const invoices = await tx.$queryRaw<
+        Array<{
+          id: string;
+          invoiceNumber: string;
+          ncf: string | null;
+          documentType: InvoiceDocumentType;
+          status: InvoiceStatus;
+          fiscalStatus: InvoiceFiscalStatus;
+          issuedById: string | null;
+          cashSessionId: string | null;
+          total: Prisma.Decimal;
+        }>
+      >`
+        SELECT
+          "id",
+          "invoiceNumber",
+          "ncf",
+          "documentType",
+          "status",
+          "fiscalStatus",
+          "issuedById",
+          "cashSessionId",
+          "total"
+        FROM "Invoice"
+        WHERE "id" = ${id}
+          AND "tenantId" = ${tenantId}
+        FOR UPDATE
+      `;
+      const invoice = invoices[0];
+
+      if (!invoice) {
+        throw new NotFoundException('Invoice not found for tenant.');
+      }
+
+      const expectedNcfPrefix =
+        invoice.documentType === InvoiceDocumentType.CONSUMER_02
+          ? 'B02'
+          : invoice.documentType === InvoiceDocumentType.FISCAL_CREDIT_01
+            ? 'B01'
+            : null;
+
+      if (
+        !expectedNcfPrefix ||
+        !invoice.ncf ||
+        !new RegExp(`^${expectedNcfPrefix}\\d{8}$`).test(invoice.ncf) ||
+        invoice.fiscalStatus !== InvoiceFiscalStatus.LOCAL_ISSUED ||
+        !printableInvoiceStatuses.includes(invoice.status)
+      ) {
+        throw new BadRequestException(
+          'Only issued local B01 or B02 invoices with a valid NCF can be printed.',
+        );
+      }
+
+      const previousPrintCount = await tx.employeeActivityLog.count({
+        where: {
+          tenantId,
+          invoiceId: invoice.id,
+          action: { in: receiptPrintActions },
+        },
+      });
+      const tenantMembership = user.memberships.find(
+        (membership) => membership.tenantId === tenantId,
+      );
+      const platformMembership = user.memberships.find((membership) =>
+        platformPrintRoles.includes(membership.role),
+      );
+      const membership = platformMembership ?? tenantMembership;
+
+      if (!membership) {
+        throw new ForbiddenException('User does not belong to this tenant.');
+      }
+
+      const isAdministrator = administrativePrintRoles.includes(membership.role);
+
+      if (previousPrintCount === 0) {
+        const isIssuingCashier = membership.role === Role.CASHIER && invoice.issuedById === user.id;
+
+        if (!isAdministrator && !isIssuingCashier) {
+          throw new ForbiddenException(
+            'The first print is restricted to the issuing cashier or an administrator.',
+          );
+        }
+      } else if (!isAdministrator && !membership.canReprintReceipt) {
+        throw new ForbiddenException('Receipt reprint permission is required.');
+      }
+
+      const printNumber = previousPrintCount + 1;
+      const action =
+        previousPrintCount === 0
+          ? EmployeeLogAction.PRINT_RECEIPT
+          : EmployeeLogAction.REPRINT_RECEIPT;
+      const log = await tx.employeeActivityLog.create({
+        data: {
+          tenantId,
+          userId: user.id,
+          cashSessionId: invoice.cashSessionId,
+          action,
+          entity: 'Invoice',
+          entityId: invoice.id,
+          invoiceId: invoice.id,
+          amount: invoice.total,
+          metadata: {
+            invoiceNumber: invoice.invoiceNumber,
+            ncf: invoice.ncf,
+            documentType: invoice.documentType,
+            printNumber,
+          },
+        },
+      });
+
+      return {
+        action,
+        printNumber,
+        isReprint: action === EmployeeLogAction.REPRINT_RECEIPT,
+        registeredAt: log.createdAt,
+      };
+    });
   }
 
   async update(tenantId: string, userId: string, id: string, dto: UpdateInvoiceDto) {
-    await this.findOne(tenantId, id);
+    const current = await this.findOne(tenantId, id);
+
+    if (current.ncf || current.fiscalStatus === InvoiceFiscalStatus.LOCAL_ISSUED) {
+      throw new BadRequestException(
+        'An issued NCF invoice is immutable; use the audited cancellation or credit-note flow.',
+      );
+    }
+
+    if (dto.status && dto.status !== InvoiceStatus.DRAFT) {
+      throw new BadRequestException(
+        'Draft invoices must be issued through the POS fiscal workflow.',
+      );
+    }
 
     const invoice = await this.prisma.invoice.update({
       where: { id },

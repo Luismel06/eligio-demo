@@ -223,7 +223,7 @@ export function DashboardView() {
       icon: PackageCheck,
     },
     {
-      label: 'Secuencias fiscales próximas a agotarse',
+      label: 'Secuencias fiscales con alerta',
       value: summary.fiscalSequenceAlerts.length,
       detail: 'Requieren seguimiento',
       href: '/settings/fiscal-sequences',
@@ -1035,7 +1035,7 @@ function ControlAlertsCard({ summary, session }: { summary: DashboardSummary; se
     {
       label: 'Secuencias fiscales',
       value: summary.fiscalSequenceAlerts.length,
-      detail: summary.fiscalSequenceAlerts.length ? 'Próximas a agotarse' : 'Sin alertas activas',
+      detail: summary.fiscalSequenceAlerts.length ? 'Requieren atención' : 'Sin alertas activas',
       href: '/settings/fiscal-sequences',
       tone: summary.fiscalSequenceAlerts.length ? 'warning' : 'success',
       icon: FileText,

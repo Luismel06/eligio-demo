@@ -32,9 +32,13 @@ import {
   openCashSession,
   releaseSalesOrder,
   searchPosProducts,
+  type Customer,
+  type LocalNcfDocumentType,
+  type PosPaymentMethod,
   type Product,
   type SalesOrder,
 } from '@/lib/api';
+import { validateDominicanDocument } from '@/lib/dominican-documents';
 import { formatCurrency, formatDateTime } from '@/lib/utils';
 import { isAdminSession } from '@/lib/authorization';
 import { getOrderClientLabel, getOrderSearchLabel } from '@/lib/order-client';
@@ -73,6 +77,29 @@ type BarcodeDetectorConstructor = new (options?: { formats?: string[] }) => Barc
 type WindowWithBarcodeDetector = Window &
   typeof globalThis & { BarcodeDetector?: BarcodeDetectorConstructor };
 
+function hasValidFiscalCreditIdentity(customer?: Customer) {
+  if (
+    !customer?.documentNumber ||
+    (customer.documentType !== 'RNC' && customer.documentType !== 'CEDULA')
+  ) {
+    return false;
+  }
+
+  return validateDominicanDocument(customer.documentType, customer.documentNumber);
+}
+
+function hasReportableConsumerIdentity(customer?: Customer) {
+  if (!customer?.documentNumber) {
+    return false;
+  }
+
+  if (customer.documentType === 'RNC' || customer.documentType === 'CEDULA') {
+    return validateDominicanDocument(customer.documentType, customer.documentNumber);
+  }
+
+  return customer.documentType === 'PASSPORT';
+}
+
 export function PosView() {
   const session = useCurrentSession();
   const queryClient = useQueryClient();
@@ -83,8 +110,8 @@ export function PosView() {
   const scanFrameRef = useRef<number | null>(null);
 
   const [customerId, setCustomerId] = useState('');
-  const [documentType, setDocumentType] = useState('CONSUMER_ELECTRONIC_32');
-  const [paymentMethod, setPaymentMethod] = useState('CASH');
+  const [documentType, setDocumentType] = useState<LocalNcfDocumentType>('CONSUMER_02');
+  const [paymentMethod, setPaymentMethod] = useState<PosPaymentMethod>('CASH');
   const [amountReceived, setAmountReceived] = useState(clearCurrencyInput());
   const [barcode, setBarcode] = useState('');
   const [scannerEnabled, setScannerEnabled] = useState(false);
@@ -209,6 +236,9 @@ export function PosView() {
   const activeCustomers = (customersQuery.data ?? []).filter(
     (customer) => customer.status === 'ACTIVE',
   );
+  const selectedCustomer = activeCustomers.find((customer) => customer.id === customerId);
+  const fiscalCreditAvailable = hasValidFiscalCreditIdentity(selectedCustomer);
+  const customerIdentified = hasReportableConsumerIdentity(selectedCustomer);
   const productPool = productsQuery.data ?? [];
   const categories = uniqueValues(
     productPool
@@ -356,6 +386,9 @@ export function PosView() {
       setMessage(`Factura ${invoice.invoiceNumber} creada correctamente.`);
       setCart([]);
       setLoadedOrder(null);
+      setCustomerId('');
+      setDocumentType('CONSUMER_02');
+      setPaymentMethod('CASH');
       setAmountReceived(clearCurrencyInput());
       await queryClient.invalidateQueries({ queryKey: ['invoices'] });
       await queryClient.invalidateQueries({ queryKey: ['sales-orders'] });
@@ -407,6 +440,7 @@ export function PosView() {
         setLoadedOrder(null);
         setCart([]);
         setCustomerId('');
+        setDocumentType('CONSUMER_02');
         setAmountReceived(clearCurrencyInput());
         setMessage(`Orden ${order.orderNumber} quitada. Ya puedes seleccionar otra.`);
       }
@@ -558,6 +592,15 @@ export function PosView() {
     setCustomerId(order.customerId ?? '');
     setCart(items);
     setMessage(`Orden ${order.orderNumber} cargada para cobrar.`);
+  }
+
+  function selectCustomer(value: string) {
+    setCustomerId(value);
+    const customer = activeCustomers.find((candidate) => candidate.id === value);
+    const supportsB01 = hasValidFiscalCreditIdentity(customer);
+    if (!supportsB01) {
+      setDocumentType('CONSUMER_02');
+    }
   }
 
   function enableScanner() {
@@ -762,6 +805,8 @@ export function PosView() {
                 customers={activeCustomers}
                 customerId={customerId}
                 documentType={documentType}
+                fiscalCreditAvailable={fiscalCreditAvailable}
+                customerIdentified={customerIdentified}
                 paymentMethod={paymentMethod}
                 salePaymentMode={loadedOrder?.paymentMode ?? 'CASH'}
                 dueDate={loadedOrder?.dueDate}
@@ -771,7 +816,7 @@ export function PosView() {
                 message={message}
                 canCompleteSale={canCompleteSale}
                 isCompleting={completeSaleMutation.isPending}
-                onCustomerChange={setCustomerId}
+                onCustomerChange={selectCustomer}
                 onDocumentTypeChange={setDocumentType}
                 onPaymentMethodChange={setPaymentMethod}
                 onAmountReceivedChange={setAmountReceived}

@@ -4,6 +4,7 @@ import {
   IsArray,
   IsDateString,
   IsEnum,
+  IsIn,
   IsNumber,
   IsOptional,
   IsString,
@@ -11,6 +12,7 @@ import {
   Min,
   ValidateNested,
 } from 'class-validator';
+import { LOCAL_NCF_DOCUMENT_TYPES } from '../../fiscal-sequences/fiscal-number';
 
 export class CreateInvoiceItemDto {
   @IsOptional()
@@ -50,7 +52,7 @@ export class CreateInvoiceDto {
   invoiceNumber?: string;
 
   @IsOptional()
-  @IsEnum(InvoiceDocumentType)
+  @IsIn(LOCAL_NCF_DOCUMENT_TYPES)
   documentType?: InvoiceDocumentType;
 
   @IsOptional()

@@ -12,6 +12,7 @@ import {
   Prisma,
   ProductStatus,
   ProductUnit,
+  TaxCategory,
 } from '@qorvex/database';
 import { mkdir, writeFile } from 'fs/promises';
 import path from 'path';
@@ -25,6 +26,11 @@ const internalBarcodePrefix = 'QV';
 const defaultProductImageBucket = 'product-images';
 const maxProductImageSize = 5 * 1024 * 1024;
 const allowedProductImageTypes = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif']);
+const expectedTaxRateByCategory: Record<TaxCategory, string> = {
+  [TaxCategory.ITBIS_18]: '0.18',
+  [TaxCategory.ITBIS_16]: '0.16',
+  [TaxCategory.EXEMPT]: '0',
+};
 
 export type UploadedProductImageFile = {
   originalname: string;
@@ -123,6 +129,9 @@ export class ProductsService {
     const cost = dto.cost === undefined ? undefined : new Prisma.Decimal(dto.cost);
     const barcodeWasGenerated = !dto.barcode?.trim();
     const unit = dto.unit ?? ProductUnit.UNIT;
+    const taxCategory =
+      dto.taxCategory ?? this.inferTaxCategory(dto.taxRate) ?? TaxCategory.ITBIS_18;
+    const taxRate = this.resolveTaxRate(taxCategory, dto.taxRate);
 
     this.ensureQuantityMatchesUnit(unit, stock, 'stock');
     this.ensureQuantityMatchesUnit(unit, dto.minStock ?? 0, 'stock minimo');
@@ -148,8 +157,8 @@ export class ProductsService {
           salePrice: price,
           cost,
           margin: cost ? price.sub(cost).div(price).toDecimalPlaces(4) : undefined,
-          taxCategory: dto.taxCategory,
-          taxRate: dto.taxRate ?? 0.18,
+          taxCategory,
+          taxRate,
           trackInventory: dto.trackInventory ?? true,
           stock,
           minStock: dto.minStock ?? 0,
@@ -248,6 +257,12 @@ export class ProductsService {
     const nextStock = dto.stock ?? currentProduct.stock;
     const nextMinStock = dto.minStock ?? currentProduct.minStock;
     const shouldTrackInventory = dto.trackInventory ?? currentProduct.trackInventory;
+    const nextTaxCategory =
+      dto.taxCategory ?? this.inferTaxCategory(dto.taxRate) ?? currentProduct.taxCategory;
+    const nextTaxRate = this.resolveTaxRate(
+      nextTaxCategory,
+      dto.taxRate ?? (dto.taxCategory === undefined ? currentProduct.taxRate : undefined),
+    );
     const shouldCreateStockMovement =
       dto.stock !== undefined && dto.stock !== currentProduct.stock && shouldTrackInventory;
 
@@ -274,8 +289,8 @@ export class ProductsService {
             nextPrice && nextCost && !nextPrice.isZero()
               ? nextPrice.sub(nextCost).div(nextPrice).toDecimalPlaces(4)
               : undefined,
-          taxCategory: dto.taxCategory,
-          taxRate: dto.taxRate,
+          taxCategory: nextTaxCategory,
+          taxRate: nextTaxRate,
           trackInventory: dto.trackInventory,
           stock: dto.stock,
           minStock: dto.minStock,
@@ -693,10 +708,33 @@ export class ProductsService {
 
   private ensureQuantityMatchesUnit(unit: ProductUnit, quantity: number, field: string) {
     if (requiresWholeQuantity(unit) && !Number.isInteger(quantity)) {
+      throw new BadRequestException(`Product unit ${unit} requires whole quantities for ${field}.`);
+    }
+  }
+
+  private resolveTaxRate(taxCategory: TaxCategory, taxRate: number | Prisma.Decimal | undefined) {
+    const expectedRate = new Prisma.Decimal(expectedTaxRateByCategory[taxCategory]);
+    const resolvedRate = taxRate === undefined ? expectedRate : new Prisma.Decimal(taxRate);
+
+    if (!resolvedRate.eq(expectedRate)) {
       throw new BadRequestException(
-        `Product unit ${unit} requires whole quantities for ${field}.`,
+        `Tax category ${taxCategory} requires tax rate ${expectedRate.toFixed(2)}.`,
       );
     }
+
+    return expectedRate;
+  }
+
+  private inferTaxCategory(taxRate: number | Prisma.Decimal | undefined) {
+    if (taxRate === undefined) {
+      return undefined;
+    }
+
+    const rate = new Prisma.Decimal(taxRate);
+
+    return (Object.entries(expectedTaxRateByCategory) as Array<[TaxCategory, string]>).find(
+      ([, expectedRate]) => rate.eq(expectedRate),
+    )?.[0];
   }
 }
 

@@ -235,10 +235,7 @@ export function ReturnsView() {
     lookupMutation.mutate(query);
   }
 
-  function updateSelection(
-    itemId: string,
-    patch: Partial<SelectionState[string]>,
-  ) {
+  function updateSelection(itemId: string, patch: Partial<SelectionState[string]>) {
     setSelections((current) => ({
       ...current,
       [itemId]: buildNextSelection(current[itemId], patch),
@@ -301,7 +298,9 @@ export function ReturnsView() {
         <SummaryCard label="Pendientes" value={pendingCount.toString()} />
         <SummaryCard
           label="Completadas"
-          value={returnRequests.filter((request) => request.status === 'COMPLETED').length.toString()}
+          value={returnRequests
+            .filter((request) => request.status === 'COMPLETED')
+            .length.toString()}
         />
         <SummaryCard
           label="Monto pendiente"
@@ -317,7 +316,7 @@ export function ReturnsView() {
         <CardHeader>
           <CardTitle>Crear solicitud</CardTitle>
           <CardDescription>
-            Busca por numero de factura, e-NCF o numero de orden cobrada.
+            Busca por numero de factura, NCF o numero de orden cobrada.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-5">
@@ -328,7 +327,7 @@ export function ReturnsView() {
                 value={search}
                 onChange={(event) => setSearch(event.target.value)}
                 className="bg-white pl-9"
-                placeholder="Ejemplo: RIV-E32-000009 u ORD-202606..."
+                placeholder="Ejemplo: B0200000001 u ORD-202606..."
               />
             </div>
             <Button type="submit" disabled={lookupMutation.isPending}>
@@ -344,7 +343,9 @@ export function ReturnsView() {
                   <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
                     <div>
                       <p className="text-sm text-muted-foreground">Factura</p>
-                      <h2 className="mt-1 text-xl font-semibold">{selectedInvoice.invoiceNumber}</h2>
+                      <h2 className="mt-1 text-xl font-semibold">
+                        {selectedInvoice.invoiceNumber}
+                      </h2>
                       <p className="mt-1 text-sm text-muted-foreground">
                         {selectedInvoice.customer?.name ?? 'Consumidor final'} ·{' '}
                         {formatDate(selectedInvoice.issuedAt ?? selectedInvoice.createdAt)}
@@ -601,14 +602,19 @@ function ReturnRequestCard({
           </p>
         </div>
         <div className="flex items-center gap-2 sm:justify-end">
-          <Badge variant={getStatusVariant(request.status)}>{translateStatus(request.status)}</Badge>
+          <Badge variant={getStatusVariant(request.status)}>
+            {translateStatus(request.status)}
+          </Badge>
           <span className="text-sm font-bold">{formatCurrency(Number(request.refundAmount))}</span>
         </div>
       </div>
 
       <div className="mt-4 space-y-2">
         {request.items.map((item) => (
-          <div key={item.id} className="flex items-center justify-between gap-3 rounded-md bg-zinc-50 px-3 py-2">
+          <div
+            key={item.id}
+            className="flex items-center justify-between gap-3 rounded-md bg-zinc-50 px-3 py-2"
+          >
             <div className="min-w-0">
               <p className="truncate text-sm font-medium">{item.description}</p>
               <p className="text-xs text-muted-foreground">
@@ -616,7 +622,9 @@ function ReturnRequestCard({
                 {item.restock ? 'regresa al almacen' : 'no regresa al almacen'}
               </p>
             </div>
-            <span className="shrink-0 text-sm font-semibold">{formatCurrency(Number(item.total))}</span>
+            <span className="shrink-0 text-sm font-semibold">
+              {formatCurrency(Number(item.total))}
+            </span>
           </div>
         ))}
       </div>
@@ -699,7 +707,8 @@ function DecisionModal({
                   {approving ? 'Aprobar devolucion' : 'Rechazar devolucion'}
                 </h2>
                 <p className="mt-1 text-sm leading-5 text-zinc-700">
-                  Factura {target.invoice.invoiceNumber} · {formatCurrency(Number(target.refundAmount))}
+                  Factura {target.invoice.invoiceNumber} ·{' '}
+                  {formatCurrency(Number(target.refundAmount))}
                 </p>
               </div>
             </div>
@@ -835,6 +844,8 @@ function getSelectedItems(invoice: ReturnInvoiceLookup, selections: SelectionSta
     }))
     .filter(({ item, selection }) => {
       const quantity = Number(selection?.quantity ?? 0);
-      return Boolean(selection?.selected && item.canReturn && Number.isFinite(quantity) && quantity > 0);
+      return Boolean(
+        selection?.selected && item.canReturn && Number.isFinite(quantity) && quantity > 0,
+      );
     });
 }

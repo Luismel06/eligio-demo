@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable } from '@nestjs/common';
 import {
   CashMovementType,
   CashSessionStatus,
@@ -7,6 +7,7 @@ import {
   EmployeeStatus,
   FiscalSequenceStatus,
   GoodsReceiptStatus,
+  InvoiceDocumentType,
   InvoiceStatus,
   PaymentMethod,
   ProductStatus,
@@ -19,6 +20,7 @@ import {
 } from '@qorvex/database';
 import { addBusinessDays, businessDateKey } from '../../common/utils/business-date';
 import { PrismaService } from '../../prisma/prisma.service';
+import { ProductSalesQueryDto } from './dto/product-sales-query.dto';
 
 const revenueStatuses = [
   InvoiceStatus.ISSUED,
@@ -48,6 +50,38 @@ const terminalPurchaseOrderStatuses: PurchaseOrderStatus[] = [
   PurchaseOrderStatus.RECEIVED,
   PurchaseOrderStatus.CANCELLED,
 ];
+const localFiscalDocumentTypes = [
+  InvoiceDocumentType.CONSUMER_02,
+  InvoiceDocumentType.FISCAL_CREDIT_01,
+] as const;
+
+type FiscalSequenceAlertSource = {
+  id: string;
+  documentType: InvoiceDocumentType;
+  prefix: string;
+  startNumber: number;
+  endNumber: number;
+  nextNumber: number;
+  validUntil: Date | null;
+  status: FiscalSequenceStatus;
+  createdAt: Date;
+};
+
+type FiscalSequenceAlert = {
+  id: string;
+  documentType: (typeof localFiscalDocumentTypes)[number];
+  prefix: string;
+  status: FiscalSequenceStatus | 'MISSING';
+  startNumber: number;
+  nextNumber: number;
+  endNumber: number;
+  remaining: number;
+  authorizedCount: number;
+  alertThreshold: number;
+  severity: 'WARNING' | 'CRITICAL';
+  validUntil: Date | null;
+  hasQueuedReplacement: boolean;
+};
 
 @Injectable()
 export class DashboardService {
@@ -58,6 +92,7 @@ export class DashboardService {
     const todayStart = new Date(now);
     todayStart.setHours(0, 0, 0, 0);
     const accountingTodayKey = businessDateKey(now);
+    const currentFiscalDate = new Date(`${accountingTodayKey}T00:00:00.000Z`);
     const accountingTomorrowKey = businessDateKey(addBusinessDays(1, now));
     const accountingDueSoonEndKey = businessDateKey(addBusinessDays(8, now));
 
@@ -311,9 +346,11 @@ export class DashboardService {
       this.prisma.fiscalSequence.findMany({
         where: {
           tenantId,
-          status: FiscalSequenceStatus.ACTIVE,
+          documentType: {
+            in: [...localFiscalDocumentTypes],
+          },
         },
-        orderBy: { documentType: 'asc' },
+        orderBy: [{ documentType: 'asc' }, { createdAt: 'desc' }],
       }),
       this.prisma.product.findMany({
         where: {
@@ -604,17 +641,7 @@ export class DashboardService {
         invoiceNumber: log.invoice?.invoiceNumber ?? null,
         createdAt: log.createdAt,
       })),
-      fiscalSequenceAlerts: fiscalSequences
-        .map((sequence) => ({
-          id: sequence.id,
-          documentType: sequence.documentType,
-          prefix: sequence.prefix,
-          nextNumber: sequence.nextNumber,
-          endNumber: sequence.endNumber,
-          remaining: sequence.endNumber - sequence.nextNumber + 1,
-          validUntil: sequence.validUntil,
-        }))
-        .filter((sequence) => sequence.remaining <= 25),
+      fiscalSequenceAlerts: this.buildFiscalSequenceAlerts(fiscalSequences, currentFiscalDate),
       employeeSummary: {
         activeEmployees,
         openCashSessions,
@@ -646,7 +673,70 @@ export class DashboardService {
     };
   }
 
-  async getProductSales(tenantId: string) {
+  async getOperationalAlerts(tenantId: string) {
+    const currentFiscalDate = new Date(`${businessDateKey(new Date())}T00:00:00.000Z`);
+    const [pendingInvoices, openCashSessions, productsForStock, fiscalSequences] =
+      await Promise.all([
+        this.prisma.invoice.count({
+          where: {
+            tenantId,
+            status: { in: pendingInvoiceStatuses },
+          },
+        }),
+        this.prisma.cashSession.count({
+          where: {
+            tenantId,
+            status: CashSessionStatus.OPEN,
+          },
+        }),
+        this.prisma.product.findMany({
+          where: {
+            tenantId,
+            status: ProductStatus.ACTIVE,
+            trackInventory: true,
+          },
+          select: {
+            stock: true,
+            reservedStock: true,
+            minStock: true,
+          },
+        }),
+        this.prisma.fiscalSequence.findMany({
+          where: {
+            tenantId,
+            documentType: { in: [...localFiscalDocumentTypes] },
+          },
+          orderBy: [{ documentType: 'asc' }, { createdAt: 'desc' }],
+        }),
+      ]);
+
+    return {
+      pendingInvoices,
+      lowStockProducts: productsForStock.filter(
+        (product) => product.stock - product.reservedStock <= product.minStock,
+      ).length,
+      openCashSessions,
+      fiscalSequenceAlerts: this.buildFiscalSequenceAlerts(
+        fiscalSequences,
+        currentFiscalDate,
+      ),
+    };
+  }
+
+  async getProductSales(tenantId: string, query: ProductSalesQueryDto = {}) {
+    const from = query.from ? new Date(query.from) : null;
+    const to = query.to ? new Date(query.to) : null;
+
+    if (from && to && from >= to) {
+      throw new BadRequestException('The product sales start date must precede its end date.');
+    }
+
+    const saleDateRange = {
+      ...(from ? { gte: from } : {}),
+      ...(to ? { lt: to } : {}),
+    };
+    const hasDateRange = Boolean(from || to);
+
     const [products, invoiceItems] = await Promise.all([
       this.prisma.product.findMany({
         where: {
@@ -664,6 +754,14 @@ export class DashboardService {
           invoice: {
             tenantId,
             status: { in: revenueStatuses },
+            ...(hasDateRange
+              ? {
+                  OR: [
+                    { issuedAt: saleDateRange },
+                    { issuedAt: null, createdAt: saleDateRange },
+                  ],
+                }
+              : {}),
           },
         },
         select: {
@@ -685,12 +783,107 @@ export class DashboardService {
 
     return {
       generatedAt: new Date(),
+      range: {
+        from: from?.toISOString() ?? null,
+        to: to?.toISOString() ?? null,
+      },
       productCount: products.length,
       productsWithSales: ranking.mostSold.filter((product) => product.quantitySold > 0).length,
-      productsWithoutSales: ranking.leastSold.filter((product) => product.quantitySold === 0).length,
+      productsWithoutSales: ranking.leastSold.filter((product) => product.quantitySold === 0)
+        .length,
       mostSold: ranking.mostSold,
       leastSold: ranking.leastSold,
     };
+  }
+
+  private buildFiscalSequenceAlerts(
+    sequences: FiscalSequenceAlertSource[],
+    currentFiscalDate: Date,
+  ): FiscalSequenceAlert[] {
+    return localFiscalDocumentTypes.flatMap<FiscalSequenceAlert>((documentType) => {
+      const candidates = sequences
+        .filter((sequence) => sequence.documentType === documentType)
+        .sort((first, second) => second.createdAt.getTime() - first.createdAt.getTime());
+      const isEligible = (sequence: FiscalSequenceAlertSource) =>
+        sequence.nextNumber <= sequence.endNumber &&
+        (!sequence.validUntil || sequence.validUntil >= currentFiscalDate);
+      const queued = candidates.filter(
+        (sequence) => sequence.status === FiscalSequenceStatus.INACTIVE && isEligible(sequence),
+      );
+      const active = candidates.find(
+        (sequence) => sequence.status === FiscalSequenceStatus.ACTIVE && isEligible(sequence),
+      );
+
+      if (active) {
+        const remaining = Math.max(active.endNumber - active.nextNumber + 1, 0);
+        const authorizedCount = active.endNumber - active.startNumber + 1;
+        const alertThreshold = this.fiscalSequenceAlertThreshold(authorizedCount);
+
+        if (remaining > alertThreshold) {
+          return [];
+        }
+
+        const criticalThreshold = Math.min(
+          alertThreshold,
+          Math.max(2, Math.ceil(authorizedCount * 0.05)),
+        );
+
+        return [
+          {
+            id: active.id,
+            documentType,
+            prefix: active.prefix,
+            status: FiscalSequenceStatus.ACTIVE,
+            startNumber: active.startNumber,
+            nextNumber: active.nextNumber,
+            endNumber: active.endNumber,
+            remaining,
+            authorizedCount,
+            alertThreshold,
+            severity: remaining <= criticalThreshold ? ('CRITICAL' as const) : ('WARNING' as const),
+            validUntil: active.validUntil,
+            hasQueuedReplacement: queued.length > 0,
+          },
+        ];
+      }
+
+      if (queued.length) {
+        return [];
+      }
+
+      const latest = candidates[0];
+      const prefix = documentType === InvoiceDocumentType.CONSUMER_02 ? 'B02' : 'B01';
+      const status = !latest
+        ? ('MISSING' as const)
+        : latest.validUntil && latest.validUntil < currentFiscalDate
+          ? FiscalSequenceStatus.EXPIRED
+          : latest.nextNumber > latest.endNumber
+            ? FiscalSequenceStatus.EXHAUSTED
+            : latest.status;
+      const authorizedCount = latest ? latest.endNumber - latest.startNumber + 1 : 0;
+
+      return [
+        {
+          id: latest?.id ?? `missing-${documentType}`,
+          documentType,
+          prefix: latest?.prefix ?? prefix,
+          status,
+          startNumber: latest?.startNumber ?? 0,
+          nextNumber: latest?.nextNumber ?? 0,
+          endNumber: latest?.endNumber ?? 0,
+          remaining: latest ? Math.max(latest.endNumber - latest.nextNumber + 1, 0) : 0,
+          authorizedCount,
+          alertThreshold: this.fiscalSequenceAlertThreshold(authorizedCount),
+          severity: 'CRITICAL' as const,
+          validUntil: latest?.validUntil ?? null,
+          hasQueuedReplacement: false,
+        },
+      ];
+    });
+  }
+
+  private fiscalSequenceAlertThreshold(authorizedCount: number) {
+    return Math.min(25, Math.max(1, Math.ceil(Math.max(authorizedCount, 1) * 0.2)));
   }
 
   private buildSalesSeries(
@@ -806,6 +999,7 @@ export class DashboardService {
         sku: product.sku,
         brand: product.brand,
         unit: product.unit,
+        categoryId: product.category?.id ?? null,
         categoryName: product.category?.name ?? 'Sin categoria',
         currentPrice: this.decimalToNumber(product.price),
         quantitySold: aggregate?.quantitySold ?? 0,
@@ -818,11 +1012,19 @@ export class DashboardService {
     return {
       mostSold: [...ranking].sort((first, second) => {
         const quantityDiff = second.quantitySold - first.quantitySold;
-        return quantityDiff || second.grossAmount - first.grossAmount || first.name.localeCompare(second.name);
+        return (
+          quantityDiff ||
+          second.grossAmount - first.grossAmount ||
+          first.name.localeCompare(second.name)
+        );
       }),
       leastSold: [...ranking].sort((first, second) => {
         const quantityDiff = first.quantitySold - second.quantitySold;
-        return quantityDiff || first.grossAmount - second.grossAmount || first.name.localeCompare(second.name);
+        return (
+          quantityDiff ||
+          first.grossAmount - second.grossAmount ||
+          first.name.localeCompare(second.name)
+        );
       }),
     };
   }
@@ -867,10 +1069,7 @@ export class DashboardService {
         overdueBalance += balance;
       } else if (dueDateKey === boundaries.todayKey) {
         dueTodayCount += 1;
-      } else if (
-        dueDateKey >= boundaries.tomorrowKey &&
-        dueDateKey < boundaries.dueSoonEndKey
-      ) {
+      } else if (dueDateKey >= boundaries.tomorrowKey && dueDateKey < boundaries.dueSoonEndKey) {
         dueSoonCount += 1;
       }
     }

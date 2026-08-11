@@ -26,10 +26,7 @@ import {
   updateCustomer,
 } from '@/lib/api';
 import { getStatusVariant, translateDocumentType, translateStatus } from '@/lib/display-labels';
-import {
-  normalizeDominicanDocument,
-  validateDominicanDocument,
-} from '@/lib/dominican-documents';
+import { normalizeDominicanDocument, validateDominicanDocument } from '@/lib/dominican-documents';
 import { formatDate } from '@/lib/utils';
 import { ModuleHeader } from './module-header';
 import { SessionRequired, useCurrentSession } from './session-required';
@@ -97,9 +94,7 @@ export function CustomersView() {
       if (form.documentType === 'RNC' || form.documentType === 'CEDULA') {
         if (!validateDominicanDocument(form.documentType, documentNumber)) {
           throw new Error(
-            form.documentType === 'RNC'
-              ? 'El RNC no es valido.'
-              : 'La cedula no es valida.',
+            form.documentType === 'RNC' ? 'El RNC no es valido.' : 'La cedula no es valida.',
           );
         }
 
@@ -283,7 +278,7 @@ export function CustomersView() {
           </CardHeader>
           <CardContent>
             <form className="grid gap-4 md:grid-cols-2" onSubmit={submitForm}>
-              <Field label="Nombre">
+              <Field label="Razón social / nombre legal">
                 <Input
                   value={form.name}
                   onChange={(event) =>

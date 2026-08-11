@@ -40,6 +40,7 @@ const safeMetadataKeys = [
   'amountReceived',
   'changeAmount',
   'documentType',
+  'ncf',
   'eNcf',
   'sourceDestination',
   'sourceStatus',

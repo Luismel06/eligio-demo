@@ -12,11 +12,8 @@ import {
   CustomerCreditStatus,
   CustomerStatus,
   DocumentType,
-  ElectronicDocumentProvider,
-  ElectronicDocumentStatus,
   EmployeeLogAction,
   EmployeeStatus,
-  FiscalSequenceStatus,
   InventoryMovementType,
   InvoiceDocumentType,
   InvoiceFiscalStatus,
@@ -31,11 +28,20 @@ import {
   SalePaymentMode,
   SalesOrderDestination,
   SalesOrderStatus,
+  TaxCategory,
 } from '@qorvex/database';
 import { PrismaService } from '../../prisma/prisma.service';
 import { AuthenticatedUser } from '../../common/types/authenticated-request';
 import { getBarcodeLookupCandidates } from '../../common/utils/barcode';
 import { businessDateKey } from '../../common/utils/business-date';
+import {
+  normalizeDominicanDocument,
+  validateDominicanCedula,
+  validateDominicanDocument,
+  validateDominicanRnc,
+} from '../../common/utils/dominican-documents';
+import { isFiscalCreditNcf, isLocalNcfDocumentType } from '../fiscal-sequences/fiscal-number';
+import { FiscalSequencesService } from '../fiscal-sequences/fiscal-sequences.service';
 import { CompleteSaleDto, PosSaleItemDto } from './dto/complete-sale.dto';
 
 const adminRoles: Role[] = [Role.ADMIN, Role.SUPER_ADMIN, Role.QORVEX_SUPER_ADMIN];
@@ -48,9 +54,11 @@ type ComputedSaleLine = {
   barcode: string | null;
   description: string;
   quantity: Prisma.Decimal;
+  unit: ProductUnit;
   reservedQuantity: number;
   unitPrice: Prisma.Decimal;
   discountTotal: Prisma.Decimal;
+  taxCategory: TaxCategory;
   taxRate: Prisma.Decimal;
   taxTotal: Prisma.Decimal;
   subtotal: Prisma.Decimal;
@@ -59,7 +67,10 @@ type ComputedSaleLine = {
 
 @Injectable()
 export class PosService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly fiscalSequences: FiscalSequencesService,
+  ) {}
 
   async searchProducts(tenantId: string, user: AuthenticatedUser, q: string) {
     await this.ensureCanCreateDirectSale(tenantId, user);
@@ -117,7 +128,7 @@ export class PosService {
     const computed = await this.computeSale(tenantId, dto.items ?? []);
 
     return {
-      documentType: dto.documentType ?? InvoiceDocumentType.CONSUMER_ELECTRONIC_32,
+      documentType: dto.documentType ?? InvoiceDocumentType.CONSUMER_02,
       paymentMethod: dto.paymentMethod,
       subtotal: computed.subtotal.toNumber(),
       discountTotal: computed.discountTotal.toNumber(),
@@ -151,6 +162,7 @@ export class PosService {
       throw new ForbiddenException('Direct POS sales are disabled. Load an order to charge.');
     }
     this.ensureSupportedPaymentMethod(dto.paymentMethod);
+    await this.fiscalSequences.refreshStatuses(tenantId);
 
     return this.runSerializable(async (tx) => {
       const cashSession = await this.findCashSessionForSale(
@@ -174,7 +186,10 @@ export class PosService {
         throw new BadRequestException('Sales order totals are inconsistent and must be reviewed.');
       }
 
-      const documentType = dto.documentType ?? InvoiceDocumentType.CONSUMER_ELECTRONIC_32;
+      const documentType = dto.documentType ?? InvoiceDocumentType.CONSUMER_02;
+      if (!isLocalNcfDocumentType(documentType)) {
+        throw new BadRequestException('Only local B01 and B02 invoices are enabled.');
+      }
       if (order?.customerId && dto.customerId && dto.customerId !== order.customerId) {
         throw new BadRequestException('Order customer cannot be changed at checkout.');
       }
@@ -270,17 +285,62 @@ export class PosService {
         }
       }
 
+      const fiscalCreditCustomer =
+        customer &&
+        (customer.documentType === DocumentType.RNC ||
+          customer.documentType === DocumentType.CEDULA) &&
+        customer.documentNumber?.trim() &&
+        validateDominicanDocument(customer.documentType, customer.documentNumber);
+      if (isFiscalCreditNcf(documentType) && !fiscalCreditCustomer) {
+        throw new BadRequestException('B01 requires a customer with a valid RNC or Dominican ID.');
+      }
+
+      // The persisted subtotal is already net of line discounts. DGII's
+      // RD$250,000 B02 identification threshold is evaluated before ITBIS.
+      const netAmountBeforeTaxes = computed.subtotal.toDecimalPlaces(2);
+      const requiresConsumerIdentity =
+        documentType === InvoiceDocumentType.CONSUMER_02 && netAmountBeforeTaxes.gte(250_000);
+      const consumerHasReportableIdentity =
+        customer &&
+        customer.documentNumber?.trim() &&
+        (customer.documentType === DocumentType.RNC || customer.documentType === DocumentType.CEDULA
+          ? validateDominicanDocument(customer.documentType, customer.documentNumber)
+          : customer.documentType === DocumentType.PASSPORT);
+      if (requiresConsumerIdentity && !consumerHasReportableIdentity) {
+        throw new BadRequestException(
+          'B02 invoices of RD$250,000 or more before ITBIS require an identified customer.',
+        );
+      }
+
+      const tenant = await tx.tenant.findUnique({
+        where: { id: tenantId },
+        select: {
+          id: true,
+          rnc: true,
+          legalName: true,
+          commercialName: true,
+          address: true,
+          phone: true,
+          email: true,
+          branding: { select: { logoUrl: true } },
+        },
+      });
       if (
-        documentType === InvoiceDocumentType.FISCAL_CREDIT_ELECTRONIC_31 &&
-        (!customer ||
-          customer.documentType !== DocumentType.RNC ||
-          !customer.documentNumber?.trim())
+        !tenant?.rnc?.trim() ||
+        (!validateDominicanRnc(tenant.rnc) && !validateDominicanCedula(tenant.rnc)) ||
+        !tenant.legalName?.trim() ||
+        !tenant.commercialName?.trim() ||
+        !tenant.address?.trim() ||
+        !tenant.phone?.trim() ||
+        !tenant.email?.trim()
       ) {
-        throw new BadRequestException('Fiscal credit invoices require an RNC customer.');
+        throw new BadRequestException(
+          'Issuer tax identity, legal name, commercial name, address, phone, and email must be configured.',
+        );
       }
 
       await this.lockOpenCashSessionForUser(tx, tenantId, user.id, cashSession.id);
-      const sequence = await this.reserveFiscalSequence(tx, tenantId, documentType);
+      const sequence = await this.fiscalSequences.reserve(tx, tenantId, documentType);
       const requiredPayment = isCreditSale ? order.initialPaymentAmount : computed.total;
       const payment = this.getPaymentAmounts(
         dto.amountReceived,
@@ -292,9 +352,20 @@ export class PosService {
       const balance = computed.total.sub(paidAmount).toDecimalPlaces(2);
       const status = this.getInvoiceStatus(paidAmount, computed.total);
       const issuedAt = new Date();
-      const fiscalNumber = this.formatFiscalNumber(sequence.prefix, sequence.number);
-      const invoiceNumber = `RIV-${fiscalNumber}`;
-      const eNcf = fiscalNumber;
+      const invoiceNumber = `RIV-${sequence.ncf}`;
+      const fiscalCustomerSnapshot =
+        isFiscalCreditNcf(documentType) || requiresConsumerIdentity
+          ? {
+              id: customer!.id,
+              name: customer!.name,
+              documentType: customer!.documentType,
+              documentNumber:
+                customer!.documentType === DocumentType.RNC ||
+                customer!.documentType === DocumentType.CEDULA
+                  ? normalizeDominicanDocument(customer!.documentNumber!)
+                  : customer!.documentNumber!.trim(),
+            }
+          : Prisma.JsonNull;
 
       const invoice = await tx.invoice.create({
         data: {
@@ -302,10 +373,25 @@ export class PosService {
           customerId: customer?.id,
           documentType,
           invoiceNumber,
-          ncf: fiscalNumber,
-          eNcf,
+          ncf: sequence.ncf,
+          eNcf: null,
+          fiscalSequenceId: sequence.id,
+          fiscalAuthorizationNumber: sequence.authorizationNumber,
+          fiscalValidUntil: sequence.validUntil,
+          fiscalIssuerSnapshot: {
+            rnc: normalizeDominicanDocument(tenant.rnc),
+            legalName: tenant.legalName.trim(),
+            commercialName: tenant.commercialName.trim(),
+            address: tenant.address.trim(),
+            phone: tenant.phone.trim(),
+            email: tenant.email.trim(),
+            logoUrl: tenant.branding?.logoUrl ?? null,
+            pointOfSale: cashSession.cashRegister.name,
+            pointOfSaleLocation: cashSession.cashRegister.location,
+          },
+          fiscalCustomerSnapshot,
           status,
-          fiscalStatus: InvoiceFiscalStatus.SIGNED,
+          fiscalStatus: InvoiceFiscalStatus.LOCAL_ISSUED,
           subtotal: computed.subtotal,
           taxTotal: computed.taxTotal,
           discountTotal: computed.discountTotal,
@@ -327,8 +413,10 @@ export class PosService {
               barcode: item.barcode,
               description: item.description,
               quantity: item.quantity,
+              unit: item.unit,
               unitPrice: item.unitPrice,
               discountTotal: item.discountTotal,
+              taxCategory: item.taxCategory,
               taxRate: item.taxRate,
               taxTotal: item.taxTotal,
               subtotal: item.subtotal,
@@ -399,7 +487,7 @@ export class PosService {
             amount: computed.total,
             metadata: {
               invoiceNumber,
-              eNcf,
+              ncf: sequence.ncf,
               paymentMethod: dto.paymentMethod,
               amountReceived: payment.amountReceived.toString(),
               changeAmount: payment.changeAmount.toString(),
@@ -420,6 +508,7 @@ export class PosService {
             amount: computed.total,
             metadata: {
               invoiceNumber,
+              ncf: sequence.ncf,
               documentType,
               amountReceived: payment.amountReceived.toString(),
               changeAmount: payment.changeAmount.toString(),
@@ -485,25 +574,6 @@ export class PosService {
           data: { creditBalance: aggregate._sum.balance ?? new Prisma.Decimal(0) },
         });
       }
-
-      await tx.electronicDocument.create({
-        data: {
-          tenantId,
-          invoiceId: invoice.id,
-          provider: ElectronicDocumentProvider.DGII_DIRECT,
-          status: ElectronicDocumentStatus.SIGNED,
-          trackId: `DEMO-${invoice.invoiceNumber}`,
-          requestPayload: {
-            mode: 'demo',
-            documentType,
-            eNcf,
-          },
-          responsePayload: {
-            mode: 'demo',
-            status: 'SIGNED',
-          },
-        },
-      });
 
       return tx.invoice.findUniqueOrThrow({
         where: { id: invoice.id },
@@ -652,9 +722,11 @@ export class PosService {
         barcode: product.barcode,
         description: product.name,
         quantity,
+        unit: product.unit,
         reservedQuantity: 0,
         unitPrice,
         discountTotal,
+        taxCategory: product.taxCategory,
         taxRate: product.taxRate,
         subtotal,
         taxTotal,
@@ -705,9 +777,11 @@ export class PosService {
       barcode: string | null;
       description: string;
       quantity: Prisma.Decimal;
+      unit: ProductUnit;
       reservedQuantity: number;
       unitPrice: Prisma.Decimal;
       discountTotal: Prisma.Decimal;
+      taxCategory: TaxCategory;
       taxRate: Prisma.Decimal;
       taxTotal: Prisma.Decimal;
       subtotal: Prisma.Decimal;
@@ -727,9 +801,11 @@ export class PosService {
         barcode: item.barcode,
         description: item.description,
         quantity: item.quantity,
+        unit: item.unit,
         reservedQuantity: item.reservedQuantity,
         unitPrice: item.unitPrice,
         discountTotal: item.discountTotal,
+        taxCategory: item.taxCategory,
         taxRate: item.taxRate,
         taxTotal: item.taxTotal,
         subtotal: item.subtotal,
@@ -742,7 +818,7 @@ export class PosService {
 
       if (
         item.product.trackInventory &&
-        requiresWholeQuantity(item.product.unit) &&
+        requiresWholeQuantity(item.unit) &&
         !Number.isInteger(quantity)
       ) {
         throw new BadRequestException(
@@ -852,61 +928,6 @@ export class PosService {
     });
   }
 
-  private async reserveFiscalSequence(
-    tx: Prisma.TransactionClient,
-    tenantId: string,
-    documentType: InvoiceDocumentType,
-  ) {
-    for (let attempt = 0; attempt < 5; attempt += 1) {
-      const sequence = await tx.fiscalSequence.findFirst({
-        where: {
-          tenantId,
-          documentType,
-          status: FiscalSequenceStatus.ACTIVE,
-        },
-        orderBy: {
-          createdAt: 'asc',
-        },
-      });
-
-      if (!sequence || sequence.nextNumber > sequence.endNumber) {
-        throw new BadRequestException(
-          'No active fiscal sequence available for this document type.',
-        );
-      }
-
-      const reserved = await tx.fiscalSequence.updateMany({
-        where: {
-          id: sequence.id,
-          nextNumber: sequence.nextNumber,
-          status: FiscalSequenceStatus.ACTIVE,
-        },
-        data: {
-          nextNumber: {
-            increment: 1,
-          },
-          ...(sequence.nextNumber >= sequence.endNumber
-            ? { status: FiscalSequenceStatus.EXHAUSTED }
-            : {}),
-        },
-      });
-
-      if (reserved.count === 1) {
-        return {
-          prefix: sequence.prefix,
-          number: sequence.nextNumber,
-        };
-      }
-    }
-
-    throw new BadRequestException('Could not reserve fiscal sequence.');
-  }
-
-  private formatFiscalNumber(prefix: string, number: number) {
-    const width = prefix === 'BA' ? 4 : 10;
-    return `${prefix}${String(number).padStart(width, '0')}`;
-  }
-
   private async findCashSessionForSale(
     tx: Prisma.TransactionClient,
     tenantId: string,
@@ -922,6 +943,9 @@ export class PosService {
       },
       orderBy: {
         openedAt: 'desc',
+      },
+      include: {
+        cashRegister: true,
       },
     });
 
@@ -1036,7 +1060,7 @@ export class PosService {
 
   /**
    * A completed POS sale writes the invoice, payment, cash movement, inventory,
-   * order state, customer balance, audit trail and electronic document together.
+   * order state, customer balance, local NCF and audit trail together.
    * Remote database latency can make that safely exceed Prisma's 5 second default.
    */
   private async runSerializable<T>(

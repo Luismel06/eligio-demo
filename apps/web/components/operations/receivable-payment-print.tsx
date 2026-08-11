@@ -116,6 +116,7 @@ export function ReceivablePaymentPrint({
           <div className="sm:text-right">
             <p className="text-xs uppercase tracking-wide text-zinc-500">Aplicado a</p>
             <p className="mt-1 font-semibold">Factura {invoice.invoiceNumber}</p>
+            <p className="text-sm">NCF: {invoice.ncf ?? '-'}</p>
             <p className="text-sm">Emitida: {formatDate(invoice.issuedAt ?? invoice.createdAt)}</p>
             <p className="text-sm">Vence: {formatDate(invoice.dueDate)}</p>
           </div>

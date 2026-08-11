@@ -4,7 +4,7 @@ import { ReceiptText } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import type { Customer } from '@/lib/api';
+import type { Customer, LocalNcfDocumentType, PosPaymentMethod } from '@/lib/api';
 import { formatCurrency } from '@/lib/utils';
 import {
   formatCurrencyInput,
@@ -17,8 +17,10 @@ import type { PosTotals } from './types';
 type PosPaymentPanelProps = {
   customers: Customer[];
   customerId: string;
-  documentType: string;
-  paymentMethod: string;
+  documentType: LocalNcfDocumentType;
+  fiscalCreditAvailable: boolean;
+  customerIdentified: boolean;
+  paymentMethod: PosPaymentMethod;
   salePaymentMode: 'CASH' | 'CREDIT';
   dueDate?: string | null;
   customerLocked?: boolean;
@@ -28,8 +30,8 @@ type PosPaymentPanelProps = {
   canCompleteSale: boolean;
   isCompleting: boolean;
   onCustomerChange: (value: string) => void;
-  onDocumentTypeChange: (value: string) => void;
-  onPaymentMethodChange: (value: string) => void;
+  onDocumentTypeChange: (value: LocalNcfDocumentType) => void;
+  onPaymentMethodChange: (value: PosPaymentMethod) => void;
   onAmountReceivedChange: (value: string) => void;
   onCompleteSale: () => void;
 };
@@ -38,6 +40,8 @@ export function PosPaymentPanel({
   customers,
   customerId,
   documentType,
+  fiscalCreditAvailable,
+  customerIdentified,
   paymentMethod,
   salePaymentMode,
   dueDate,
@@ -59,6 +63,8 @@ export function PosPaymentPanel({
     totals.received < totals.requiredPayment;
   const cashPayment = paymentMethod === 'CASH';
   const creditSale = salePaymentMode === 'CREDIT';
+  const b02IdentityMissing =
+    documentType === 'CONSUMER_02' && totals.subtotal >= 250_000 && !customerIdentified;
 
   return (
     <div className="space-y-3">
@@ -87,12 +93,19 @@ export function PosPaymentPanel({
             <select
               id="documentType"
               value={documentType}
-              onChange={(event) => onDocumentTypeChange(event.target.value)}
+              onChange={(event) => onDocumentTypeChange(event.target.value as LocalNcfDocumentType)}
               className="h-10 w-full rounded-md border border-input bg-card px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
-              <option value="CONSUMER_ELECTRONIC_32">Factura consumo e-CF 32</option>
-              <option value="FISCAL_CREDIT_ELECTRONIC_31">Credito fiscal e-CF 31</option>
+              <option value="CONSUMER_02">Factura de consumo B02</option>
+              <option value="FISCAL_CREDIT_01" disabled={!fiscalCreditAvailable}>
+                Factura de credito fiscal B01
+              </option>
             </select>
+            {!fiscalCreditAvailable ? (
+              <p className="text-xs text-muted-foreground">
+                B01 requiere seleccionar un cliente con RNC o cedula valida.
+              </p>
+            ) : null}
           </div>
         </div>
 
@@ -102,7 +115,7 @@ export function PosPaymentPanel({
             <select
               id="paymentMethod"
               value={paymentMethod}
-              onChange={(event) => onPaymentMethodChange(event.target.value)}
+              onChange={(event) => onPaymentMethodChange(event.target.value as PosPaymentMethod)}
               className="h-10 w-full rounded-md border border-input bg-card px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
               <option value="CASH">Efectivo</option>
@@ -170,10 +183,16 @@ export function PosPaymentPanel({
             </p>
           ) : null}
 
+          {b02IdentityMissing ? (
+            <p className="rounded-md bg-danger/10 px-3 py-2 text-sm text-danger">
+              Una B02 de RD$250,000 o mas antes de ITBIS requiere identificar al cliente.
+            </p>
+          ) : null}
+
           <Button
             type="button"
             className="h-16 w-full bg-[#f36c10] text-lg font-bold text-white hover:bg-[#d85f0e]"
-            disabled={!canCompleteSale || cashInsufficient || isCompleting}
+            disabled={!canCompleteSale || cashInsufficient || b02IdentityMissing || isCompleting}
             onClick={onCompleteSale}
           >
             <ReceiptText className="h-5 w-5" />

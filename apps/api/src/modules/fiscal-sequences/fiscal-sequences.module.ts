@@ -5,5 +5,6 @@ import { FiscalSequencesService } from './fiscal-sequences.service';
 @Module({
   controllers: [FiscalSequencesController],
   providers: [FiscalSequencesService],
+  exports: [FiscalSequencesService],
 })
 export class FiscalSequencesModule {}

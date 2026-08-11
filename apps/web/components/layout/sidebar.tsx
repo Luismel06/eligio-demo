@@ -173,7 +173,11 @@ export function SidebarContent({
         )}
       >
         <div className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-white shadow-sm">
-          <img src="/tenants/Ferreteria_RIVNU.jpeg" alt="" className="h-full w-full object-cover" />
+          <img
+            src="/tenants/RIVNU.jpeg"
+            alt="Logo Ferretería RIVNU"
+            className="h-full w-full object-cover"
+          />
         </div>
         <div className={cn('min-w-0', collapsed && 'hidden')}>
           <p className="truncate text-sm font-semibold">Ferretería RIVNU</p>

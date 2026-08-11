@@ -152,6 +152,7 @@ export function ReceivableCustomerStatementPrint({
                 <thead>
                   <tr className="border-b border-zinc-300 text-left">
                     <th className="py-2 pr-3">Factura</th>
+                    <th className="px-3 py-2">NCF</th>
                     <th className="px-3 py-2">Emisión</th>
                     <th className="px-3 py-2">Vencimiento</th>
                     <th className="px-3 py-2">Estado</th>
@@ -164,6 +165,7 @@ export function ReceivableCustomerStatementPrint({
                   {statement.invoices.map((invoice) => (
                     <tr key={invoice.id} className="border-b border-zinc-100">
                       <td className="py-3 pr-3 font-medium">{invoice.invoiceNumber}</td>
+                      <td className="px-3 py-3">{invoice.ncf ?? '-'}</td>
                       <td className="px-3 py-3">
                         {formatDate(invoice.issuedAt ?? invoice.createdAt)}
                       </td>

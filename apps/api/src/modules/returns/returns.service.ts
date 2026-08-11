@@ -10,6 +10,7 @@ import {
   EmployeeLogAction,
   EmployeeStatus,
   InventoryMovementType,
+  InvoiceFiscalStatus,
   InvoiceStatus,
   PaymentMethod,
   Prisma,
@@ -128,6 +129,7 @@ export class ReturnsService {
         throw new NotFoundException('Invoice not found for tenant.');
       }
 
+      this.ensureFiscalReturnFlowIsAvailable(invoice.fiscalStatus);
       this.ensureInvoiceIsReturnable(invoice.status);
 
       const computedItems = await this.computeReturnItems(tx, tenantId, invoice, dto.items);
@@ -220,6 +222,7 @@ export class ReturnsService {
         throw new BadRequestException('Only requested returns can be approved.');
       }
 
+      this.ensureFiscalReturnFlowIsAvailable(request.invoice.fiscalStatus);
       await this.ensureRequestCanStillBeCompleted(tx, tenantId, request);
 
       const refundMethod = dto.refundMethod ?? request.refundMethod ?? PaymentMethod.CASH;
@@ -727,6 +730,17 @@ export class ReturnsService {
     `;
     if (rows.length !== 1) {
       throw new NotFoundException('Invoice not found for tenant.');
+    }
+  }
+
+  private ensureFiscalReturnFlowIsAvailable(fiscalStatus: InvoiceFiscalStatus) {
+    if (
+      fiscalStatus === InvoiceFiscalStatus.LOCAL_ISSUED ||
+      fiscalStatus === InvoiceFiscalStatus.LEGACY_UNVERIFIED
+    ) {
+      throw new BadRequestException(
+        'Las devoluciones de facturas con NCF requieren una Nota de Crédito B04. Configura ese flujo fiscal antes de procesarlas.',
+      );
     }
   }
 
