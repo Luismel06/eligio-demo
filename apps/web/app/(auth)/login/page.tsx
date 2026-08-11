@@ -88,6 +88,13 @@ export default function LoginPage() {
         <div
           className={`${styles.ambientTwo} absolute -right-32 bottom-[4%] h-96 w-96 rounded-full bg-blue-950/60 blur-3xl`}
         />
+        <div
+          className={`${styles.coreStackWordmark} absolute inset-x-0 bottom-[max(1rem,env(safe-area-inset-bottom))] flex justify-center px-4`}
+        >
+          <span className="select-none text-center text-[clamp(2.25rem,10vw,7rem)] font-black leading-none tracking-[-0.055em] text-white/[0.2] drop-shadow-[0_8px_28px_rgba(0,24,85,0.5)]">
+            CoreStack
+          </span>
+        </div>
       </div>
 
       <section className="relative z-10 flex min-h-[100svh] items-center justify-center overflow-y-auto px-4 pb-[max(2rem,env(safe-area-inset-bottom))] pt-[max(2rem,env(safe-area-inset-top))] sm:px-6">
