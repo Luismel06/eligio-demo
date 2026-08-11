@@ -477,14 +477,11 @@ export function OrdersView() {
 
       if (destination === 'QUOTATION') {
         const normalizedDocument = normalizeDominicanDocument(quotationDocumentNumber);
-        const isValidDocument =
-          quotationDocumentType === 'RNC'
+        const isValidDocument = normalizedDocument
+          ? quotationDocumentType === 'RNC'
             ? validateDominicanRnc(quotationDocumentNumber)
-            : validateDominicanCedula(quotationDocumentNumber);
-
-        if (!normalizedDocument) {
-          throw new Error('El numero de documento es requerido para cotizaciones.');
-        }
+            : validateDominicanCedula(quotationDocumentNumber)
+          : true;
 
         if (!isValidDocument) {
           throw new Error(
@@ -507,9 +504,12 @@ export function OrdersView() {
             : undefined,
         creditRequestNote:
           paymentMode === 'CREDIT' ? creditRequestNote.trim() || undefined : undefined,
-        quotationDocumentType: destination === 'QUOTATION' ? quotationDocumentType : undefined,
+        quotationDocumentType:
+          destination === 'QUOTATION' && normalizeDominicanDocument(quotationDocumentNumber)
+            ? quotationDocumentType
+            : undefined,
         quotationDocumentNumber:
-          destination === 'QUOTATION'
+          destination === 'QUOTATION' && normalizeDominicanDocument(quotationDocumentNumber)
             ? normalizeDominicanDocument(quotationDocumentNumber)
             : undefined,
         notes: notes.trim() || undefined,
@@ -723,6 +723,14 @@ export function OrdersView() {
 
   function selectRegisteredCustomer(customer: Customer) {
     handleCustomerSelection(customer.id);
+    setCustomerSearchOpen(false);
+  }
+
+  function useTemporaryQuotationName() {
+    // A quotation can be issued for a one-time customer. Keep only the typed
+    // name on the quotation and never create or associate a Customer record.
+    setCustomerId('');
+    setPriceLevel('REGULAR');
     setCustomerSearchOpen(false);
   }
 
@@ -1072,6 +1080,15 @@ export function OrdersView() {
                   </p>
                 </div>
 
+                {destination === 'QUOTATION' ? (
+                  <div className="space-y-1 border-l-2 border-[#f36c10] pl-3">
+                    <p className="text-sm font-semibold text-foreground">Datos de cotización</p>
+                    <p className="text-xs text-muted-foreground">
+                      El nombre del cliente es obligatorio. La cédula o el RNC son opcionales.
+                    </p>
+                  </div>
+                ) : null}
+
                 <div className="space-y-2">
                   <Label htmlFor="orderClientName">
                     Nombre del cliente <span className="text-danger">*</span>
@@ -1107,6 +1124,29 @@ export function OrdersView() {
                             ? 'Clientes registrados coincidentes'
                             : 'Clientes con saldo pendiente'}
                         </div>
+                        {destination === 'QUOTATION' && clientName.trim() ? (
+                          paymentMode === 'CASH' ? (
+                            <button
+                              type="button"
+                              role="option"
+                              className="mb-1 flex w-full flex-col rounded-md border border-primary/25 bg-primary/[0.045] px-3 py-2.5 text-left transition-colors hover:bg-primary/[0.09] focus-visible:bg-primary/[0.09]"
+                              onMouseDown={(event) => event.preventDefault()}
+                              onClick={useTemporaryQuotationName}
+                            >
+                              <span className="text-sm font-semibold text-foreground">
+                                Usar “{clientName.trim()}” solo para esta cotización
+                              </span>
+                              <span className="mt-0.5 text-xs text-muted-foreground">
+                                No se creará ni se vinculará un cliente registrado.
+                              </span>
+                            </button>
+                          ) : (
+                            <p className="mb-1 rounded-md border border-warning/25 bg-warning/[0.05] px-3 py-2 text-xs text-muted-foreground">
+                              Las cotizaciones fiadas requieren un cliente registrado con crédito
+                              habilitado.
+                            </p>
+                          )
+                        ) : null}
                         {customerSearchResults.length ? (
                           customerSearchResults.map((customer) => {
                             const balance = Number(customer.creditBalance ?? 0);
@@ -1161,8 +1201,9 @@ export function OrdersView() {
                     ) : null}
                   </div>
                   <p className="text-xs text-muted-foreground">
-                    Busca y selecciona un cliente para consultar su saldo. Para contado tambien puedes
-                    escribir un cliente no registrado.
+                    {destination === 'QUOTATION'
+                      ? 'Puedes usar un cliente registrado o un nombre temporal. El nombre temporal queda solo en esta cotización.'
+                      : 'Busca y selecciona un cliente para consultar su saldo. Para contado tambien puedes escribir un cliente no registrado.'}
                   </p>
                   {selectedCustomer ? (
                     <div className="flex flex-col gap-3 rounded-lg border border-border bg-muted/20 p-3 sm:flex-row sm:items-center sm:justify-between">
@@ -1195,31 +1236,31 @@ export function OrdersView() {
                 {destination === 'QUOTATION' ? (
                   <>
                     <div className="space-y-2">
-                      <Label htmlFor="quotationDocumentType">Tipo de documento</Label>
-                      <select
-                        id="quotationDocumentType"
-                        value={quotationDocumentType}
-                        onChange={(event) =>
-                          setQuotationDocumentType(event.target.value as 'RNC' | 'CEDULA')
-                        }
-                        className="h-10 w-full rounded-md border border-input bg-white px-3 text-sm"
-                      >
-                        <option value="CEDULA">Cedula</option>
-                        <option value="RNC">RNC</option>
-                      </select>
-                    </div>
-                    <div className="space-y-2">
-                      <Label htmlFor="quotationDocumentNumber">
-                        Numero de documento <span className="text-danger">*</span>
-                      </Label>
-                      <Input
-                        id="quotationDocumentNumber"
-                        value={quotationDocumentNumber}
-                        onChange={(event) => setQuotationDocumentNumber(event.target.value)}
-                        placeholder={quotationDocumentType === 'RNC' ? '123456789' : '00123456789'}
-                        inputMode="numeric"
-                        required
-                      />
+                      <Label htmlFor="quotationDocumentNumber">Cédula o RNC (opcional)</Label>
+                      <div className="grid grid-cols-[132px_minmax(0,1fr)] gap-2">
+                        <select
+                          id="quotationDocumentType"
+                          aria-label="Tipo de documento"
+                          value={quotationDocumentType}
+                          onChange={(event) =>
+                            setQuotationDocumentType(event.target.value as 'RNC' | 'CEDULA')
+                          }
+                          className="h-10 rounded-md border border-input bg-white px-3 text-sm"
+                        >
+                          <option value="CEDULA">Cédula</option>
+                          <option value="RNC">RNC</option>
+                        </select>
+                        <Input
+                          id="quotationDocumentNumber"
+                          value={quotationDocumentNumber}
+                          onChange={(event) => setQuotationDocumentNumber(event.target.value)}
+                          placeholder={quotationDocumentType === 'RNC' ? '123456789' : '00123456789'}
+                          inputMode="numeric"
+                        />
+                      </div>
+                      <p className="text-xs text-muted-foreground">
+                        Puedes dejarlo vacío. Si lo indicas, validaremos la cédula o el RNC antes de guardar.
+                      </p>
                     </div>
                   </>
                 ) : null}

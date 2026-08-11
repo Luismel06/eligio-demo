@@ -298,12 +298,7 @@ export function PurchaseOrdersView() {
                     required
                     className={selectClassName}
                     value={supplierId}
-                    onChange={(event) => {
-                      setSupplierId(event.target.value);
-                      if (!editingId) {
-                        setItems([blankItem()]);
-                      }
-                    }}
+                    onChange={(event) => setSupplierId(event.target.value)}
                   >
                     <option value="">Selecciona un suplidor...</option>
                     {suppliersQuery.data?.map((supplier) => (

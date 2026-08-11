@@ -327,12 +327,34 @@ export class SuppliersService {
 
     const active = dto.active ?? true;
     const isPrimary = dto.isPrimary ?? false;
+    const supplierSku = this.normalizeSupplierSku(dto.supplierSku);
 
     this.ensurePrimaryIsActive(isPrimary, active);
     this.ensureCosts(dto.lastCostNet, dto.lastCostWithTax);
+    if (active) {
+      await this.ensureUniqueActiveSupplierSku(
+        tenantId,
+        supplierId,
+        dto.productId,
+        supplierSku,
+      );
+    }
 
     try {
-      const supplierProduct = await this.prisma.$transaction(async (tx) => {
+      const supplierProduct = await this.runSupplierProductTransaction(async (tx) => {
+        // Se valida dentro de la transaccion tambien: una relacion aprendida
+        // por OCR no debe terminar compartiendo el mismo codigo con otro
+        // producto activo del suplidor.
+        if (active) {
+          await this.ensureUniqueActiveSupplierSku(
+            tenantId,
+            supplierId,
+            dto.productId,
+            supplierSku,
+            tx,
+          );
+        }
+
         if (isPrimary) {
           await tx.supplierProduct.updateMany({
             where: {
@@ -353,7 +375,7 @@ export class SuppliersService {
             tenantId,
             supplierId,
             productId: dto.productId,
-            supplierSku: normalizeOptionalText(dto.supplierSku),
+            supplierSku,
             lastCostNet: toOptionalDecimal(dto.lastCostNet),
             lastCostWithTax: toOptionalDecimal(dto.lastCostWithTax),
             leadTimeDays: dto.leadTimeDays,
@@ -400,6 +422,12 @@ export class SuppliersService {
     const current = await this.getSupplierProduct(tenantId, supplierId, productId);
     const nextActive = dto.active ?? current.active;
     const nextIsPrimary = dto.active === false ? false : (dto.isPrimary ?? current.isPrimary);
+    const supplierSku =
+      dto.supplierSku === undefined ? undefined : this.normalizeSupplierSku(dto.supplierSku);
+    const nextSupplierSku = supplierSku === undefined ? current.supplierSku : supplierSku;
+    const needsSupplierSkuValidation =
+      nextActive &&
+      (supplierSku !== undefined || (dto.active === true && !current.active));
 
     if (nextActive && supplier.status !== SupplierStatus.ACTIVE) {
       throw new BadRequestException(
@@ -412,9 +440,27 @@ export class SuppliersService {
       dto.lastCostNet ?? decimalToNumber(current.lastCostNet),
       dto.lastCostWithTax ?? decimalToNumber(current.lastCostWithTax),
     );
+    if (needsSupplierSkuValidation) {
+      await this.ensureUniqueActiveSupplierSku(
+        tenantId,
+        supplierId,
+        productId,
+        nextSupplierSku,
+      );
+    }
 
     try {
-      const supplierProduct = await this.prisma.$transaction(async (tx) => {
+      const supplierProduct = await this.runSupplierProductTransaction(async (tx) => {
+        if (needsSupplierSkuValidation) {
+          await this.ensureUniqueActiveSupplierSku(
+            tenantId,
+            supplierId,
+            productId,
+            nextSupplierSku,
+            tx,
+          );
+        }
+
         if (nextIsPrimary) {
           await tx.supplierProduct.updateMany({
             where: {
@@ -434,8 +480,7 @@ export class SuppliersService {
         return tx.supplierProduct.update({
           where: { id: current.id },
           data: {
-            supplierSku:
-              dto.supplierSku === undefined ? undefined : normalizeOptionalText(dto.supplierSku),
+            supplierSku,
             lastCostNet:
               dto.lastCostNet === undefined ? undefined : toOptionalDecimal(dto.lastCostNet),
             lastCostWithTax:
@@ -626,6 +671,110 @@ export class SuppliersService {
     }
   }
 
+  /**
+   * El OCR compara codigos sin espacios, guiones ni puntuacion. Guardar una
+   * version legible pero consistente evita que "ABC-123" y "abc 123"
+   * parezcan relaciones distintas para el mismo suplidor.
+   */
+  private normalizeSupplierSku(value?: string) {
+    if (value === undefined) {
+      return undefined;
+    }
+
+    const normalized = value
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toUpperCase()
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    if (!normalized) {
+      return null;
+    }
+
+    if (!supplierSkuComparisonKey(normalized)) {
+      throw new BadRequestException(
+        'El codigo del suplidor debe contener al menos una letra o un numero.',
+      );
+    }
+
+    return normalized;
+  }
+
+  private async ensureUniqueActiveSupplierSku(
+    tenantId: string,
+    supplierId: string,
+    productId: string,
+    supplierSku: string | null | undefined,
+    client: Pick<PrismaService, 'supplierProduct'> = this.prisma,
+  ) {
+    if (!supplierSku) {
+      return;
+    }
+
+    const supplierSkuKey = supplierSkuComparisonKey(supplierSku);
+    const relatedProducts = await client.supplierProduct.findMany({
+      where: {
+        tenantId,
+        supplierId,
+        active: true,
+        productId: { not: productId },
+        supplierSku: { not: null },
+      },
+      select: {
+        supplierSku: true,
+        product: {
+          select: { name: true },
+        },
+      },
+    });
+
+    const duplicate = relatedProducts.find(
+      (relation) =>
+        relation.supplierSku && supplierSkuComparisonKey(relation.supplierSku) === supplierSkuKey,
+    );
+
+    if (duplicate) {
+      throw new ConflictException(
+        `El codigo de suplidor "${supplierSku}" ya esta vinculado al producto "${duplicate.product.name}". Usa el producto correcto o corrige el codigo antes de continuar.`,
+      );
+    }
+  }
+
+  private async runSupplierProductTransaction<T>(
+    operation: (tx: Prisma.TransactionClient) => Promise<T>,
+  ): Promise<T> {
+    const attempts = 3;
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      try {
+        return await this.prisma.$transaction(operation, {
+          isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+          maxWait: 10_000,
+          timeout: 20_000,
+        });
+      } catch (error) {
+        const canRetry =
+          error instanceof Prisma.PrismaClientKnownRequestError &&
+          error.code === 'P2034' &&
+          attempt < attempts;
+        if (canRetry) {
+          continue;
+        }
+        if (
+          error instanceof Prisma.PrismaClientKnownRequestError &&
+          error.code === 'P2034'
+        ) {
+          throw new ConflictException(
+            'No se pudo guardar la relación por concurrencia. Inténtalo nuevamente.',
+          );
+        }
+        throw error;
+      }
+    }
+
+    throw new ConflictException('No se pudo guardar la relación por concurrencia.');
+  }
+
   private rethrowSupplierConflict(error: unknown): never {
     if (isUniqueConstraintError(error)) {
       throw new ConflictException('Ya existe un proveedor con este RNC o cédula en la empresa.');
@@ -651,6 +800,14 @@ function normalizeOptionalText(value?: string) {
   }
 
   return value.trim() || null;
+}
+
+function supplierSkuComparisonKey(value: string) {
+  return value
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, '');
 }
 
 function normalizeOptionalEmail(value?: string) {

@@ -5,6 +5,7 @@ import {
   ImagePlus,
   LoaderCircle,
   RefreshCw,
+  RotateCw,
   ScanText,
   Smartphone,
   Trash2,
@@ -15,6 +16,7 @@ import {
   assessSupplierInvoiceImageQuality,
   createSupplierInvoiceOcrRegions,
   preprocessSupplierInvoiceImage,
+  rotateSupplierInvoiceImage,
   type SupplierInvoiceImageQuality,
 } from '@/lib/supplier-invoice-ocr-image';
 import { readSupplierInvoiceQr } from '@/lib/supplier-invoice-qr';
@@ -251,6 +253,36 @@ export function SupplierInvoiceOcrCamera({
     setActiveView(nextPages.at(-1)?.id ?? 'camera');
   }
 
+  async function rotateSelectedPage() {
+    const page = selectedPage;
+    if (!page || processing) return;
+
+    setProcessing(true);
+    setOcrError(null);
+    try {
+      const image = await rotateSupplierInvoiceImage(page.image);
+      const previewUrl = URL.createObjectURL(image);
+      URL.revokeObjectURL(page.previewUrl);
+      const nextPages = pagesRef.current.map((currentPage) =>
+        currentPage.id === page.id
+          ? { ...currentPage, image, previewUrl, quality: undefined }
+          : currentPage,
+      );
+      setCapturePages(nextPages);
+      const quality = await assessSupplierInvoiceImageQuality(image);
+      if (!pagesRef.current.some((currentPage) => currentPage.id === page.id)) return;
+      setCapturePages(
+        pagesRef.current.map((currentPage) =>
+          currentPage.id === page.id ? { ...currentPage, quality } : currentPage,
+        ),
+      );
+    } catch {
+      setOcrError('No se pudo girar la página. Puedes repetir la foto o introducir la factura manualmente.');
+    } finally {
+      setProcessing(false);
+    }
+  }
+
   function handleFileSelection(event: React.ChangeEvent<HTMLInputElement>) {
     const images = Array.from(event.target.files ?? []).filter((file) =>
       file.type.startsWith('image/'),
@@ -329,7 +361,9 @@ export function SupplierInvoiceOcrCamera({
         const regionalTexts: string[] = [];
         if (requiredRegions.length) {
           setOcrProgress({
-            status: 'Revisando encabezado y totales',
+            status: requiredRegions.includes('table')
+              ? 'Reconstruyendo líneas de productos'
+              : 'Revisando encabezado y totales',
             value: 0.74,
             page: index + 1,
             totalPages: capturePages.length,
@@ -338,11 +372,19 @@ export function SupplierInvoiceOcrCamera({
           for (const region of regions) {
             if (!requiredRegions.includes(region.id)) continue;
             const pageSegmentationMode =
-              region.id === 'footer' ? PSM.SINGLE_BLOCK : PSM.SPARSE_TEXT;
+              region.id === 'table' || region.id === 'footer'
+                ? PSM.SINGLE_BLOCK
+                : PSM.SPARSE_TEXT;
             const text = await recognizeImage(region.image, pageSegmentationMode);
             if (text.length >= 8) {
               regionalTexts.push(
-                `--- REGIÓN ${region.id === 'header' ? 'ENCABEZADO' : 'TOTALES'} (PRIORIDAD) ---\n${text}`,
+                `--- REGIÓN ${
+                  region.id === 'header'
+                    ? 'ENCABEZADO'
+                    : region.id === 'table'
+                      ? 'TABLA'
+                      : 'TOTALES'
+                } (PRIORIDAD) ---\n${text}`,
               );
             }
           }
@@ -351,6 +393,7 @@ export function SupplierInvoiceOcrCamera({
         const pageText = [
           ...regionalTexts.filter((text) => text.includes('ENCABEZADO')),
           generalText ? `--- LECTURA GENERAL ---\n${generalText}` : '',
+          ...regionalTexts.filter((text) => text.includes('TABLA')),
           ...regionalTexts.filter((text) => text.includes('TOTALES')),
         ]
           .filter(Boolean)
@@ -458,12 +501,10 @@ export function SupplierInvoiceOcrCamera({
             />
           )}
           {!selectedPage && !cameraError ? (
-            <div className="pointer-events-none absolute inset-0 flex items-center justify-center p-5">
-              <div className="flex h-[82%] w-[78%] items-end rounded-lg border-2 border-dashed border-white/85 bg-black/5 p-3 shadow-[0_0_0_999px_rgba(0,0,0,0.12)]">
-                <span className="rounded bg-black/55 px-2 py-1 text-xs font-medium text-white">
-                  Encierra toda la factura dentro del marco
-                </span>
-              </div>
+            <div className="pointer-events-none absolute inset-x-3 bottom-3 flex justify-center">
+              <span className="rounded-full bg-black/65 px-3 py-1.5 text-center text-xs font-medium text-white shadow-sm">
+                Acerca la cámara: el texto debe verse legible. Puedes añadir varias páginas.
+              </span>
             </div>
           ) : null}
         </div>
@@ -600,15 +641,26 @@ export function SupplierInvoiceOcrCamera({
             Añadir imágenes
           </Button>
           {selectedPage ? (
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => removePage(selectedPage.id)}
-              disabled={processing}
-            >
-              <RefreshCw className="h-4 w-4" />
-              Repetir página
-            </Button>
+            <>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => void rotateSelectedPage()}
+                disabled={processing}
+              >
+                <RotateCw className="h-4 w-4" />
+                Girar página
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => removePage(selectedPage.id)}
+                disabled={processing}
+              >
+                <RefreshCw className="h-4 w-4" />
+                Repetir página
+              </Button>
+            </>
           ) : (
             <Button
               type="button"
@@ -649,7 +701,7 @@ function revokePageUrls(capturedPages: CapturedPage[]) {
 function getRequiredOcrRegions(
   generalText: string,
   quality: SupplierInvoiceImageQuality | undefined,
-): Array<'header' | 'footer'> {
+): Array<'header' | 'table' | 'footer'> {
   const normalizedText = generalText
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
@@ -660,12 +712,19 @@ function getRequiredOcrRegions(
   const needsFooter =
     generalText.length < 240 ||
     !/(?:\bITBIS\b|SUB\s*-?\s*TOTAL|TOTAL\s+(?:A\s+PAGAR|RD\$|DOP))/.test(normalizedText);
+  // La tabla siempre merece su propia lectura. Precisamente en las fotos que
+  // más importan —con poco contraste o texto pequeño— la pasada general puede
+  // devolver solo el encabezado, aunque la tabla esté presente. PSM.SPARSE_TEXT
+  // sirve para encabezados, pero pierde el orden de filas; PSM.SINGLE_BLOCK
+  // sobre la tabla es la fuente que permite recuperar productos, cantidades y
+  // cambios de costo.
+  const needsTable = true;
 
   // A weak photograph earns an extra, small reading pass even if it found a
   // keyword. This is cheaper than running every zone for every clean image.
-  if (quality?.status === 'warning') return ['header', 'footer'];
-  return [needsHeader ? 'header' : null, needsFooter ? 'footer' : null].filter(
-    (region): region is 'header' | 'footer' => Boolean(region),
+  if (quality?.status === 'warning') return ['header', 'table', 'footer'];
+  return [needsHeader ? 'header' : null, needsTable ? 'table' : null, needsFooter ? 'footer' : null].filter(
+    (region): region is 'header' | 'table' | 'footer' => Boolean(region),
   );
 }
 

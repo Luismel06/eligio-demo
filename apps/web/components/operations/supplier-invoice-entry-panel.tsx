@@ -2,7 +2,7 @@
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { AlertTriangle, CheckCircle2, PackageCheck, RotateCcw } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
+import { type ReactNode, useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
 import { ActionDialog } from '@/components/ui/action-dialog';
 import { Badge } from '@/components/ui/badge';
@@ -22,9 +22,11 @@ import {
   confirmGoodsReceipt,
   confirmSupplierInvoiceEntry,
   getGoodsReceipts,
+  getPurchaseOrder,
   getProducts,
   reverseGoodsReceipt,
   type GoodsReceipt,
+  type PurchaseOrder,
   type ReceiptPriceDecision,
   type SupplierInvoice,
   type SupplierInvoiceItem,
@@ -68,6 +70,8 @@ export function SupplierInvoiceEntryPanel({
   const [pricingReviewOpen, setPricingReviewOpen] = useState(false);
   const [receiptAction, setReceiptAction] = useState<ReceiptAction | null>(null);
   const [reason, setReason] = useState('');
+  const [orderReconciliationAccepted, setOrderReconciliationAccepted] = useState(false);
+  const [orderReconciliationNote, setOrderReconciliationNote] = useState('');
 
   const receiptsQuery = useQuery({
     queryKey: ['goods-receipts', session.tenantId, 'supplier-invoice-entry', invoice.id],
@@ -79,6 +83,12 @@ export function SupplierInvoiceEntryPanel({
   const productsQuery = useQuery({
     queryKey: ['products', session.tenantId, 'supplier-invoice-entry'],
     queryFn: () => getProducts(session.tenantId, session.accessToken),
+  });
+  const purchaseOrderQuery = useQuery({
+    queryKey: ['purchase-order', session.tenantId, invoice.purchaseOrderId, 'supplier-invoice-entry'],
+    queryFn: () =>
+      getPurchaseOrder(session.tenantId, session.accessToken, invoice.purchaseOrderId ?? ''),
+    enabled: Boolean(invoice.purchaseOrderId),
   });
 
   const confirmedByInvoiceItem = useMemo(() => {
@@ -113,6 +123,11 @@ export function SupplierInvoiceEntryPanel({
   );
   const legacyDraft = (receiptsQuery.data ?? []).find((receipt) => receipt.status === 'DRAFT');
   const canEnter = ['DRAFT', 'PENDING', 'PARTIALLY_PAID', 'PAID'].includes(invoice.status);
+  const orderReconciliation = useMemo(
+    () => reconcileInvoiceWithPurchaseOrder(invoice.items ?? [], purchaseOrderQuery.data),
+    [invoice.items, purchaseOrderQuery.data],
+  );
+  const orderReconciliationKey = orderReconciliation.fingerprint;
   const invoiceItemsKey = (invoice.items ?? [])
     .map(
       (item) => `${item.id}:${item.quantity}:${item.unitCostNet}:${item.purchaseOrderItemId ?? ''}`,
@@ -132,6 +147,15 @@ export function SupplierInvoiceEntryPanel({
       invoice.items.map((invoiceItem) => {
         const received = confirmedByInvoiceItem.get(invoiceItem.id) ?? 0;
         const remaining = Math.max(Number(invoiceItem.quantity) - received, 0);
+        const product = productsById.get(invoiceItem.productId);
+        const costChanged =
+          product?.cost !== null &&
+          product?.cost !== undefined &&
+          Number(product.cost) !== Number(invoiceItem.unitCostNet);
+        const canRecalculateMargin =
+          costChanged &&
+          calculateSuggestedPrice(Number(invoiceItem.unitCostNet), Number(product?.margin)) !== null;
+
         return {
           invoiceItem,
           included: remaining > 0,
@@ -141,17 +165,47 @@ export function SupplierInvoiceEntryPanel({
           lotNumber: '',
           serialNumber: '',
           expirationDate: '',
-          priceDecision: 'KEEP',
+          // When the cost changes, preserving the existing margin is the
+          // recommended and default choice. KEEP remains the safe fallback
+          // for products without a usable margin.
+          priceDecision: canRecalculateMargin ? 'RECALCULATE_MARGIN' : 'KEEP',
           manualSalePrice: '',
         };
       }),
     );
-  }, [confirmedQuantitiesKey, invoice.id, invoiceItemsKey]);
+  }, [confirmedQuantitiesKey, invoice.id, invoiceItemsKey, productsById]);
+
+  useEffect(() => {
+    setOrderReconciliationAccepted(false);
+    setOrderReconciliationNote('');
+  }, [invoice.id, orderReconciliationKey]);
 
   const confirmEntryMutation = useMutation({
     mutationFn: () => {
       const selected = items.filter((item) => item.included);
       if (!selected.length) throw new Error('Selecciona al menos un producto para la entrada.');
+
+      if (invoice.purchaseOrderId && purchaseOrderQuery.isLoading) {
+        throw new Error('Espera a que cargue la comparación con la orden de compra.');
+      }
+      if (invoice.purchaseOrderId && purchaseOrderQuery.error) {
+        throw new Error('No se pudo validar la factura contra la orden de compra. Intenta de nuevo.');
+      }
+      if (orderReconciliation.hasStructuralIssue) {
+        throw new Error(
+          'La factura contiene líneas que no pertenecen a la orden de compra. Corrígelas antes de confirmar.',
+        );
+      }
+      if (orderReconciliation.requiresReview && !orderReconciliationAccepted) {
+        throw new Error(
+          'Revisa y acepta explícitamente las diferencias con la orden de compra antes de continuar.',
+        );
+      }
+      if (orderReconciliation.requiresReview && !orderReconciliationNote.trim()) {
+        throw new Error(
+          'Explica la diferencia con la orden de compra para que quede auditada.',
+        );
+      }
 
       for (const item of selected) {
         if (!Number(item.quantityReceived) || Number(item.quantityReceived) <= 0) {
@@ -179,6 +233,12 @@ export function SupplierInvoiceEntryPanel({
 
       return confirmSupplierInvoiceEntry(session.tenantId, session.accessToken, invoice.id, {
         notes: notes.trim() || undefined,
+        orderReconciliationAccepted: orderReconciliation.requiresReview
+          ? orderReconciliationAccepted
+          : undefined,
+        orderReconciliationNote: orderReconciliation.requiresReview
+          ? orderReconciliationNote.trim()
+          : undefined,
         items: selected.map((item) => ({
           supplierInvoiceItemId: item.invoiceItem.id,
           quantityReceived: Number(item.quantityReceived),
@@ -348,6 +408,19 @@ export function SupplierInvoiceEntryPanel({
                   placeholder="Ej. Entrega completa, recibida por almacén."
                 />
               </FormField>
+
+              {invoice.purchaseOrderId ? (
+                <OrderReconciliationReview
+                  order={purchaseOrderQuery.data}
+                  loading={purchaseOrderQuery.isLoading}
+                  error={purchaseOrderQuery.error}
+                  reconciliation={orderReconciliation}
+                  accepted={orderReconciliationAccepted}
+                  note={orderReconciliationNote}
+                  onAcceptedChange={setOrderReconciliationAccepted}
+                  onNoteChange={setOrderReconciliationNote}
+                />
+              ) : null}
 
               <QueryState
                 loading={receiptsQuery.isLoading || productsQuery.isLoading}
@@ -740,6 +813,219 @@ export function SupplierInvoiceEntryPanel({
   );
 }
 
+type InvoiceOrderReconciliation = {
+  missingItems: PurchaseOrder['items'];
+  unexpectedInvoiceItems: SupplierInvoiceItem[];
+  productMismatches: Array<{
+    orderItem: PurchaseOrder['items'][number];
+    invoiceItem: SupplierInvoiceItem;
+  }>;
+  quantityDifferences: Array<{
+    orderItem: PurchaseOrder['items'][number];
+    invoiceItem: SupplierInvoiceItem;
+  }>;
+  costDifferences: Array<{
+    orderItem: PurchaseOrder['items'][number];
+    invoiceItem: SupplierInvoiceItem;
+    costChanged: boolean;
+    taxChanged: boolean;
+    discountChanged: boolean;
+  }>;
+  hasStructuralIssue: boolean;
+  requiresReview: boolean;
+  fingerprint: string;
+};
+
+function OrderReconciliationReview({
+  order,
+  loading,
+  error,
+  reconciliation,
+  accepted,
+  note,
+  onAcceptedChange,
+  onNoteChange,
+}: {
+  order?: PurchaseOrder;
+  loading: boolean;
+  error: unknown;
+  reconciliation: InvoiceOrderReconciliation;
+  accepted: boolean;
+  note: string;
+  onAcceptedChange: (accepted: boolean) => void;
+  onNoteChange: (note: string) => void;
+}) {
+  if (loading) {
+    return (
+      <div className="rounded-lg border border-muted bg-muted/15 p-4 text-sm text-muted-foreground">
+        Comparando la factura con la orden de compra…
+      </div>
+    );
+  }
+
+  if (error || !order) {
+    return (
+      <div className="flex gap-3 rounded-lg border border-danger/30 bg-danger/5 p-4 text-sm">
+        <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-danger" />
+        <div>
+          <p className="font-semibold">No se pudo validar la orden de compra</p>
+          <p className="mt-1 text-muted-foreground">
+            Vuelve a cargar la factura antes de confirmar la entrada. La confirmación queda
+            bloqueada hasta validar sus líneas.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!reconciliation.requiresReview) {
+    return (
+      <div className="flex gap-3 rounded-lg border border-success/30 bg-success/5 p-4 text-sm">
+        <CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0 text-success" />
+        <div>
+          <p className="font-semibold">Factura verificada contra la orden {order.orderNumber}</p>
+          <p className="mt-1 text-muted-foreground">
+            Productos, cantidades, costos e impuestos coinciden con la orden de compra.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  const structuralIssue = reconciliation.hasStructuralIssue;
+
+  return (
+    <fieldset className="rounded-lg border border-warning/35 bg-warning/[0.055] p-4">
+      <div className="flex gap-3">
+        <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-warning" />
+        <div>
+          <p className="font-semibold">Revisión requerida contra la orden {order.orderNumber}</p>
+          <p className="mt-1 text-sm leading-6 text-muted-foreground">
+            La factura refleja lo entregado por el suplidor. Revisa las diferencias antes de
+            confirmar; tu decisión y la nota quedarán auditadas.
+          </p>
+        </div>
+      </div>
+
+      <div className="mt-4 space-y-3 rounded-md border border-warning/20 bg-card/75 p-3 text-sm">
+        {reconciliation.missingItems.length ? (
+          <ReconciliationList title="Solicitados que no aparecen en la factura">
+            {reconciliation.missingItems.map((item) => (
+              <li key={item.id}>
+                {item.descriptionSnapshot} · solicitado: {Number(item.quantity)}
+              </li>
+            ))}
+          </ReconciliationList>
+        ) : null}
+        {reconciliation.quantityDifferences.length ? (
+          <ReconciliationList title="Cantidades distintas">
+            {reconciliation.quantityDifferences.map(({ orderItem, invoiceItem }) => (
+              <li key={invoiceItem.id}>
+                {invoiceItem.descriptionSnapshot} · solicitado: {Number(orderItem.quantity)} ·
+                facturado: {Number(invoiceItem.quantity)}
+              </li>
+            ))}
+          </ReconciliationList>
+        ) : null}
+        {reconciliation.costDifferences.length ? (
+          <ReconciliationList title="Costo, ITBIS o descuento distinto">
+            {reconciliation.costDifferences.map(
+              ({ orderItem, invoiceItem, costChanged, taxChanged, discountChanged }) => (
+                <li key={invoiceItem.id}>
+                  <span className="font-medium">{invoiceItem.descriptionSnapshot}</span>
+                  {costChanged ? (
+                    <span>
+                      {' '}
+                      · costo: {formatCurrency(Number(orderItem.unitCostNet))} →{' '}
+                      {formatCurrency(Number(invoiceItem.unitCostNet))}
+                    </span>
+                  ) : null}
+                  {taxChanged ? (
+                    <span>
+                      {' '}
+                      · ITBIS: {Number(orderItem.taxRate) * 100}% →{' '}
+                      {Number(invoiceItem.taxRate) * 100}%
+                    </span>
+                  ) : null}
+                  {discountChanged ? (
+                    <span>
+                      {' '}
+                      · descuento: {formatCurrency(Number(orderItem.discountTotal))} →{' '}
+                      {formatCurrency(Number(invoiceItem.discountTotal))}
+                    </span>
+                  ) : null}
+                </li>
+              ),
+            )}
+          </ReconciliationList>
+        ) : null}
+        {reconciliation.unexpectedInvoiceItems.length || reconciliation.productMismatches.length ? (
+          <ReconciliationList title="Líneas que no pertenecen a la orden">
+            {reconciliation.unexpectedInvoiceItems.map((item) => (
+              <li key={item.id}>{item.descriptionSnapshot}</li>
+            ))}
+            {reconciliation.productMismatches.map(({ orderItem, invoiceItem }) => (
+              <li key={invoiceItem.id}>
+                {invoiceItem.descriptionSnapshot} no coincide con {orderItem.descriptionSnapshot}.
+                Corrige la factura u orden antes de confirmar.
+              </li>
+            ))}
+          </ReconciliationList>
+        ) : null}
+      </div>
+
+      {structuralIssue ? (
+        <div className="mt-4 rounded-md border border-danger/30 bg-danger/5 p-3 text-sm">
+          <p className="font-semibold text-danger">Corrige las líneas antes de confirmar</p>
+          <p className="mt-1 text-muted-foreground">
+            Una factura vinculada a una orden solo puede registrar productos de esa orden. Agrega
+            primero el producto a la orden o corrige la selección de la factura.
+          </p>
+        </div>
+      ) : (
+        <>
+          <label className="mt-4 flex cursor-pointer items-start gap-3 rounded-md border border-warning/25 bg-card/70 p-3 text-sm">
+            <input
+              type="checkbox"
+              className="mt-0.5 h-4 w-4 accent-warning"
+              checked={accepted}
+              onChange={(event) => onAcceptedChange(event.target.checked)}
+            />
+            <span>
+              <strong>Confirmo las diferencias de la factura frente a la orden.</strong>
+              <span className="mt-1 block text-muted-foreground">
+                Solo se registrarán los productos y montos de esta factura. Los artículos faltantes
+                seguirán pendientes en la orden.
+              </span>
+            </span>
+          </label>
+          <FormField
+            className="mt-3"
+            label="Motivo de la diferencia"
+            hint="Obligatorio cuando la factura no coincide con la orden."
+          >
+            <Input
+              value={note}
+              maxLength={500}
+              onChange={(event) => onNoteChange(event.target.value)}
+              placeholder="Ej. El suplidor entregó menos unidades y actualizó el costo."
+            />
+          </FormField>
+        </>
+      )}
+    </fieldset>
+  );
+}
+
+function ReconciliationList({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <div>
+      <p className="font-semibold">{title}</p>
+      <ul className="mt-1 list-disc space-y-1 pl-5 text-muted-foreground">{children}</ul>
+    </div>
+  );
+}
+
 function ReceiptHistory({
   receipts,
   admin,
@@ -823,6 +1109,104 @@ function ReceiptHistory({
       </div>
     </details>
   );
+}
+
+function reconcileInvoiceWithPurchaseOrder(
+  invoiceItems: SupplierInvoiceItem[],
+  purchaseOrder?: PurchaseOrder,
+): InvoiceOrderReconciliation {
+  if (!purchaseOrder) {
+    return {
+      missingItems: [],
+      unexpectedInvoiceItems: [],
+      productMismatches: [],
+      quantityDifferences: [],
+      costDifferences: [],
+      hasStructuralIssue: false,
+      requiresReview: false,
+      fingerprint: 'purchase-order-pending',
+    };
+  }
+
+  const orderItemsById = new Map(purchaseOrder.items.map((item) => [item.id, item]));
+  const linkedOrderItemIds = new Set<string>();
+  const unexpectedInvoiceItems: SupplierInvoiceItem[] = [];
+  const productMismatches: InvoiceOrderReconciliation['productMismatches'] = [];
+  const quantityDifferences: InvoiceOrderReconciliation['quantityDifferences'] = [];
+  const costDifferences: InvoiceOrderReconciliation['costDifferences'] = [];
+
+  for (const invoiceItem of invoiceItems) {
+    const orderItem = invoiceItem.purchaseOrderItemId
+      ? orderItemsById.get(invoiceItem.purchaseOrderItemId)
+      : undefined;
+    if (!orderItem || linkedOrderItemIds.has(orderItem.id)) {
+      unexpectedInvoiceItems.push(invoiceItem);
+      continue;
+    }
+    if (orderItem.productId !== invoiceItem.productId) {
+      productMismatches.push({ orderItem, invoiceItem });
+      continue;
+    }
+
+    linkedOrderItemIds.add(orderItem.id);
+    if (!numbersMatch(orderItem.quantity, invoiceItem.quantity, 0.0005)) {
+      quantityDifferences.push({ orderItem, invoiceItem });
+    }
+
+    const costChanged = !numbersMatch(orderItem.unitCostNet, invoiceItem.unitCostNet, 0.005);
+    const taxChanged = !numbersMatch(orderItem.taxRate, invoiceItem.taxRate, 0.00005);
+    const discountChanged = !numbersMatch(
+      orderItem.discountTotal,
+      invoiceItem.discountTotal,
+      0.005,
+    );
+    if (costChanged || taxChanged || discountChanged) {
+      costDifferences.push({
+        orderItem,
+        invoiceItem,
+        costChanged,
+        taxChanged,
+        discountChanged,
+      });
+    }
+  }
+
+  const missingItems = purchaseOrder.items.filter((item) => !linkedOrderItemIds.has(item.id));
+  const hasStructuralIssue = Boolean(
+    unexpectedInvoiceItems.length || productMismatches.length,
+  );
+  const requiresReview = Boolean(
+    missingItems.length ||
+      unexpectedInvoiceItems.length ||
+      productMismatches.length ||
+      quantityDifferences.length ||
+      costDifferences.length,
+  );
+
+  return {
+    missingItems,
+    unexpectedInvoiceItems,
+    productMismatches,
+    quantityDifferences,
+    costDifferences,
+    hasStructuralIssue,
+    requiresReview,
+    fingerprint: [
+      purchaseOrder.id,
+      ...purchaseOrder.items.map(
+        (item) =>
+          `order:${item.id}:${item.productId}:${item.quantity}:${item.unitCostNet}:${item.taxRate}:${item.discountTotal}`,
+      ),
+      ...invoiceItems.map(
+        (item) =>
+          `invoice:${item.id}:${item.purchaseOrderItemId ?? ''}:${item.productId}:${item.quantity}:${item.unitCostNet}:${item.taxRate}:${item.discountTotal}`,
+      ),
+    ].join('|'),
+  };
+}
+
+function numbersMatch(left: string, right: string, tolerance: number) {
+  return Math.abs(Number(left) - Number(right)) <= tolerance;
 }
 
 function needsDifferenceAcceptance(item: EntryItem, cumulativeByInvoiceItem: Map<string, number>) {
