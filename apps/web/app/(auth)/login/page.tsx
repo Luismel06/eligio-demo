@@ -140,8 +140,14 @@ export default function LoginPage() {
         >
           <div className="h-1 bg-gradient-to-r from-[#1d74df] via-[#f36c10] to-[#ffab4c]" />
           <CardHeader className="text-center">
-            <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-md bg-zinc-950 text-sm font-bold text-white shadow-lg shadow-blue-950/30">
-              R
+            <div className="relative mx-auto mb-4 h-20 w-20 overflow-hidden rounded-2xl border border-white/70 bg-blue-700 shadow-[0_14px_32px_-14px_rgba(0,37,120,0.85)] ring-1 ring-blue-200/50">
+              <Image
+                src="/branding/corestack-login-background.png"
+                alt="Logo CoreStack"
+                fill
+                sizes="80px"
+                className="object-cover object-center"
+              />
             </div>
             <CardTitle>Ferretería RIVNU</CardTitle>
             <CardDescription>Acceso de personal autorizado</CardDescription>
