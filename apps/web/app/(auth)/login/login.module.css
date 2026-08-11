@@ -1,13 +1,7 @@
-.backgroundImage {
-  animation: background-reveal 1.25s cubic-bezier(0.2, 0.75, 0.25, 1) both;
-  filter: saturate(1.04) contrast(1.02);
-  transform-origin: center;
-}
-
 .gridPattern {
   background-image:
-    linear-gradient(rgb(255 255 255 / 0.16) 1px, transparent 1px),
-    linear-gradient(90deg, rgb(255 255 255 / 0.16) 1px, transparent 1px);
+    linear-gradient(rgb(15 76 160 / 0.11) 1px, transparent 1px),
+    linear-gradient(90deg, rgb(15 76 160 / 0.11) 1px, transparent 1px);
   background-size: 54px 54px;
   mask-image: radial-gradient(circle at center, black 0%, transparent 72%);
 }
@@ -43,18 +37,6 @@
   transform: skewX(-16deg);
   width: 32%;
   z-index: 20;
-}
-
-@keyframes background-reveal {
-  from {
-    opacity: 0;
-    transform: scale(1.045);
-  }
-
-  to {
-    opacity: 1;
-    transform: scale(1);
-  }
 }
 
 @keyframes card-reveal {
@@ -122,7 +104,6 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .backgroundImage,
   .ambientOne,
   .ambientTwo,
   .coreStackWordmark,

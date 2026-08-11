@@ -108,35 +108,28 @@ export default function LoginPage() {
         </div>
       </section>
 
-      <section className="relative flex min-h-[42rem] items-center justify-center overflow-hidden bg-[#06153f] px-4 py-8 sm:px-6 lg:min-h-screen lg:py-10">
+      <section className="relative flex min-h-[42rem] items-center justify-center overflow-hidden bg-white px-4 py-8 sm:px-6 lg:min-h-screen lg:py-10">
         <div className="pointer-events-none absolute inset-0" aria-hidden="true">
-          <Image
-            src="/branding/corestack-login-background.png"
-            alt=""
-            fill
-            priority
-            sizes="(min-width: 1024px) 46vw, 100vw"
-            className={`${styles.backgroundImage} object-cover object-center`}
-          />
-          <div className="absolute inset-0 bg-gradient-to-b from-[#0b72df]/10 via-[#061b4b]/35 to-[#01071a]/80" />
-          <div className={`${styles.gridPattern} absolute inset-0 opacity-[0.1]`} />
+          <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_38%,rgba(59,130,246,0.13),transparent_48%)]" />
+          <div className="absolute inset-0 bg-gradient-to-b from-white via-blue-50/45 to-slate-100/80" />
+          <div className={`${styles.gridPattern} absolute inset-0 opacity-[0.32]`} />
           <div
-            className={`${styles.ambientOne} absolute -left-28 top-[8%] h-64 w-64 rounded-full bg-cyan-300/20 blur-3xl`}
+            className={`${styles.ambientOne} absolute -left-28 top-[8%] h-64 w-64 rounded-full bg-sky-300/25 blur-3xl`}
           />
           <div
-            className={`${styles.ambientTwo} absolute -right-32 bottom-[8%] h-80 w-80 rounded-full bg-blue-950/70 blur-3xl`}
+            className={`${styles.ambientTwo} absolute -right-32 bottom-[8%] h-80 w-80 rounded-full bg-blue-200/35 blur-3xl`}
           />
           <div
             className={`${styles.coreStackWordmark} absolute inset-x-0 bottom-[max(1rem,env(safe-area-inset-bottom))] flex justify-center px-4`}
           >
-            <span className="select-none text-center text-[clamp(2.25rem,8vw,5.5rem)] font-black leading-none tracking-[-0.055em] text-white/[0.22] drop-shadow-[0_8px_28px_rgba(0,24,85,0.55)]">
+            <span className="select-none text-center text-[clamp(2.25rem,8vw,5.5rem)] font-black leading-none tracking-[-0.055em] text-[#0b4cae]/[0.12]">
               CoreStack
             </span>
           </div>
         </div>
 
         <Card
-          className={`${styles.cardEntrance} ${styles.loginCard} relative z-10 w-full max-w-md overflow-hidden border-white/40 bg-white/[0.94] shadow-[0_28px_80px_-26px_rgba(0,7,28,0.9)] backdrop-blur-xl`}
+          className={`${styles.cardEntrance} ${styles.loginCard} relative z-10 w-full max-w-md overflow-hidden border-zinc-200/90 bg-white/[0.96] shadow-[0_28px_80px_-32px_rgba(15,48,95,0.4)] backdrop-blur-xl`}
         >
           <div className="h-1 bg-gradient-to-r from-[#1d74df] via-[#f36c10] to-[#ffab4c]" />
           <CardHeader className="text-center">
