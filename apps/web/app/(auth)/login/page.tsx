@@ -138,6 +138,7 @@ export default function LoginPage() {
                 src="/branding/corestack-login-background.png"
                 alt="Logo CoreStack"
                 fill
+                unoptimized
                 sizes="80px"
                 className="object-cover object-center"
               />
