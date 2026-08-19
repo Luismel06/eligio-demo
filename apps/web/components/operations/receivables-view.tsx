@@ -30,6 +30,7 @@ import {
   type ReceivablePayment,
 } from '@/lib/api';
 import { isAdminSession } from '@/lib/authorization';
+import { getInvoiceCustomerName } from '@/lib/invoice-customer';
 import { formatCurrency, formatDate, formatDateTime } from '@/lib/utils';
 import { ModuleHeader } from './module-header';
 import { SessionRequired, useCurrentSession } from './session-required';
@@ -406,7 +407,7 @@ function ReceivableCard({
               </Badge>
             </div>
             <CardDescription className="mt-1">
-              {invoice.customer?.name ?? 'Cliente no disponible'} · emitida{' '}
+              {getInvoiceCustomerName(invoice, 'Cliente no disponible')} · emitida{' '}
               {formatDate(invoice.issuedAt ?? invoice.createdAt)}
             </CardDescription>
           </div>

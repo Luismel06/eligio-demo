@@ -20,6 +20,7 @@ import { getInvoices, type Invoice } from '@/lib/api';
 import type { AuthSession } from '@/lib/auth-session';
 import { isAdminSession } from '@/lib/authorization';
 import { getStatusVariant, translateStatus } from '@/lib/display-labels';
+import { getInvoiceCustomerName } from '@/lib/invoice-customer';
 import { formatCurrency, formatDate } from '@/lib/utils';
 import { ModuleHeader } from './module-header';
 import { SessionRequired, useCurrentSession } from './session-required';
@@ -64,7 +65,7 @@ export function InvoicesView() {
           invoice.invoiceNumber,
           invoice.ncf,
           invoice.eNcf,
-          invoice.customer?.name,
+          getInvoiceCustomerName(invoice),
           invoice.issuedBy?.name,
           invoice.status,
           translateStatus(invoice.status),
@@ -169,7 +170,7 @@ export function InvoicesView() {
                     <p className="truncate text-sm font-semibold">{invoice.invoiceNumber}</p>
                     <p className="text-xs font-medium">NCF {invoice.ncf ?? 'pendiente'}</p>
                     <p className="text-xs text-muted-foreground">
-                      {invoice.customer?.name ?? 'Consumidor final'}
+                      {getInvoiceCustomerName(invoice)}
                     </p>
                   </div>
                   <Badge variant={getStatusVariant(invoice.status)}>
@@ -217,7 +218,7 @@ export function InvoicesView() {
                       </Link>
                     </TableCell>
                     <TableCell>{invoice.ncf ?? '-'}</TableCell>
-                    <TableCell>{invoice.customer?.name ?? 'Consumidor final'}</TableCell>
+                    <TableCell>{getInvoiceCustomerName(invoice)}</TableCell>
                     <TableCell>{formatDate(invoice.issuedAt ?? invoice.createdAt)}</TableCell>
                     <TableCell>
                       <Badge variant={getStatusVariant(invoice.status)}>

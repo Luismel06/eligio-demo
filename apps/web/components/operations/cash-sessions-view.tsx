@@ -18,6 +18,8 @@ import {
   translatePaymentMethod,
   translateStatus,
 } from '@/lib/display-labels';
+import { getInvoiceCustomerName } from '@/lib/invoice-customer';
+import { getOrderClientLabel } from '@/lib/order-client';
 import { formatCurrency, formatDateTime } from '@/lib/utils';
 import { ModuleHeader } from './module-header';
 import {
@@ -588,7 +590,7 @@ function CashSessionReport({
                           : 'Venta directa admin'}
                       </td>
                       <td className="px-3 py-2 font-medium">{invoice.invoiceNumber}</td>
-                      <td className="px-3 py-2">{invoice.customer?.name ?? 'Consumidor final'}</td>
+                      <td className="px-3 py-2">{getInvoiceCustomerName(invoice)}</td>
                       <td className="px-3 py-2">{invoice.issuedBy?.name ?? 'Empleado'}</td>
                       <td className="px-3 py-2">{translatePaymentMethod(invoice.paymentMethod)}</td>
                       <td className="px-3 py-2 text-right">
@@ -627,7 +629,9 @@ function CashSessionReport({
                   salesOrders.map((order) => (
                     <tr key={order.id} className="border-b border-border last:border-b-0">
                       <td className="px-3 py-2 font-medium">{order.orderNumber}</td>
-                      <td className="px-3 py-2">{order.customer?.name ?? 'Consumidor final'}</td>
+                      <td className="px-3 py-2">
+                        {order.fiscalCustomerSnapshot?.name || getOrderClientLabel(order)}
+                      </td>
                       <td className="px-3 py-2">
                         <Badge variant={getStatusVariant(order.status)}>
                           {translateStatus(order.status)}

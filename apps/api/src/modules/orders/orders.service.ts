@@ -13,7 +13,10 @@ import {
   DocumentType,
   EmployeeLogAction,
   EmployeeStatus,
+  FiscalDocumentPurpose,
+  FiscalSequenceStatus,
   InitialPaymentOption,
+  InvoiceDocumentType,
   InvoiceStatus,
   Prisma,
   ProductStatus,
@@ -37,6 +40,18 @@ import {
   parseBusinessDate,
 } from '../../common/utils/business-date';
 import { PrismaService } from '../../prisma/prisma.service';
+import {
+  buildFiscalCustomerSnapshot,
+  fiscalDocumentTypeMatchesPurpose,
+  isFiscalCreditDocumentType,
+  readFiscalCustomerSnapshot,
+  resolveFiscalDocumentType,
+} from '../fiscal-documents/fiscal-document';
+import {
+  currentBusinessDate,
+  expectedLocalNcfPrefix,
+  isLocalNcfDocumentType,
+} from '../fiscal-sequences/fiscal-number';
 import {
   CancelSalesOrderDto,
   ClaimSalesOrderDto,
@@ -180,10 +195,14 @@ export class OrdersService {
     }
 
     const clientName = dto.clientName?.trim() || undefined;
+    if (!clientName) {
+      throw new BadRequestException('El nombre del cliente es obligatorio para crear la orden.');
+    }
     const destination = dto.destination ?? SalesOrderDestination.CASH_SALE;
     const priceLevel = dto.priceLevel ?? SalesOrderPriceLevel.REGULAR;
     const discountRate = this.getDiscountRate(priceLevel);
     const paymentMode = dto.paymentMode ?? SalePaymentMode.CASH;
+    const fiscalPurpose = dto.fiscalPurpose ?? FiscalDocumentPurpose.CONSUMER;
 
     if (destination === SalesOrderDestination.QUOTATION) {
       this.validateQuotationDetails(dto);
@@ -210,8 +229,29 @@ export class OrdersService {
       }
 
       const computed = await this.computeOrder(tenantId, dto.items, tx, priceLevel);
+      const tenantFiscalSettings = await tx.tenant.findUnique({
+        where: { id: tenantId },
+        select: {
+          fiscalIssuanceMode: true,
+        },
+      });
+      if (!tenantFiscalSettings) {
+        throw new NotFoundException('Tenant not found.');
+      }
+      const fiscalDetails = this.resolveOrderFiscalDetails(
+        fiscalPurpose,
+        tenantFiscalSettings,
+        customer,
+        computed.subtotal,
+        paymentMode,
+      );
       const isQuotation = destination === SalesOrderDestination.QUOTATION;
       const isCredit = paymentMode === SalePaymentMode.CREDIT;
+
+      if (!isQuotation) {
+        await this.assertFiscalSequenceAvailable(tx, tenantId, fiscalDetails.documentType);
+      }
+
       const initialPaymentOption = isCredit ? dto.initialPaymentOption : undefined;
       const initialPaymentRate = isCredit
         ? this.getInitialPaymentRate(initialPaymentOption!)
@@ -239,6 +279,9 @@ export class OrdersService {
           tenantId,
           customerId: customer?.id,
           destination,
+          fiscalPurpose,
+          fiscalDocumentTypeSnapshot: fiscalDetails.documentType,
+          fiscalCustomerSnapshot: fiscalDetails.customerSnapshot ?? Prisma.JsonNull,
           clientName,
           quotationDocumentType: isQuotation ? dto.quotationDocumentType : undefined,
           quotationDocumentNumber:
@@ -626,6 +669,9 @@ export class OrdersService {
         throw new BadRequestException('Only quotations can be accepted.');
       }
 
+      this.assertPersistedFiscalDetails(order);
+      await this.assertFiscalSequenceAvailable(tx, tenantId, order.fiscalDocumentTypeSnapshot);
+
       if (order.paymentMode === SalePaymentMode.CREDIT) {
         this.validateCreditCustomer(order.customer);
         if (!order.customer || !order.initialPaymentOption || !order.creditTermOption) {
@@ -797,11 +843,17 @@ export class OrdersService {
         throw new BadRequestException('Custom credit due date cannot be changed after creation.');
       }
       this.validatePaymentModeFields(order.paymentMode, dto, false);
+
+      const customer = dto.customerId
+        ? await tx.customer.findFirst({ where: { id: dto.customerId, tenantId } })
+        : null;
+      if (dto.customerId && !customer) {
+        throw new NotFoundException('Customer not found for tenant.');
+      }
       if (order.paymentMode === SalePaymentMode.CREDIT) {
-        const creditCustomer = dto.customerId
-          ? await tx.customer.findFirst({ where: { id: dto.customerId, tenantId } })
-          : null;
-        this.validateCreditCustomer(creditCustomer);
+        // Financial credit eligibility is independent from fiscal purpose: a
+        // cash sale can be B01 and a credit sale can be B02.
+        this.validateCreditCustomer(customer);
       }
 
       // Delete existing items
@@ -812,6 +864,23 @@ export class OrdersService {
       const priceLevel = dto.priceLevel ?? SalesOrderPriceLevel.REGULAR;
       const discountRate = this.getDiscountRate(priceLevel);
       const computed = await this.computeOrder(tenantId, dto.items, tx, priceLevel);
+      const fiscalPurpose = dto.fiscalPurpose ?? order.fiscalPurpose;
+      const tenantFiscalSettings = await tx.tenant.findUnique({
+        where: { id: tenantId },
+        select: {
+          fiscalIssuanceMode: true,
+        },
+      });
+      if (!tenantFiscalSettings) {
+        throw new NotFoundException('Tenant not found.');
+      }
+      const fiscalDetails = this.resolveOrderFiscalDetails(
+        fiscalPurpose,
+        tenantFiscalSettings,
+        customer,
+        computed.subtotal,
+        order.paymentMode,
+      );
 
       // Update order fields
       const updated = await tx.salesOrder.update({
@@ -819,6 +888,9 @@ export class OrdersService {
         data: {
           clientName: dto.clientName?.trim() || undefined,
           customerId: dto.customerId || null,
+          fiscalPurpose,
+          fiscalDocumentTypeSnapshot: fiscalDetails.documentType,
+          fiscalCustomerSnapshot: fiscalDetails.customerSnapshot ?? Prisma.JsonNull,
           priceLevel,
           discountRate,
           quotationDocumentType: dto.quotationDocumentType ?? null,
@@ -872,6 +944,10 @@ export class OrdersService {
           metadata: {
             orderNumber: updated.orderNumber,
             isUpdate: true,
+            previousFiscalPurpose: order.fiscalPurpose,
+            fiscalPurpose: updated.fiscalPurpose,
+            previousFiscalDocumentType: order.fiscalDocumentTypeSnapshot,
+            fiscalDocumentType: updated.fiscalDocumentTypeSnapshot,
             sourceDestination: updated.destination,
             sourceStatus: updated.status,
             clientName: updated.clientName,
@@ -1000,6 +1076,149 @@ export class OrdersService {
     }
     if (!customer.creditEnabled || customer.creditStatus !== CustomerCreditStatus.ACTIVE) {
       throw new BadRequestException('Customer credit is disabled or blocked.');
+    }
+  }
+
+  private resolveOrderFiscalDetails(
+    purpose: FiscalDocumentPurpose,
+    tenant: {
+      fiscalIssuanceMode: Parameters<typeof resolveFiscalDocumentType>[1];
+    },
+    customer: {
+      id: string;
+      name: string;
+      documentType: DocumentType;
+      documentNumber: string | null;
+      status: CustomerStatus;
+    } | null,
+    subtotalBeforeTax: Prisma.Decimal,
+    paymentMode: SalePaymentMode,
+  ) {
+    const documentType = resolveFiscalDocumentType(purpose, tenant.fiscalIssuanceMode);
+
+    if (purpose === FiscalDocumentPurpose.FISCAL_CREDIT) {
+      const customerSnapshot =
+        customer?.status === CustomerStatus.ACTIVE
+          ? buildFiscalCustomerSnapshot(customer, false)
+          : null;
+      if (!customerSnapshot && paymentMode === SalePaymentMode.CREDIT) {
+        throw new BadRequestException(
+          'Una venta fiada B01 requiere que el cliente aprobado tenga RNC o cédula válida.',
+        );
+      }
+
+      // Cash B01 orders may carry only the fiscal intent. The cashier captures
+      // the one-time RNC/cédula before checkout without creating a Customer.
+      return { documentType, customerSnapshot };
+    }
+
+    // Keep the existing DGII local B02 rule: the identification threshold is
+    // evaluated against the invoice subtotal before ITBIS. E32 remains closed
+    // at checkout until the real e-CF implementation is ready.
+    const requiresLocalConsumerIdentity =
+      documentType === InvoiceDocumentType.CONSUMER_02 && subtotalBeforeTax.gte(250_000);
+    if (!requiresLocalConsumerIdentity) {
+      return { documentType, customerSnapshot: null };
+    }
+
+    if (!customer || customer.status !== CustomerStatus.ACTIVE) {
+      if (paymentMode === SalePaymentMode.CASH) {
+        return { documentType, customerSnapshot: null };
+      }
+      throw new BadRequestException(
+        'B02 invoices of RD$250,000 or more before ITBIS require an identified customer.',
+      );
+    }
+    const customerSnapshot = buildFiscalCustomerSnapshot(customer, true);
+    if (!customerSnapshot) {
+      if (paymentMode === SalePaymentMode.CASH) {
+        return { documentType, customerSnapshot: null };
+      }
+      throw new BadRequestException(
+        'B02 invoices of RD$250,000 or more before ITBIS require an identified customer.',
+      );
+    }
+
+    return { documentType, customerSnapshot };
+  }
+
+  private async assertFiscalSequenceAvailable(
+    tx: Prisma.TransactionClient,
+    tenantId: string,
+    documentType: InvoiceDocumentType,
+  ) {
+    if (!isLocalNcfDocumentType(documentType)) {
+      throw new BadRequestException(
+        'Electronic E31/E32 orders are disabled until the certified DGII pipeline is installed.',
+      );
+    }
+
+    const tenant = await tx.tenant.findUnique({
+      where: { id: tenantId },
+      select: { rnc: true },
+    });
+    if (
+      !tenant?.rnc?.trim() ||
+      (!validateDominicanRnc(tenant.rnc) && !validateDominicanCedula(tenant.rnc))
+    ) {
+      throw new BadRequestException(
+        'Configure a valid issuer RNC or Dominican ID before creating fiscal sales orders.',
+      );
+    }
+
+    const prefix = expectedLocalNcfPrefix(documentType);
+    const issuerTaxId = normalizeDominicanDocument(tenant.rnc);
+    const sequence = await tx.fiscalSequence.findFirst({
+      where: {
+        tenantId,
+        documentType,
+        prefix,
+        issuerTaxId,
+        status: {
+          in: [FiscalSequenceStatus.ACTIVE, FiscalSequenceStatus.INACTIVE],
+        },
+        nextNumber: { lte: tx.fiscalSequence.fields.endNumber },
+        OR: [{ validUntil: null }, { validUntil: { gte: currentBusinessDate() } }],
+      },
+      select: { id: true },
+    });
+
+    if (!sequence) {
+      throw new BadRequestException(
+        `No usable ${prefix} sequence is configured. Register the DGII-authorized range before sending this order to cash.`,
+      );
+    }
+  }
+
+  private assertPersistedFiscalDetails(order: {
+    customerId: string | null;
+    fiscalPurpose: FiscalDocumentPurpose;
+    fiscalDocumentTypeSnapshot: InvoiceDocumentType;
+    fiscalCustomerSnapshot: Prisma.JsonValue | null;
+    subtotal: Prisma.Decimal;
+  }) {
+    if (!fiscalDocumentTypeMatchesPurpose(order.fiscalPurpose, order.fiscalDocumentTypeSnapshot)) {
+      throw new BadRequestException(
+        'The order fiscal purpose and document snapshot are inconsistent.',
+      );
+    }
+
+    const snapshot = readFiscalCustomerSnapshot(order.fiscalCustomerSnapshot);
+    if (snapshot && snapshot.id !== null && snapshot.id !== order.customerId) {
+      throw new BadRequestException(
+        'The order fiscal customer snapshot is inconsistent with its registered customer.',
+      );
+    }
+
+    // An accepted cash order may still have its fiscal identity pending. POS
+    // enforces the final B01/B02 identity before reserving an NCF and issuing.
+    if (
+      snapshot &&
+      isFiscalCreditDocumentType(order.fiscalDocumentTypeSnapshot) &&
+      snapshot.documentType !== DocumentType.RNC &&
+      snapshot.documentType !== DocumentType.CEDULA
+    ) {
+      throw new BadRequestException('Fiscal credit only accepts RNC or Dominican ID.');
     }
   }
 
@@ -1428,6 +1647,8 @@ export class OrdersService {
       orderNumber: string;
       customerId: string | null;
       destination: SalesOrderDestination;
+      fiscalPurpose: FiscalDocumentPurpose;
+      fiscalDocumentTypeSnapshot: InvoiceDocumentType;
       status: SalesOrderStatus;
       clientName: string | null;
     },
@@ -1437,6 +1658,8 @@ export class OrdersService {
     return {
       orderNumber: order.orderNumber,
       customerId: order.customerId,
+      fiscalPurpose: order.fiscalPurpose,
+      fiscalDocumentType: order.fiscalDocumentTypeSnapshot,
       createdById: userId,
       sourceDestination: order.destination,
       sourceStatus: order.status,

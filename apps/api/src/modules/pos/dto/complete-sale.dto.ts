@@ -9,7 +9,7 @@ import {
   Min,
   ValidateNested,
 } from 'class-validator';
-import { LOCAL_NCF_DOCUMENT_TYPES } from '../../fiscal-sequences/fiscal-number';
+import { SALES_FISCAL_DOCUMENT_TYPES } from '../../fiscal-documents/fiscal-document';
 
 export class PosSaleItemDto {
   @IsString()
@@ -27,7 +27,7 @@ export class CompleteSaleDto {
   customerId?: string;
 
   @IsOptional()
-  @IsIn(LOCAL_NCF_DOCUMENT_TYPES)
+  @IsIn(SALES_FISCAL_DOCUMENT_TYPES)
   documentType?: InvoiceDocumentType;
 
   @IsIn([PaymentMethod.CASH, PaymentMethod.CARD, PaymentMethod.TRANSFER])

@@ -1,10 +1,11 @@
-import { Body, Controller, Get, Param, Post, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { TenantId } from '../../common/decorators/tenant-id.decorator';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { TenantMembershipGuard } from '../../common/guards/tenant-membership.guard';
 import { AuthenticatedUser } from '../../common/types/authenticated-request';
 import { CompleteSaleDto } from './dto/complete-sale.dto';
+import { UpdatePosFiscalDetailsDto } from './dto/update-pos-fiscal-details.dto';
 import { PosService } from './pos.service';
 
 @Controller('pos')
@@ -28,6 +29,16 @@ export class PosController {
     @Param('barcode') barcode: string,
   ) {
     return this.posService.findByBarcode(tenantId, user, barcode);
+  }
+
+  @Patch('orders/:id/fiscal-details')
+  updateOrderFiscalDetails(
+    @TenantId() tenantId: string,
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+    @Body() dto: UpdatePosFiscalDetailsDto,
+  ) {
+    return this.posService.updateOrderFiscalDetails(tenantId, user, id, dto);
   }
 
   @Post('sales/preview')

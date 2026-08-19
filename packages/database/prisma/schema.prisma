@@ -175,6 +175,16 @@ enum InvoiceDocumentType {
   CREDIT_NOTE_ELECTRONIC_34
 }
 
+enum FiscalDocumentPurpose {
+  CONSUMER
+  FISCAL_CREDIT
+}
+
+enum FiscalIssuanceMode {
+  LOCAL_NCF
+  ELECTRONIC_ECF
+}
+
 enum BarcodeType {
   EAN13
   UPC_A
@@ -404,6 +414,7 @@ model Tenant {
   email                      String?
   phone                      String?
   address                    String?
+  fiscalIssuanceMode         FiscalIssuanceMode          @default(LOCAL_NCF)
   status                     TenantStatus                @default(ACTIVE)
   createdAt                  DateTime                    @default(now())
   updatedAt                  DateTime                    @updatedAt
@@ -764,58 +775,62 @@ model InvoiceItem {
 }
 
 model SalesOrder {
-  id                      String                @id @default(cuid())
-  tenantId                String
-  customerId              String?
-  destination             SalesOrderDestination @default(CASH_SALE)
-  clientName              String?
-  quotationDocumentType   DocumentType?
-  quotationDocumentNumber String?
-  orderNumber             String
-  status                  SalesOrderStatus      @default(SENT_TO_CASHIER)
-  priceLevel              SalesOrderPriceLevel  @default(REGULAR)
-  discountRate            Decimal               @default(0) @db.Decimal(5, 4)
-  subtotal                Decimal               @default(0) @db.Decimal(12, 2)
-  taxTotal                Decimal               @default(0) @db.Decimal(12, 2)
-  discountTotal           Decimal               @default(0) @db.Decimal(12, 2)
-  total                   Decimal               @default(0) @db.Decimal(12, 2)
-  paymentMode             SalePaymentMode       @default(CASH)
-  initialPaymentOption    InitialPaymentOption?
-  initialPaymentRate      Decimal               @default(0) @db.Decimal(5, 4)
-  initialPaymentAmount    Decimal               @default(0) @db.Decimal(14, 2)
-  creditTermOption        CreditTermOption?
-  creditTermDays          Int?
-  dueDate                 DateTime?
-  creditRequestNote       String?
-  notes                   String?
-  createdById             String
-  completedById           String?
-  claimedById             String?
-  claimedCashSessionId    String?
-  invoiceId               String?               @unique
-  sentToCashierAt         DateTime?
-  claimedAt               DateTime?
-  claimExpiresAt          DateTime?
-  releasedAt              DateTime?
-  completedAt             DateTime?
-  cancelledAt             DateTime?
-  cancelReason            String?
-  createdAt               DateTime              @default(now())
-  updatedAt               DateTime              @updatedAt
-  tenant                  Tenant                @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  customer                Customer?             @relation(fields: [customerId], references: [id], onDelete: SetNull)
-  createdBy               User                  @relation("SalesOrderCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
-  completedBy             User?                 @relation("SalesOrderCompletedBy", fields: [completedById], references: [id], onDelete: SetNull)
-  claimedBy               User?                 @relation("SalesOrderClaimedBy", fields: [claimedById], references: [id], onDelete: SetNull)
-  claimedCashSession      CashSession?          @relation("SalesOrderClaimedCashSession", fields: [claimedCashSessionId], references: [id], onDelete: SetNull)
-  invoice                 Invoice?              @relation(fields: [invoiceId], references: [id], onDelete: SetNull)
-  items                   SalesOrderItem[]
-  creditApproval          CreditSaleApproval?
+  id                         String                @id @default(cuid())
+  tenantId                   String
+  customerId                 String?
+  destination                SalesOrderDestination @default(CASH_SALE)
+  fiscalPurpose              FiscalDocumentPurpose @default(CONSUMER)
+  fiscalDocumentTypeSnapshot InvoiceDocumentType   @default(CONSUMER_02)
+  fiscalCustomerSnapshot     Json?
+  clientName                 String?
+  quotationDocumentType      DocumentType?
+  quotationDocumentNumber    String?
+  orderNumber                String
+  status                     SalesOrderStatus      @default(SENT_TO_CASHIER)
+  priceLevel                 SalesOrderPriceLevel  @default(REGULAR)
+  discountRate               Decimal               @default(0) @db.Decimal(5, 4)
+  subtotal                   Decimal               @default(0) @db.Decimal(12, 2)
+  taxTotal                   Decimal               @default(0) @db.Decimal(12, 2)
+  discountTotal              Decimal               @default(0) @db.Decimal(12, 2)
+  total                      Decimal               @default(0) @db.Decimal(12, 2)
+  paymentMode                SalePaymentMode       @default(CASH)
+  initialPaymentOption       InitialPaymentOption?
+  initialPaymentRate         Decimal               @default(0) @db.Decimal(5, 4)
+  initialPaymentAmount       Decimal               @default(0) @db.Decimal(14, 2)
+  creditTermOption           CreditTermOption?
+  creditTermDays             Int?
+  dueDate                    DateTime?
+  creditRequestNote          String?
+  notes                      String?
+  createdById                String
+  completedById              String?
+  claimedById                String?
+  claimedCashSessionId       String?
+  invoiceId                  String?               @unique
+  sentToCashierAt            DateTime?
+  claimedAt                  DateTime?
+  claimExpiresAt             DateTime?
+  releasedAt                 DateTime?
+  completedAt                DateTime?
+  cancelledAt                DateTime?
+  cancelReason               String?
+  createdAt                  DateTime              @default(now())
+  updatedAt                  DateTime              @updatedAt
+  tenant                     Tenant                @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  customer                   Customer?             @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  createdBy                  User                  @relation("SalesOrderCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+  completedBy                User?                 @relation("SalesOrderCompletedBy", fields: [completedById], references: [id], onDelete: SetNull)
+  claimedBy                  User?                 @relation("SalesOrderClaimedBy", fields: [claimedById], references: [id], onDelete: SetNull)
+  claimedCashSession         CashSession?          @relation("SalesOrderClaimedCashSession", fields: [claimedCashSessionId], references: [id], onDelete: SetNull)
+  invoice                    Invoice?              @relation(fields: [invoiceId], references: [id], onDelete: SetNull)
+  items                      SalesOrderItem[]
+  creditApproval             CreditSaleApproval?
 
   @@unique([tenantId, orderNumber])
   @@index([tenantId])
   @@index([tenantId, status])
   @@index([tenantId, paymentMode, dueDate])
+  @@index([tenantId, fiscalDocumentTypeSnapshot, status])
   @@index([tenantId, createdAt])
   @@index([createdById])
   @@index([completedById])

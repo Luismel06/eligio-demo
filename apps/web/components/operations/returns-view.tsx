@@ -22,6 +22,7 @@ import {
 } from '@/lib/api';
 import { isAdminSession } from '@/lib/authorization';
 import { getStatusVariant, translatePaymentMethod, translateStatus } from '@/lib/display-labels';
+import { getInvoiceCustomerName } from '@/lib/invoice-customer';
 import { cn, formatCurrency, formatDate } from '@/lib/utils';
 import { formatQuantity, getQuantityStep } from './pos/pos-utils';
 import { ModuleHeader } from './module-header';
@@ -347,7 +348,7 @@ export function ReturnsView() {
                         {selectedInvoice.invoiceNumber}
                       </h2>
                       <p className="mt-1 text-sm text-muted-foreground">
-                        {selectedInvoice.customer?.name ?? 'Consumidor final'} ·{' '}
+                        {getInvoiceCustomerName(selectedInvoice)} ·{' '}
                         {formatDate(selectedInvoice.issuedAt ?? selectedInvoice.createdAt)}
                       </p>
                     </div>

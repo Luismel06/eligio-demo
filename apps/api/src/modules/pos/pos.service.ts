@@ -14,6 +14,7 @@ import {
   DocumentType,
   EmployeeLogAction,
   EmployeeStatus,
+  FiscalDocumentPurpose,
   InventoryMovementType,
   InvoiceDocumentType,
   InvoiceFiscalStatus,
@@ -37,12 +38,22 @@ import { businessDateKey } from '../../common/utils/business-date';
 import {
   normalizeDominicanDocument,
   validateDominicanCedula,
-  validateDominicanDocument,
   validateDominicanRnc,
 } from '../../common/utils/dominican-documents';
-import { isFiscalCreditNcf, isLocalNcfDocumentType } from '../fiscal-sequences/fiscal-number';
+import {
+  buildInlineFiscalCustomerSnapshot,
+  buildFiscalCustomerSnapshot,
+  fiscalDocumentTypeMatchesPurpose,
+  isElectronicFiscalDocumentType,
+  isFiscalCreditDocumentType,
+  isSalesFiscalDocumentType,
+  readFiscalCustomerSnapshot,
+  resolveFiscalDocumentType,
+} from '../fiscal-documents/fiscal-document';
+import { isLocalNcfDocumentType } from '../fiscal-sequences/fiscal-number';
 import { FiscalSequencesService } from '../fiscal-sequences/fiscal-sequences.service';
 import { CompleteSaleDto, PosSaleItemDto } from './dto/complete-sale.dto';
+import { UpdatePosFiscalDetailsDto } from './dto/update-pos-fiscal-details.dto';
 
 const adminRoles: Role[] = [Role.ADMIN, Role.SUPER_ADMIN, Role.QORVEX_SUPER_ADMIN];
 const claimTtlMs = 30 * 60 * 1000;
@@ -123,6 +134,176 @@ export class PosService {
     return product;
   }
 
+  async updateOrderFiscalDetails(
+    tenantId: string,
+    user: AuthenticatedUser,
+    orderId: string,
+    dto: UpdatePosFiscalDetailsDto,
+  ) {
+    await this.ensureCanUsePos(tenantId, user);
+
+    return this.runSerializable(async (tx) => {
+      const lockedOrder = await tx.$queryRaw<Array<{ id: string }>>`
+        SELECT "id"
+        FROM "SalesOrder"
+        WHERE "id" = ${orderId}
+          AND "tenantId" = ${tenantId}
+        FOR UPDATE
+      `;
+      if (lockedOrder.length !== 1) {
+        throw new NotFoundException('Sales order not found for tenant.');
+      }
+
+      const order = await tx.salesOrder.findUniqueOrThrow({
+        where: { id: orderId },
+        include: { creditApproval: true },
+      });
+      if (
+        order.destination !== SalesOrderDestination.CASH_SALE ||
+        order.status !== SalesOrderStatus.IN_CASHIER ||
+        order.invoiceId
+      ) {
+        throw new BadRequestException(
+          'Solo se pueden confirmar datos fiscales de una orden pendiente y reclamada en caja.',
+        );
+      }
+      if (order.claimedById !== user.id) {
+        throw new ForbiddenException('La orden está reclamada por otro cajero.');
+      }
+      if (!order.claimExpiresAt || order.claimExpiresAt.getTime() <= Date.now()) {
+        throw new BadRequestException(
+          'El reclamo de la orden venció. Vuelve a tomarla antes de cambiar sus datos fiscales.',
+        );
+      }
+      if (!order.claimedCashSessionId) {
+        throw new BadRequestException('La orden no está asociada a una sesión de caja.');
+      }
+      await this.lockOpenCashSessionForUser(tx, tenantId, user.id, order.claimedCashSessionId);
+
+      const hasCustomerAssertion = Object.prototype.hasOwnProperty.call(dto, 'customerId');
+      const requestedCustomerId = dto.customerId?.trim() || null;
+      if (hasCustomerAssertion && requestedCustomerId !== order.customerId) {
+        throw new BadRequestException('El cliente de la orden no puede cambiarse desde Caja.');
+      }
+      const hasInlineDocumentType = Object.prototype.hasOwnProperty.call(dto, 'documentType');
+      const hasInlineDocumentNumber = Object.prototype.hasOwnProperty.call(dto, 'documentNumber');
+      if (hasInlineDocumentType !== hasInlineDocumentNumber) {
+        throw new BadRequestException(
+          'Para una identidad fiscal puntual debes enviar tipo y número de documento.',
+        );
+      }
+      if (order.paymentMode === SalePaymentMode.CREDIT) {
+        if (!order.customerId) {
+          throw new BadRequestException(
+            'En una venta fiada no se puede cambiar ni quitar el cliente aprobado.',
+          );
+        }
+        if (
+          !order.creditApproval ||
+          order.creditApproval.status !== CreditApprovalStatus.APPROVED ||
+          order.creditApproval.customerId !== order.customerId
+        ) {
+          throw new BadRequestException(
+            'La aprobación de crédito no coincide con el cliente de la orden.',
+          );
+        }
+        if (hasInlineDocumentType) {
+          throw new BadRequestException(
+            'Una venta fiada debe conservar los datos fiscales del cliente aprobado.',
+          );
+        }
+      }
+
+      const customer = order.customerId
+        ? await tx.customer.findFirst({
+            where: {
+              id: order.customerId,
+              tenantId,
+            },
+          })
+        : null;
+      if (order.customerId && !customer) {
+        throw new NotFoundException('Customer not found for tenant.');
+      }
+
+      const inlineCustomerSnapshot = hasInlineDocumentType
+        ? buildInlineFiscalCustomerSnapshot(order.clientName, dto.documentType!, dto.documentNumber)
+        : null;
+      if (hasInlineDocumentType && !inlineCustomerSnapshot) {
+        if (!order.clientName?.trim()) {
+          throw new BadRequestException(
+            'La orden debe tener el nombre del cliente antes de seleccionar crédito fiscal.',
+          );
+        }
+        throw new BadRequestException(
+          dto.documentType === DocumentType.RNC
+            ? 'El RNC indicado no es válido.'
+            : 'La cédula indicada no es válida.',
+        );
+      }
+
+      const tenantFiscalSettings = await tx.tenant.findUnique({
+        where: { id: tenantId },
+        select: { fiscalIssuanceMode: true },
+      });
+      if (!tenantFiscalSettings) {
+        throw new NotFoundException('Tenant not found.');
+      }
+      const fiscalDetails = this.resolveOrderFiscalDetails(
+        dto.fiscalPurpose,
+        tenantFiscalSettings.fiscalIssuanceMode,
+        customer,
+        inlineCustomerSnapshot,
+        order.subtotal,
+      );
+      await this.fiscalSequences.assertAvailable(tx, tenantId, fiscalDetails.documentType);
+
+      const updated = await tx.salesOrder.update({
+        where: { id: order.id },
+        data: {
+          fiscalPurpose: dto.fiscalPurpose,
+          fiscalDocumentTypeSnapshot: fiscalDetails.documentType,
+          fiscalCustomerSnapshot: fiscalDetails.customerSnapshot ?? Prisma.JsonNull,
+        },
+        include: this.posOrderInclude(),
+      });
+
+      await tx.auditLog.create({
+        data: {
+          tenantId,
+          userId: user.id,
+          action: 'POS_ORDER_FISCAL_DETAILS_UPDATED',
+          entity: 'SalesOrder',
+          entityId: order.id,
+          metadata: {
+            orderNumber: order.orderNumber,
+            cashSessionId: order.claimedCashSessionId,
+            previousFiscalPurpose: order.fiscalPurpose,
+            fiscalPurpose: updated.fiscalPurpose,
+            previousDocumentType: order.fiscalDocumentTypeSnapshot,
+            documentType: updated.fiscalDocumentTypeSnapshot,
+            previousCustomerId: order.customerId,
+            customerId: order.customerId,
+            fiscalIdentitySource: fiscalDetails.customerSnapshot
+              ? fiscalDetails.customerSnapshot.id
+                ? 'REGISTERED_CUSTOMER'
+                : 'ORDER_INLINE'
+              : 'NONE',
+            customerNameSource: fiscalDetails.customerSnapshot
+              ? fiscalDetails.customerSnapshot.id
+                ? 'CUSTOMER_RECORD'
+                : 'SALES_ORDER_CLIENT_NAME'
+              : 'NONE',
+            customerDocumentType: fiscalDetails.customerSnapshot?.documentType ?? null,
+            customerDocumentLast4: fiscalDetails.customerSnapshot?.documentNumber.slice(-4) ?? null,
+          },
+        },
+      });
+
+      return updated;
+    });
+  }
+
   async previewSale(tenantId: string, user: AuthenticatedUser, dto: CompleteSaleDto) {
     await this.ensureCanCreateDirectSale(tenantId, user);
     const computed = await this.computeSale(tenantId, dto.items ?? []);
@@ -158,11 +339,11 @@ export class PosService {
       );
     }
 
-    if (!dto.orderId) {
+    const orderId = dto.orderId;
+    if (!orderId) {
       throw new ForbiddenException('Direct POS sales are disabled. Load an order to charge.');
     }
     this.ensureSupportedPaymentMethod(dto.paymentMethod);
-    await this.fiscalSequences.refreshStatuses(tenantId);
 
     return this.runSerializable(async (tx) => {
       const cashSession = await this.findCashSessionForSale(
@@ -171,13 +352,39 @@ export class PosService {
         user.id,
         dto.cashSessionId,
       );
-      const order = dto.orderId
-        ? await this.claimOrderForSale(tx, tenantId, user.id, cashSession.id, dto.orderId)
-        : null;
+      const order = await this.claimOrderForSale(tx, tenantId, user.id, cashSession.id, orderId);
+      const documentType = order.fiscalDocumentTypeSnapshot;
+      if (
+        !isSalesFiscalDocumentType(documentType) ||
+        !fiscalDocumentTypeMatchesPurpose(order.fiscalPurpose, documentType)
+      ) {
+        throw new BadRequestException(
+          'The sales order fiscal purpose and document snapshot are inconsistent.',
+        );
+      }
+      if (dto.documentType && dto.documentType !== documentType) {
+        throw new BadRequestException(
+          'Invoice document type is fixed by the sales order and cannot be changed at checkout.',
+        );
+      }
+      if (dto.customerId !== undefined) {
+        const requestedCustomerId = dto.customerId?.trim() || null;
+        if (requestedCustomerId !== order.customerId) {
+          throw new BadRequestException(
+            'Invoice customer is fixed by the sales order and cannot be changed at checkout.',
+          );
+        }
+      }
+      if (isElectronicFiscalDocumentType(documentType)) {
+        throw new ServiceUnavailableException(
+          'Electronic E31/E32 checkout is not enabled until XML signing and DGII submission are configured.',
+        );
+      }
+      if (!isLocalNcfDocumentType(documentType)) {
+        throw new BadRequestException('The sales order has an unsupported invoice document type.');
+      }
 
-      const computed = order
-        ? await this.computeSaleFromOrder(order)
-        : await this.computeSale(tenantId, dto.items ?? [], tx);
+      const computed = await this.computeSaleFromOrder(order);
 
       if (!computed.items.length) {
         throw new BadRequestException('Sale must include at least one item.');
@@ -186,15 +393,8 @@ export class PosService {
         throw new BadRequestException('Sales order totals are inconsistent and must be reviewed.');
       }
 
-      const documentType = dto.documentType ?? InvoiceDocumentType.CONSUMER_02;
-      if (!isLocalNcfDocumentType(documentType)) {
-        throw new BadRequestException('Only local B01 and B02 invoices are enabled.');
-      }
-      if (order?.customerId && dto.customerId && dto.customerId !== order.customerId) {
-        throw new BadRequestException('Order customer cannot be changed at checkout.');
-      }
-      const customerId = order?.customerId ?? dto.customerId ?? undefined;
-      const isCreditSale = order?.paymentMode === SalePaymentMode.CREDIT;
+      const customerId = order.customerId ?? undefined;
+      const isCreditSale = order.paymentMode === SalePaymentMode.CREDIT;
       if (isCreditSale && customerId) {
         await this.lockCustomer(tx, tenantId, customerId);
       }
@@ -285,30 +485,34 @@ export class PosService {
         }
       }
 
-      const fiscalCreditCustomer =
-        customer &&
-        (customer.documentType === DocumentType.RNC ||
-          customer.documentType === DocumentType.CEDULA) &&
-        customer.documentNumber?.trim() &&
-        validateDominicanDocument(customer.documentType, customer.documentNumber);
-      if (isFiscalCreditNcf(documentType) && !fiscalCreditCustomer) {
-        throw new BadRequestException('B01 requires a customer with a valid RNC or Dominican ID.');
-      }
-
       // The persisted subtotal is already net of line discounts. DGII's
       // RD$250,000 B02 identification threshold is evaluated before ITBIS.
       const netAmountBeforeTaxes = computed.subtotal.toDecimalPlaces(2);
       const requiresConsumerIdentity =
         documentType === InvoiceDocumentType.CONSUMER_02 && netAmountBeforeTaxes.gte(250_000);
-      const consumerHasReportableIdentity =
-        customer &&
-        customer.documentNumber?.trim() &&
-        (customer.documentType === DocumentType.RNC || customer.documentType === DocumentType.CEDULA
-          ? validateDominicanDocument(customer.documentType, customer.documentNumber)
-          : customer.documentType === DocumentType.PASSPORT);
-      if (requiresConsumerIdentity && !consumerHasReportableIdentity) {
+      const fiscalCustomerSnapshot = readFiscalCustomerSnapshot(order.fiscalCustomerSnapshot);
+      if (
+        fiscalCustomerSnapshot &&
+        fiscalCustomerSnapshot.id !== null &&
+        fiscalCustomerSnapshot.id !== order.customerId
+      ) {
         throw new BadRequestException(
-          'B02 invoices of RD$250,000 or more before ITBIS require an identified customer.',
+          'The sales order fiscal customer snapshot is inconsistent with its customer.',
+        );
+      }
+      if (
+        isFiscalCreditDocumentType(documentType) &&
+        (!fiscalCustomerSnapshot ||
+          (fiscalCustomerSnapshot.documentType !== DocumentType.RNC &&
+            fiscalCustomerSnapshot.documentType !== DocumentType.CEDULA))
+      ) {
+        throw new BadRequestException(
+          'B01 requiere confirmar un RNC o cédula válida antes de facturar.',
+        );
+      }
+      if (requiresConsumerIdentity && !fiscalCustomerSnapshot) {
+        throw new BadRequestException(
+          'Las facturas B02 de RD$250,000 o más antes de ITBIS requieren identificar al cliente.',
         );
       }
 
@@ -353,24 +557,11 @@ export class PosService {
       const status = this.getInvoiceStatus(paidAmount, computed.total);
       const issuedAt = new Date();
       const invoiceNumber = `RIV-${sequence.ncf}`;
-      const fiscalCustomerSnapshot =
-        isFiscalCreditNcf(documentType) || requiresConsumerIdentity
-          ? {
-              id: customer!.id,
-              name: customer!.name,
-              documentType: customer!.documentType,
-              documentNumber:
-                customer!.documentType === DocumentType.RNC ||
-                customer!.documentType === DocumentType.CEDULA
-                  ? normalizeDominicanDocument(customer!.documentNumber!)
-                  : customer!.documentNumber!.trim(),
-            }
-          : Prisma.JsonNull;
 
       const invoice = await tx.invoice.create({
         data: {
           tenantId,
-          customerId: customer?.id,
+          customerId: customer?.id ?? null,
           documentType,
           invoiceNumber,
           ncf: sequence.ncf,
@@ -389,7 +580,7 @@ export class PosService {
             pointOfSale: cashSession.cashRegister.name,
             pointOfSaleLocation: cashSession.cashRegister.location,
           },
-          fiscalCustomerSnapshot,
+          fiscalCustomerSnapshot: fiscalCustomerSnapshot ?? Prisma.JsonNull,
           status,
           fiscalStatus: InvoiceFiscalStatus.LOCAL_ISSUED,
           subtotal: computed.subtotal,
@@ -441,7 +632,7 @@ export class PosService {
           invoiceId: invoice.id,
           invoiceNumber: invoice.invoiceNumber,
           userId: user.id,
-          fromOrder: Boolean(order),
+          fromOrder: true,
         });
       }
 
@@ -494,7 +685,7 @@ export class PosService {
               orderNumber: order?.orderNumber,
               status: invoice.status,
               destination: SalesOrderDestination.CASH_SALE,
-              clientName: customer?.name,
+              clientName: fiscalCustomerSnapshot?.name ?? order.clientName ?? customer?.name,
             },
           },
           {
@@ -515,7 +706,7 @@ export class PosService {
               orderNumber: order?.orderNumber,
               status: invoice.status,
               destination: SalesOrderDestination.CASH_SALE,
-              clientName: customer?.name,
+              clientName: fiscalCustomerSnapshot?.name ?? order.clientName ?? customer?.name,
             },
           },
           ...(order
@@ -1000,6 +1191,91 @@ export class PosService {
     if (!openSession) {
       throw new BadRequestException('Selected cash session is no longer open for this cashier.');
     }
+  }
+
+  private resolveOrderFiscalDetails(
+    purpose: FiscalDocumentPurpose,
+    issuanceMode: Parameters<typeof resolveFiscalDocumentType>[1],
+    customer: {
+      id: string;
+      name: string;
+      documentType: DocumentType;
+      documentNumber: string | null;
+      status: CustomerStatus;
+    } | null,
+    inlineCustomerSnapshot: ReturnType<typeof buildInlineFiscalCustomerSnapshot>,
+    subtotalBeforeTax: Prisma.Decimal,
+  ) {
+    const documentType = resolveFiscalDocumentType(purpose, issuanceMode);
+
+    if (purpose === FiscalDocumentPurpose.FISCAL_CREDIT) {
+      if (inlineCustomerSnapshot) {
+        return { documentType, customerSnapshot: inlineCustomerSnapshot };
+      }
+
+      const customerSnapshot =
+        customer?.status === CustomerStatus.ACTIVE
+          ? buildFiscalCustomerSnapshot(customer, false)
+          : null;
+      if (!customerSnapshot) {
+        throw new BadRequestException(
+          'El crédito fiscal requiere un RNC o cédula válida para esta factura.',
+        );
+      }
+
+      return { documentType, customerSnapshot };
+    }
+
+    const requiresConsumerIdentity =
+      documentType === InvoiceDocumentType.CONSUMER_02 && subtotalBeforeTax.gte(250_000);
+    if (inlineCustomerSnapshot) {
+      return { documentType, customerSnapshot: inlineCustomerSnapshot };
+    }
+    if (!requiresConsumerIdentity) {
+      return { documentType, customerSnapshot: null };
+    }
+
+    if (!customer || customer.status !== CustomerStatus.ACTIVE) {
+      throw new BadRequestException(
+        'Las facturas B02 de RD$250,000 o más antes de ITBIS requieren un cliente identificado.',
+      );
+    }
+    const customerSnapshot = buildFiscalCustomerSnapshot(customer, true);
+    if (!customerSnapshot) {
+      throw new BadRequestException(
+        'Las facturas B02 de RD$250,000 o más antes de ITBIS requieren un cliente identificado.',
+      );
+    }
+
+    return { documentType, customerSnapshot };
+  }
+
+  private posOrderInclude() {
+    return {
+      customer: true,
+      createdBy: { select: { id: true, name: true, email: true } },
+      completedBy: { select: { id: true, name: true, email: true } },
+      claimedBy: { select: { id: true, name: true, email: true } },
+      claimedCashSession: {
+        include: {
+          cashRegister: true,
+        },
+      },
+      invoice: { select: { id: true, invoiceNumber: true, total: true } },
+      creditApproval: {
+        include: {
+          requestedBy: { select: { id: true, name: true, email: true } },
+          approvedBy: { select: { id: true, name: true, email: true } },
+          rejectedBy: { select: { id: true, name: true, email: true } },
+        },
+      },
+      items: {
+        include: {
+          product: { include: { category: true } },
+        },
+        orderBy: { description: 'asc' as const },
+      },
+    };
   }
 
   private async ensureCanCreateDirectSale(tenantId: string, user: AuthenticatedUser) {

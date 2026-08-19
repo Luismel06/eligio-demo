@@ -206,6 +206,7 @@ export type LoginResponse = {
 };
 
 export type CustomerDocumentType = 'RNC' | 'CEDULA' | 'PASSPORT' | 'CONSUMER_FINAL' | 'OTHER';
+export type FiscalDocumentPurpose = 'CONSUMER' | 'FISCAL_CREDIT';
 export type LocalNcfDocumentType = 'CONSUMER_02' | 'FISCAL_CREDIT_01';
 export type InvoiceDocumentType =
   | LocalNcfDocumentType
@@ -262,6 +263,14 @@ export type Customer = {
   creditEnabledAt: string | null;
   creditEnabledById: string | null;
   createdAt: string;
+};
+
+export type UpdatePosOrderFiscalDetailsPayload = {
+  fiscalPurpose: FiscalDocumentPurpose;
+  /** Compatibility-only; omit it to preserve the customer already linked to the order. */
+  customerId?: string | null;
+  documentType?: 'RNC' | 'CEDULA';
+  documentNumber?: string;
 };
 
 export type ProductTaxCategory = 'ITBIS_18' | 'ITBIS_16' | 'EXEMPT';
@@ -353,7 +362,7 @@ export type Invoice = {
     pointOfSaleLocation: string | null;
   } | null;
   fiscalCustomerSnapshot: {
-    id: string;
+    id: string | null;
     name: string;
     documentType: CustomerDocumentType;
     documentNumber: string;
@@ -458,8 +467,10 @@ export type CreateInvoicePayload = {
 };
 
 export type PosSalePayload = {
+  /** @deprecated The fiscal document is resolved from the persisted sales order. */
   customerId?: string;
-  documentType: LocalNcfDocumentType;
+  /** @deprecated The fiscal document is resolved from the persisted sales order. */
+  documentType?: LocalNcfDocumentType;
   paymentMethod: PosPaymentMethod;
   amountReceived?: number;
   cashSessionId?: string;
@@ -588,6 +599,14 @@ export type SalesOrder = {
   discountTotal: string;
   total: string;
   paymentMode: SalePaymentMode;
+  fiscalPurpose: FiscalDocumentPurpose;
+  fiscalDocumentTypeSnapshot: InvoiceDocumentType;
+  fiscalCustomerSnapshot: {
+    id: string | null;
+    name: string;
+    documentType: CustomerDocumentType;
+    documentNumber: string;
+  } | null;
   initialPaymentOption: InitialPaymentOption | null;
   initialPaymentRate: string;
   initialPaymentAmount: string;
@@ -665,6 +684,7 @@ export type CreateSalesOrderPayload = {
   customerId?: string;
   priceLevel?: SalesOrderPriceLevel;
   paymentMode?: SalePaymentMode;
+  fiscalPurpose: FiscalDocumentPurpose;
   initialPaymentOption?: InitialPaymentOption;
   creditTermOption?: CreditTermOption;
   customDueDate?: string;
@@ -2315,6 +2335,19 @@ export function createInvoice(
 export function completePosSale(tenantId: string, accessToken: string, payload: PosSalePayload) {
   return fetchJson<Invoice>('/pos/sales/complete', {
     method: 'POST',
+    headers: tenantHeaders(tenantId, accessToken),
+    body: JSON.stringify(payload),
+  });
+}
+
+export function updatePosOrderFiscalDetails(
+  tenantId: string,
+  accessToken: string,
+  orderId: string,
+  payload: UpdatePosOrderFiscalDetailsPayload,
+) {
+  return fetchJson<SalesOrder>(`/pos/orders/${orderId}/fiscal-details`, {
+    method: 'PATCH',
     headers: tenantHeaders(tenantId, accessToken),
     body: JSON.stringify(payload),
   });

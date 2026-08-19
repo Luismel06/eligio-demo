@@ -13,6 +13,7 @@ import {
 import {
   CreditTermOption,
   DocumentType,
+  FiscalDocumentPurpose,
   InitialPaymentOption,
   SalePaymentMode,
   SalesOrderDestination,
@@ -49,6 +50,10 @@ export class CreateSalesOrderDto {
   @IsOptional()
   @IsEnum(SalePaymentMode)
   paymentMode?: SalePaymentMode;
+
+  @IsOptional()
+  @IsEnum(FiscalDocumentPurpose)
+  fiscalPurpose?: FiscalDocumentPurpose;
 
   @IsOptional()
   @IsEnum(InitialPaymentOption)

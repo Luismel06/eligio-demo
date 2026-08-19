@@ -21,6 +21,7 @@ import {
   translateProductUnit,
   translateStatus,
 } from '@/lib/display-labels';
+import { getInvoiceCustomerName } from '@/lib/invoice-customer';
 import { formatCurrency, formatDateOnly, formatDateTime } from '@/lib/utils';
 import { ModuleHeader } from './module-header';
 import { formatQuantity } from './pos/pos-utils';
@@ -217,7 +218,7 @@ export function InvoiceDetail({
         <CardHeader>
           <CardTitle>{invoice.invoiceNumber}</CardTitle>
           <CardDescription>
-            {invoice.customer?.name ?? 'Consumidor final'} - {translateStatus(invoice.status)}
+            {getInvoiceCustomerName(invoice)} - {translateStatus(invoice.status)}
           </CardDescription>
         </CardHeader>
         <CardContent>

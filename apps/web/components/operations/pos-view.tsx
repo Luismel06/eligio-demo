@@ -26,19 +26,17 @@ import {
   getCashRegisters,
   getCashSessions,
   getCurrentCashSession,
-  getCustomers,
   getPosProductByBarcode,
   getSalesOrders,
   openCashSession,
   releaseSalesOrder,
   searchPosProducts,
-  type Customer,
-  type LocalNcfDocumentType,
+  type FiscalDocumentPurpose,
+  type InvoiceDocumentType,
   type PosPaymentMethod,
   type Product,
   type SalesOrder,
 } from '@/lib/api';
-import { validateDominicanDocument } from '@/lib/dominican-documents';
 import { formatCurrency, formatDateTime } from '@/lib/utils';
 import { isAdminSession } from '@/lib/authorization';
 import { getOrderClientLabel, getOrderSearchLabel } from '@/lib/order-client';
@@ -77,27 +75,35 @@ type BarcodeDetectorConstructor = new (options?: { formats?: string[] }) => Barc
 type WindowWithBarcodeDetector = Window &
   typeof globalThis & { BarcodeDetector?: BarcodeDetectorConstructor };
 
-function hasValidFiscalCreditIdentity(customer?: Customer) {
-  if (
-    !customer?.documentNumber ||
-    (customer.documentType !== 'RNC' && customer.documentType !== 'CEDULA')
-  ) {
-    return false;
+function getOrderFiscalPurpose(order?: SalesOrder | null): FiscalDocumentPurpose {
+  if (order?.fiscalPurpose) {
+    return order.fiscalPurpose;
   }
 
-  return validateDominicanDocument(customer.documentType, customer.documentNumber);
+  return order?.fiscalDocumentTypeSnapshot === 'FISCAL_CREDIT_01' ||
+    order?.fiscalDocumentTypeSnapshot === 'FISCAL_CREDIT_ELECTRONIC_31'
+    ? 'FISCAL_CREDIT'
+    : 'CONSUMER';
 }
 
-function hasReportableConsumerIdentity(customer?: Customer) {
-  if (!customer?.documentNumber) {
-    return false;
+function getOrderFiscalDocumentType(order?: SalesOrder | null): InvoiceDocumentType {
+  if (order?.fiscalDocumentTypeSnapshot) {
+    return order.fiscalDocumentTypeSnapshot;
   }
 
-  if (customer.documentType === 'RNC' || customer.documentType === 'CEDULA') {
-    return validateDominicanDocument(customer.documentType, customer.documentNumber);
-  }
+  return getOrderFiscalPurpose(order) === 'FISCAL_CREDIT' ? 'FISCAL_CREDIT_01' : 'CONSUMER_02';
+}
 
-  return customer.documentType === 'PASSPORT';
+function getOrderFiscalLabel(order: SalesOrder) {
+  const documentType = getOrderFiscalDocumentType(order);
+  const labels: Partial<Record<InvoiceDocumentType, string>> = {
+    CONSUMER_02: 'Consumo · B02',
+    FISCAL_CREDIT_01: 'Crédito fiscal · B01',
+    CONSUMER_ELECTRONIC_32: 'Consumo · E32',
+    FISCAL_CREDIT_ELECTRONIC_31: 'Crédito fiscal · E31',
+  };
+
+  return labels[documentType] ?? documentType;
 }
 
 export function PosView() {
@@ -109,8 +115,6 @@ export function PosView() {
   const streamRef = useRef<MediaStream | null>(null);
   const scanFrameRef = useRef<number | null>(null);
 
-  const [customerId, setCustomerId] = useState('');
-  const [documentType, setDocumentType] = useState<LocalNcfDocumentType>('CONSUMER_02');
   const [paymentMethod, setPaymentMethod] = useState<PosPaymentMethod>('CASH');
   const [amountReceived, setAmountReceived] = useState(clearCurrencyInput());
   const [barcode, setBarcode] = useState('');
@@ -129,11 +133,6 @@ export function PosView() {
   const [loadedOrder, setLoadedOrder] = useState<SalesOrder | null>(null);
   const [zeroClosingWarningOpen, setZeroClosingWarningOpen] = useState(false);
 
-  const customersQuery = useQuery({
-    queryKey: ['pos-customers', session?.tenantId],
-    queryFn: () => getCustomers(session?.tenantId ?? '', session?.accessToken ?? ''),
-    enabled: Boolean(session),
-  });
   const registersQuery = useQuery({
     queryKey: ['cash-registers', session?.tenantId],
     queryFn: () => getCashRegisters(session?.tenantId ?? '', session?.accessToken ?? ''),
@@ -233,12 +232,8 @@ export function PosView() {
 
   useEffect(() => () => stopCameraScan(), []);
 
-  const activeCustomers = (customersQuery.data ?? []).filter(
-    (customer) => customer.status === 'ACTIVE',
-  );
-  const selectedCustomer = activeCustomers.find((customer) => customer.id === customerId);
-  const fiscalCreditAvailable = hasValidFiscalCreditIdentity(selectedCustomer);
-  const customerIdentified = hasReportableConsumerIdentity(selectedCustomer);
+  const fiscalPurpose = getOrderFiscalPurpose(loadedOrder);
+  const fiscalDocumentType = getOrderFiscalDocumentType(loadedOrder);
   const productPool = productsQuery.data ?? [];
   const categories = uniqueValues(
     productPool
@@ -370,8 +365,6 @@ export function PosView() {
       }
 
       return completePosSale(session.tenantId, session.accessToken, {
-        customerId: customerId || undefined,
-        documentType,
         paymentMethod,
         cashSessionId: currentCashSession?.id,
         amountReceived: amountReceived ? parseCurrencyInput(amountReceived) : undefined,
@@ -386,8 +379,6 @@ export function PosView() {
       setMessage(`Factura ${invoice.invoiceNumber} creada correctamente.`);
       setCart([]);
       setLoadedOrder(null);
-      setCustomerId('');
-      setDocumentType('CONSUMER_02');
       setPaymentMethod('CASH');
       setAmountReceived(clearCurrencyInput());
       await queryClient.invalidateQueries({ queryKey: ['invoices'] });
@@ -439,8 +430,6 @@ export function PosView() {
       if (loadedOrder?.id === order.id) {
         setLoadedOrder(null);
         setCart([]);
-        setCustomerId('');
-        setDocumentType('CONSUMER_02');
         setAmountReceived(clearCurrencyInput());
         setMessage(`Orden ${order.orderNumber} quitada. Ya puedes seleccionar otra.`);
       }
@@ -589,18 +578,16 @@ export function PosView() {
     }
 
     setLoadedOrder(order);
-    setCustomerId(order.customerId ?? '');
     setCart(items);
     setMessage(`Orden ${order.orderNumber} cargada para cobrar.`);
   }
 
-  function selectCustomer(value: string) {
-    setCustomerId(value);
-    const customer = activeCustomers.find((candidate) => candidate.id === value);
-    const supportsB01 = hasValidFiscalCreditIdentity(customer);
-    if (!supportsB01) {
-      setDocumentType('CONSUMER_02');
-    }
+  function updateLoadedOrderFiscalDetails(order: SalesOrder) {
+    setLoadedOrder(order);
+    queryClient.setQueriesData<SalesOrder[]>({ queryKey: ['sales-orders'] }, (orders) =>
+      orders?.map((candidate) => (candidate.id === order.id ? order : candidate)),
+    );
+    setMessage(`Datos fiscales de ${order.orderNumber} confirmados.`);
   }
 
   function enableScanner() {
@@ -791,6 +778,9 @@ export function PosView() {
                     </strong>
                   </div>
                 ) : null}
+                <div className="border-t border-[#f36c10]/20 pt-2 text-xs">
+                  Comprobante fijado: <strong>{getOrderFiscalLabel(loadedOrder)}</strong>
+                </div>
               </div>
             ) : null}
             <PosCart
@@ -802,24 +792,22 @@ export function PosView() {
             />
             {!isAdmin ? (
               <PosPaymentPanel
-                customers={activeCustomers}
-                customerId={customerId}
-                documentType={documentType}
-                fiscalCreditAvailable={fiscalCreditAvailable}
-                customerIdentified={customerIdentified}
+                tenantId={session.tenantId}
+                accessToken={session.accessToken}
+                order={loadedOrder}
+                fiscalPurpose={fiscalPurpose}
+                fiscalDocumentType={fiscalDocumentType}
                 paymentMethod={paymentMethod}
                 salePaymentMode={loadedOrder?.paymentMode ?? 'CASH'}
                 dueDate={loadedOrder?.dueDate}
-                customerLocked={Boolean(loadedOrder?.customerId)}
                 amountReceived={amountReceived}
                 totals={totals}
                 message={message}
                 canCompleteSale={canCompleteSale}
                 isCompleting={completeSaleMutation.isPending}
-                onCustomerChange={selectCustomer}
-                onDocumentTypeChange={setDocumentType}
                 onPaymentMethodChange={setPaymentMethod}
                 onAmountReceivedChange={setAmountReceived}
+                onFiscalOrderUpdated={updateLoadedOrderFiscalDetails}
                 onCompleteSale={() => completeSaleMutation.mutate()}
               />
             ) : null}
@@ -896,6 +884,7 @@ function SalesOrdersQueuePanel({
           `${getWaitingMinutes(order)} min`,
           `${getWaitingMinutes(order)} minutos`,
           translateStatus(order.status),
+          getOrderFiscalLabel(order),
         ]
           .filter(Boolean)
           .some((value) => value!.toLowerCase().includes(normalizedSearch)),
@@ -984,6 +973,7 @@ function SalesOrdersQueuePanel({
                             : 'Crédito pendiente'}
                         </Badge>
                       ) : null}
+                      <Badge variant="outline">{getOrderFiscalLabel(order)}</Badge>
                       {order.sentToCashierAt ? (
                         <Badge variant={getWaitingVariant(order)}>
                           {getWaitingMinutes(order)} min

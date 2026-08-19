@@ -13,6 +13,11 @@ services:
     container_name: rivnu-api
     init: true
     restart: unless-stopped
+    cpus: ${RIVNU_API_CPUS:-0.65}
+    mem_limit: ${RIVNU_API_MEMORY_LIMIT:-512m}
+    memswap_limit: ${RIVNU_API_MEMORY_SWAP_LIMIT:-512m}
+    mem_reservation: ${RIVNU_API_MEMORY_RESERVATION:-192m}
+    pids_limit: ${RIVNU_API_PIDS_LIMIT:-128}
     env_file:
       - path: /opt/corestack/apps/rivnu/secrets/api.env
         required: true
@@ -33,6 +38,11 @@ services:
     read_only: true
     tmpfs:
       - /tmp:size=64m,mode=1777
+    logging:
+      driver: local
+      options:
+        max-size: ${RIVNU_LOG_MAX_SIZE:-10m}
+        max-file: "${RIVNU_LOG_MAX_FILES:-3}"
     security_opt:
       - no-new-privileges:true
 
@@ -48,6 +58,11 @@ services:
     container_name: rivnu-web
     init: true
     restart: unless-stopped
+    cpus: ${RIVNU_WEB_CPUS:-0.35}
+    mem_limit: ${RIVNU_WEB_MEMORY_LIMIT:-512m}
+    memswap_limit: ${RIVNU_WEB_MEMORY_SWAP_LIMIT:-512m}
+    mem_reservation: ${RIVNU_WEB_MEMORY_RESERVATION:-128m}
+    pids_limit: ${RIVNU_WEB_PIDS_LIMIT:-128}
     environment:
       NODE_ENV: production
       INTERNAL_ALLOWED_IPS: ${INTERNAL_ALLOWED_IPS:-}
@@ -68,6 +83,11 @@ services:
     read_only: true
     tmpfs:
       - /tmp:size=64m,mode=1777
+    logging:
+      driver: local
+      options:
+        max-size: ${RIVNU_LOG_MAX_SIZE:-10m}
+        max-file: "${RIVNU_LOG_MAX_FILES:-3}"
     security_opt:
       - no-new-privileges:true
 

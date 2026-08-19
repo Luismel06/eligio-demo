@@ -6,6 +6,7 @@ import { useRouter } from 'next/navigation';
 import { useEffect } from 'react';
 import { Button } from '@/components/ui/button';
 import { getReceivablePayment } from '@/lib/api';
+import { getInvoiceCustomerName } from '@/lib/invoice-customer';
 import { formatCurrency, formatDate, formatDateTime } from '@/lib/utils';
 import { SessionRequired, useCurrentSession } from './session-required';
 
@@ -57,6 +58,9 @@ export function ReceivablePaymentPrint({
   const payment = paymentQuery.data;
   const invoice = payment.invoice;
   const customer = invoice.customer;
+  const fiscalCustomer = invoice.fiscalCustomerSnapshot;
+  const customerDocumentType = fiscalCustomer?.documentType ?? customer?.documentType;
+  const customerDocumentNumber = fiscalCustomer?.documentNumber ?? customer?.documentNumber;
   const cancelled = payment.status === 'CANCELLED';
 
   return (
@@ -104,11 +108,11 @@ export function ReceivablePaymentPrint({
           <div>
             <p className="text-xs uppercase tracking-wide text-zinc-500">Recibido de</p>
             <p className="mt-1 text-lg font-semibold">
-              {customer?.name ?? 'Cliente no disponible'}
+              {getInvoiceCustomerName(invoice, 'Cliente no disponible')}
             </p>
-            {customer?.documentNumber ? (
+            {customerDocumentNumber ? (
               <p className="text-sm">
-                {customer.documentType}: {customer.documentNumber}
+                {customerDocumentType}: {customerDocumentNumber}
               </p>
             ) : null}
             {customer?.phone ? <p className="text-sm">Teléfono: {customer.phone}</p> : null}

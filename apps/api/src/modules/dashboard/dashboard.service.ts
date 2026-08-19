@@ -20,6 +20,7 @@ import {
 } from '@qorvex/database';
 import { addBusinessDays, businessDateKey } from '../../common/utils/business-date';
 import { PrismaService } from '../../prisma/prisma.service';
+import { readFiscalCustomerSnapshot } from '../fiscal-documents/fiscal-document';
 import { ProductSalesQueryDto } from './dto/product-sales-query.dto';
 
 const revenueStatuses = [
@@ -600,7 +601,10 @@ export class DashboardService {
       recentInvoices: recentInvoices.map((invoice) => ({
         id: invoice.id,
         invoiceNumber: invoice.invoiceNumber,
-        customerName: invoice.customer?.name ?? 'Consumidor final',
+        customerName:
+          readFiscalCustomerSnapshot(invoice.fiscalCustomerSnapshot)?.name ??
+          invoice.customer?.name ??
+          'Consumidor final',
         status: invoice.status,
         total: this.decimalToNumber(invoice.total),
         cashierName: invoice.issuedBy?.name ?? null,
@@ -716,10 +720,7 @@ export class DashboardService {
         (product) => product.stock - product.reservedStock <= product.minStock,
       ).length,
       openCashSessions,
-      fiscalSequenceAlerts: this.buildFiscalSequenceAlerts(
-        fiscalSequences,
-        currentFiscalDate,
-      ),
+      fiscalSequenceAlerts: this.buildFiscalSequenceAlerts(fiscalSequences, currentFiscalDate),
     };
   }
 
@@ -756,10 +757,7 @@ export class DashboardService {
             status: { in: revenueStatuses },
             ...(hasDateRange
               ? {
-                  OR: [
-                    { issuedAt: saleDateRange },
-                    { issuedAt: null, createdAt: saleDateRange },
-                  ],
+                  OR: [{ issuedAt: saleDateRange }, { issuedAt: null, createdAt: saleDateRange }],
                 }
               : {}),
           },

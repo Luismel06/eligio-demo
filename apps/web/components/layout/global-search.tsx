@@ -11,6 +11,7 @@ import { getCustomers, getInvoices, getProducts } from '@/lib/api';
 import type { AuthSession } from '@/lib/auth-session';
 import { isAccountantSession, isAdminSession } from '@/lib/authorization';
 import { translateDocumentType, translateStatus } from '@/lib/display-labels';
+import { getInvoiceCustomerName } from '@/lib/invoice-customer';
 import { formatCurrency, formatDate } from '@/lib/utils';
 
 type SearchResult = {
@@ -97,7 +98,7 @@ export function GlobalSearch({ session }: { session: AuthSession }) {
           invoice.invoiceNumber,
           invoice.eNcf,
           invoice.ncf,
-          invoice.customer?.name,
+          getInvoiceCustomerName(invoice, ''),
           invoice.issuedBy?.name,
           translateStatus(invoice.status),
           invoice.total,
@@ -110,7 +111,7 @@ export function GlobalSearch({ session }: { session: AuthSession }) {
         id: `invoice-${invoice.id}`,
         type: 'invoice',
         title: invoice.invoiceNumber,
-        subtitle: `${invoice.customer?.name ?? 'Consumidor final'} · ${translateStatus(
+        subtitle: `${getInvoiceCustomerName(invoice)} · ${translateStatus(
           invoice.status,
         )} · ${formatDate(invoice.issuedAt ?? invoice.createdAt)}`,
         href: `/invoices/${invoice.id}`,

@@ -240,6 +240,57 @@ export class FiscalSequencesService {
     };
   }
 
+  /**
+   * Preflight only: verifies that checkout can later reserve this local NCF.
+   * It intentionally does not consume a number; reserve() remains the sole
+   * allocation point inside the final invoice transaction.
+   */
+  async assertAvailable(
+    tx: Prisma.TransactionClient,
+    tenantId: string,
+    documentType: InvoiceDocumentType,
+  ) {
+    if (!isLocalNcfDocumentType(documentType)) {
+      throw new BadRequestException('Only local B01 and B02 invoices are enabled.');
+    }
+
+    const tenant = await tx.tenant.findUnique({
+      where: { id: tenantId },
+      select: { rnc: true },
+    });
+    if (
+      !tenant?.rnc?.trim() ||
+      (!validateDominicanRnc(tenant.rnc) && !validateDominicanCedula(tenant.rnc))
+    ) {
+      throw new BadRequestException(
+        'Configure a valid issuer RNC or Dominican ID before confirming fiscal details.',
+      );
+    }
+
+    const prefix = expectedLocalNcfPrefix(documentType);
+    const issuerTaxId = normalizeDominicanDocument(tenant.rnc);
+    const sequence = await tx.fiscalSequence.findFirst({
+      where: {
+        tenantId,
+        documentType,
+        prefix,
+        issuerTaxId,
+        status: {
+          in: [FiscalSequenceStatus.ACTIVE, FiscalSequenceStatus.INACTIVE],
+        },
+        nextNumber: { lte: tx.fiscalSequence.fields.endNumber },
+        OR: [{ validUntil: null }, { validUntil: { gte: currentBusinessDate() } }],
+      },
+      select: { id: true },
+    });
+
+    if (!sequence) {
+      throw new BadRequestException(
+        `No usable ${prefix} sequence is configured. Register the DGII-authorized range before confirming this invoice type.`,
+      );
+    }
+  }
+
   async refreshStatuses(tenantId: string) {
     await this.prisma.$transaction([
       this.prisma.fiscalSequence.updateMany({
