@@ -98,11 +98,9 @@ export function PosPaymentPanel({
   const customerName = getOrderFiscalName(order);
   const persistedIdentity = getPersistedFiscalIdentity(order);
   const normalizedDraftDocumentNumber = normalizeDominicanDocument(draftDocumentNumber);
-  const usesApprovedCreditCustomer = Boolean(creditSale && order?.customerId);
   const inlineIdentityRequired =
-    !usesApprovedCreditCustomer &&
-    (draftPurpose === 'FISCAL_CREDIT' ||
-      (draftFiscalDocumentType === 'CONSUMER_02' && totals.subtotal >= 250_000));
+    draftPurpose === 'FISCAL_CREDIT' ||
+    (draftFiscalDocumentType === 'CONSUMER_02' && totals.subtotal >= 250_000);
   const fiscalNameMissing = inlineIdentityRequired && !customerName;
   const fiscalDocumentInvalid =
     inlineIdentityRequired &&
@@ -320,10 +318,6 @@ export function PosPaymentPanel({
                 Al confirmar, RIVNU comprobará que exista una secuencia {fiscalDocument.code}{' '}
                 disponible. El NCF se reservará solo al facturar.
               </p>
-            </div>
-          ) : usesApprovedCreditCustomer && draftPurpose === 'FISCAL_CREDIT' ? (
-            <div className="rounded-md border border-sky-200 bg-sky-50 px-3 py-2 text-sm text-sky-950">
-              Esta venta fiada utilizará el nombre y el documento fiscal del cliente aprobado.
             </div>
           ) : null}
 

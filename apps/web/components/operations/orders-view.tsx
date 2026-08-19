@@ -23,7 +23,6 @@ import {
   type Product,
   type CreditTermOption,
   type Customer,
-  type FiscalDocumentPurpose,
   type InitialPaymentOption,
   type SalePaymentMode,
   type SalesOrder,
@@ -75,55 +74,6 @@ const specialCustomerLabels = [
   'Consumidor final (descuento 10%)',
   'Consumidor final (cliente preferencial 18%)',
 ];
-
-function hasValidFiscalCreditIdentity(customer?: Customer) {
-  if (!customer?.documentNumber) {
-    return false;
-  }
-
-  if (customer.documentType === 'RNC') {
-    return validateDominicanRnc(customer.documentNumber);
-  }
-
-  if (customer.documentType === 'CEDULA') {
-    return validateDominicanCedula(customer.documentNumber);
-  }
-
-  return false;
-}
-
-function hasReportableConsumerIdentity(customer?: Customer) {
-  if (!customer?.documentNumber?.trim()) {
-    return false;
-  }
-
-  return hasValidFiscalCreditIdentity(customer) || customer.documentType === 'PASSPORT';
-}
-
-function getOrderFiscalPurpose(order: SalesOrder): FiscalDocumentPurpose {
-  if (order.fiscalPurpose) {
-    return order.fiscalPurpose;
-  }
-
-  return order.fiscalDocumentTypeSnapshot === 'FISCAL_CREDIT_01' ||
-    order.fiscalDocumentTypeSnapshot === 'FISCAL_CREDIT_ELECTRONIC_31'
-    ? 'FISCAL_CREDIT'
-    : 'CONSUMER';
-}
-
-function getOrderFiscalLabel(order: SalesOrder) {
-  const labels: Partial<Record<SalesOrder['fiscalDocumentTypeSnapshot'], string>> = {
-    CONSUMER_02: 'Consumo · B02',
-    FISCAL_CREDIT_01: 'Crédito fiscal · B01',
-    CONSUMER_ELECTRONIC_32: 'Consumo · E32',
-    FISCAL_CREDIT_ELECTRONIC_31: 'Crédito fiscal · E31',
-  };
-
-  return (
-    labels[order.fiscalDocumentTypeSnapshot] ??
-    (getOrderFiscalPurpose(order) === 'FISCAL_CREDIT' ? 'Crédito fiscal · B01' : 'Consumo · B02')
-  );
-}
 
 function getPriceLevelDiscountRate(priceLevel: SalesOrderPriceLevel) {
   if (priceLevel === 'DISCOUNT_10') {
@@ -227,7 +177,6 @@ export function OrdersView() {
   const [customerId, setCustomerId] = useState('');
   const [priceLevel, setPriceLevel] = useState<SalesOrderPriceLevel>('REGULAR');
   const [paymentMode, setPaymentMode] = useState<SalePaymentMode>('CASH');
-  const [fiscalPurpose, setFiscalPurpose] = useState<FiscalDocumentPurpose>('CONSUMER');
   const [initialPaymentOption, setInitialPaymentOption] =
     useState<InitialPaymentOption>('PERCENT_30');
   const [creditTermOption, setCreditTermOption] = useState<CreditTermOption>('CUSTOMER_DEFAULT');
@@ -333,7 +282,6 @@ export function OrdersView() {
         setCustomerId(order.customerId || getSpecialCustomerValue(order.priceLevel));
         setPriceLevel(order.priceLevel ?? 'REGULAR');
         setPaymentMode(order.paymentMode ?? 'CASH');
-        setFiscalPurpose(getOrderFiscalPurpose(order));
         setInitialPaymentOption(order.initialPaymentOption ?? 'PERCENT_30');
         setCreditTermOption(order.creditTermOption ?? 'CUSTOMER_DEFAULT');
         setCustomDueDate(
@@ -393,7 +341,6 @@ export function OrdersView() {
   const selectedCustomer = activeCustomers.find(
     (customer) => customer.id === getRegisteredCustomerId(customerId),
   );
-  const fiscalCreditIdentityAvailable = hasValidFiscalCreditIdentity(selectedCustomer);
   const normalizedCustomerSearch = normalizeCustomerSearch(clientName);
   const customerSearchResults = useMemo(() => {
     const matches = normalizedCustomerSearch
@@ -459,8 +406,6 @@ export function OrdersView() {
       total: subtotal + tax,
     };
   }, [cart]);
-  const consumerIdentityRequired = fiscalPurpose === 'CONSUMER' && totals.subtotal >= 250_000;
-  const consumerIdentityAvailable = hasReportableConsumerIdentity(selectedCustomer);
   const initialPaymentRate =
     initialPaymentOption === 'PERCENT_30'
       ? 0.3
@@ -531,22 +476,6 @@ export function OrdersView() {
         }
       }
 
-      if (
-        fiscalPurpose === 'FISCAL_CREDIT' &&
-        paymentMode === 'CREDIT' &&
-        !hasValidFiscalCreditIdentity(selectedCustomer)
-      ) {
-        throw new Error(
-          'Una venta fiada con crédito fiscal requiere que el cliente aprobado tenga RNC o cédula válida.',
-        );
-      }
-
-      if (consumerIdentityRequired && paymentMode === 'CREDIT' && !consumerIdentityAvailable) {
-        throw new Error(
-          'Esta venta fiada requiere que el cliente aprobado tenga identificación válida.',
-        );
-      }
-
       if (destination === 'QUOTATION') {
         const normalizedDocument = normalizeDominicanDocument(quotationDocumentNumber);
         const isValidDocument = normalizedDocument
@@ -568,7 +497,6 @@ export function OrdersView() {
         customerId: getRegisteredCustomerId(customerId) || undefined,
         priceLevel,
         paymentMode,
-        fiscalPurpose,
         initialPaymentOption: paymentMode === 'CREDIT' ? initialPaymentOption : undefined,
         creditTermOption: paymentMode === 'CREDIT' ? creditTermOption : undefined,
         customDueDate:
@@ -612,7 +540,6 @@ export function OrdersView() {
       setCustomerId('');
       setPriceLevel('REGULAR');
       setPaymentMode(cashierCreditOnly ? 'CREDIT' : 'CASH');
-      setFiscalPurpose('CONSUMER');
       setInitialPaymentOption('PERCENT_30');
       setCreditTermOption('CUSTOMER_DEFAULT');
       setCustomDueDate('');
@@ -1081,7 +1008,6 @@ export function OrdersView() {
                       setCustomerId('');
                       setPriceLevel('REGULAR');
                       setPaymentMode(cashierCreditOnly ? 'CREDIT' : 'CASH');
-                      setFiscalPurpose('CONSUMER');
                       setInitialPaymentOption('PERCENT_30');
                       setCreditTermOption('CUSTOMER_DEFAULT');
                       setCustomDueDate('');
@@ -1155,69 +1081,6 @@ export function OrdersView() {
                       ? 'Como cajero puedes crear solicitudes fiadas; el administrador deberá aprobarlas.'
                       : 'La modalidad se fija al crear la orden y no se podrá cambiar al llegar a caja.'}
                   </p>
-                </div>
-
-                <div className="space-y-2">
-                  <Label>Tipo de comprobante</Label>
-                  <div className="grid gap-2 sm:grid-cols-2">
-                    <button
-                      type="button"
-                      aria-pressed={fiscalPurpose === 'CONSUMER'}
-                      onClick={() => setFiscalPurpose('CONSUMER')}
-                      className={cn(
-                        'rounded-lg border px-3 py-3 text-left transition-colors',
-                        fiscalPurpose === 'CONSUMER'
-                          ? 'border-[#f36c10] bg-[#f36c10]/10 ring-1 ring-[#f36c10]/20'
-                          : 'border-zinc-200 bg-white hover:bg-zinc-50',
-                      )}
-                    >
-                      <span className="block text-sm font-semibold">Consumo</span>
-                      <span className="mt-1 block text-xs text-muted-foreground">
-                        Predeterminado · B02 local; E32 cuando la emisión electrónica esté
-                        certificada.
-                      </span>
-                    </button>
-                    <button
-                      type="button"
-                      aria-pressed={fiscalPurpose === 'FISCAL_CREDIT'}
-                      onClick={() => setFiscalPurpose('FISCAL_CREDIT')}
-                      className={cn(
-                        'rounded-lg border px-3 py-3 text-left transition-colors',
-                        fiscalPurpose === 'FISCAL_CREDIT'
-                          ? 'border-[#f36c10] bg-[#f36c10]/10 ring-1 ring-[#f36c10]/20'
-                          : 'border-zinc-200 bg-white hover:bg-zinc-50',
-                      )}
-                    >
-                      <span className="block text-sm font-semibold">Crédito fiscal</span>
-                      <span className="mt-1 block text-xs text-muted-foreground">
-                        B01 local; E31 cuando esté certificada. Requiere RNC o cédula válida.
-                      </span>
-                    </button>
-                  </div>
-                  {fiscalPurpose === 'FISCAL_CREDIT' && paymentMode === 'CASH' ? (
-                    <p className="rounded-md border border-sky-200 bg-sky-50 px-3 py-2 text-xs text-sky-950">
-                      El nombre se conservará en esta orden. El cajero completará el RNC o la cédula
-                      antes de facturar, sin registrar este comprador en el módulo Clientes.
-                    </p>
-                  ) : fiscalPurpose === 'FISCAL_CREDIT' && !fiscalCreditIdentityAvailable ? (
-                    <p className="rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-900">
-                      Para una venta fiada B01, el cliente aprobado debe tener RNC o cédula válida.
-                    </p>
-                  ) : consumerIdentityRequired && paymentMode === 'CASH' ? (
-                    <p className="rounded-md border border-sky-200 bg-sky-50 px-3 py-2 text-xs text-sky-950">
-                      Por alcanzar RD$250,000 antes de ITBIS, el cajero completará la identificación
-                      antes de emitir la B02.
-                    </p>
-                  ) : consumerIdentityRequired && !consumerIdentityAvailable ? (
-                    <p className="rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-900">
-                      Esta venta fiada requiere que el cliente aprobado tenga identificación válida.
-                    </p>
-                  ) : (
-                    <p className="text-xs text-muted-foreground">
-                      La modalidad de pago y el propósito fiscal son independientes: una venta fiada
-                      también puede ser de consumo.
-                    </p>
-                  )}
                 </div>
 
                 {destination === 'QUOTATION' ? (
@@ -1648,16 +1511,7 @@ export function OrdersView() {
                 <Button
                   type="submit"
                   className="h-14 w-full bg-[#f36c10] text-base text-white hover:bg-[#d85f0e]"
-                  disabled={
-                    !cart.length ||
-                    createOrderMutation.isPending ||
-                    (paymentMode === 'CREDIT' &&
-                      fiscalPurpose === 'FISCAL_CREDIT' &&
-                      !fiscalCreditIdentityAvailable) ||
-                    (paymentMode === 'CREDIT' &&
-                      consumerIdentityRequired &&
-                      !consumerIdentityAvailable)
-                  }
+                  disabled={!cart.length || createOrderMutation.isPending}
                 >
                   {editOrderId ? (
                     <>
@@ -1823,7 +1677,6 @@ function PendingOrdersPanel({
                             : 'Fiado'}
                       </Badge>
                     ) : null}
-                    <Badge variant="outline">{getOrderFiscalLabel(order)}</Badge>
                     {order.sentToCashierAt ? (
                       <Badge variant={getWaitingVariant(order)}>
                         {getWaitingMinutes(order)} min
@@ -1925,7 +1778,6 @@ function QuotationsPanel({
                     {order.paymentMode === 'CREDIT' ? (
                       <Badge variant="outline">Cotización fiada</Badge>
                     ) : null}
-                    <Badge variant="outline">{getOrderFiscalLabel(order)}</Badge>
                   </div>
                   <p className="mt-1 text-xs text-muted-foreground">
                     Cliente: {getOrderClientLabel(order)}

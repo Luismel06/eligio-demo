@@ -42,7 +42,6 @@ import {
 } from '../../common/utils/dominican-documents';
 import {
   buildInlineFiscalCustomerSnapshot,
-  buildFiscalCustomerSnapshot,
   fiscalDocumentTypeMatchesPurpose,
   isElectronicFiscalDocumentType,
   isFiscalCreditDocumentType,
@@ -207,11 +206,6 @@ export class PosService {
             'La aprobación de crédito no coincide con el cliente de la orden.',
           );
         }
-        if (hasInlineDocumentType) {
-          throw new BadRequestException(
-            'Una venta fiada debe conservar los datos fiscales del cliente aprobado.',
-          );
-        }
       }
 
       const customer = order.customerId
@@ -232,7 +226,7 @@ export class PosService {
       if (hasInlineDocumentType && !inlineCustomerSnapshot) {
         if (!order.clientName?.trim()) {
           throw new BadRequestException(
-            'La orden debe tener el nombre del cliente antes de seleccionar crédito fiscal.',
+            'La orden debe tener el nombre del cliente antes de confirmar los datos fiscales.',
           );
         }
         throw new BadRequestException(
@@ -252,7 +246,6 @@ export class PosService {
       const fiscalDetails = this.resolveOrderFiscalDetails(
         dto.fiscalPurpose,
         tenantFiscalSettings.fiscalIssuanceMode,
-        customer,
         inlineCustomerSnapshot,
         order.subtotal,
       );
@@ -1196,34 +1189,19 @@ export class PosService {
   private resolveOrderFiscalDetails(
     purpose: FiscalDocumentPurpose,
     issuanceMode: Parameters<typeof resolveFiscalDocumentType>[1],
-    customer: {
-      id: string;
-      name: string;
-      documentType: DocumentType;
-      documentNumber: string | null;
-      status: CustomerStatus;
-    } | null,
     inlineCustomerSnapshot: ReturnType<typeof buildInlineFiscalCustomerSnapshot>,
     subtotalBeforeTax: Prisma.Decimal,
   ) {
     const documentType = resolveFiscalDocumentType(purpose, issuanceMode);
 
     if (purpose === FiscalDocumentPurpose.FISCAL_CREDIT) {
-      if (inlineCustomerSnapshot) {
-        return { documentType, customerSnapshot: inlineCustomerSnapshot };
-      }
-
-      const customerSnapshot =
-        customer?.status === CustomerStatus.ACTIVE
-          ? buildFiscalCustomerSnapshot(customer, false)
-          : null;
-      if (!customerSnapshot) {
+      if (!inlineCustomerSnapshot) {
         throw new BadRequestException(
-          'El crédito fiscal requiere un RNC o cédula válida para esta factura.',
+          'B01 requiere digitar un RNC o cédula válida en Caja para esta factura.',
         );
       }
 
-      return { documentType, customerSnapshot };
+      return { documentType, customerSnapshot: inlineCustomerSnapshot };
     }
 
     const requiresConsumerIdentity =
@@ -1235,19 +1213,9 @@ export class PosService {
       return { documentType, customerSnapshot: null };
     }
 
-    if (!customer || customer.status !== CustomerStatus.ACTIVE) {
-      throw new BadRequestException(
-        'Las facturas B02 de RD$250,000 o más antes de ITBIS requieren un cliente identificado.',
-      );
-    }
-    const customerSnapshot = buildFiscalCustomerSnapshot(customer, true);
-    if (!customerSnapshot) {
-      throw new BadRequestException(
-        'Las facturas B02 de RD$250,000 o más antes de ITBIS requieren un cliente identificado.',
-      );
-    }
-
-    return { documentType, customerSnapshot };
+    throw new BadRequestException(
+      'Las facturas B02 de RD$250,000 o más antes de ITBIS requieren digitar la identificación en Caja.',
+    );
   }
 
   private posOrderInclude() {

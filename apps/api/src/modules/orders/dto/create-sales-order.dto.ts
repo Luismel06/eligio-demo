@@ -53,6 +53,10 @@ export class CreateSalesOrderDto {
 
   @IsOptional()
   @IsEnum(FiscalDocumentPurpose)
+  /**
+   * @deprecated Accepted temporarily for rolling-client compatibility. The
+   * order service deliberately ignores it: Caja confirms the fiscal purpose.
+   */
   fiscalPurpose?: FiscalDocumentPurpose;
 
   @IsOptional()

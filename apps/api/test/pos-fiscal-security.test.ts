@@ -300,7 +300,7 @@ test('POS fiscal update looks up the persisted order customer inside the active 
   assert.equal(harness.calls.updates.length, 0);
 });
 
-test('POS fiscal update derives B01, snapshots identity, audits the change, and does not reserve NCF', async () => {
+test('POS fiscal update does not derive B01 identity from a registered Customer', async () => {
   const customer = {
     id: 'fiscal-customer',
     tenantId,
@@ -311,46 +311,22 @@ test('POS fiscal update derives B01, snapshots identity, audits the change, and 
   };
   const harness = createHarness({ customer, order: { customerId: customer.id } });
 
-  const updated = await harness.service.updateOrderFiscalDetails(
-    tenantId,
-    cashierUser(),
-    'order-1',
-    {
+  await assert.rejects(
+    harness.service.updateOrderFiscalDetails(tenantId, cashierUser(), 'order-1', {
       fiscalPurpose: FiscalDocumentPurpose.FISCAL_CREDIT,
       customerId: customer.id,
+    }),
+    (error: unknown) => {
+      assert.equal(error instanceof BadRequestException, true);
+      assert.match((error as BadRequestException).message, /digitar un RNC o cédula válida/i);
+      return true;
     },
   );
 
-  assert.equal(updated.fiscalPurpose, FiscalDocumentPurpose.FISCAL_CREDIT);
-  assert.equal(updated.fiscalDocumentTypeSnapshot, InvoiceDocumentType.FISCAL_CREDIT_01);
-  assert.deepEqual(harness.calls.availabilityChecks, [
-    {
-      tenantId,
-      documentType: InvoiceDocumentType.FISCAL_CREDIT_01,
-    },
-  ]);
+  assert.equal(harness.calls.customerQueries.length, 1);
+  assert.equal(harness.calls.updates.length, 0);
+  assert.equal(harness.calls.availabilityChecks.length, 0);
   assert.equal(harness.calls.reserveCalls(), 0);
-  assert.deepEqual(harness.calls.updates[0].fiscalCustomerSnapshot, {
-    id: customer.id,
-    name: customer.name,
-    documentType: DocumentType.RNC,
-    documentNumber: customer.documentNumber,
-  });
-  assert.equal(harness.calls.audits[0].action, 'POS_ORDER_FISCAL_DETAILS_UPDATED');
-  assert.deepEqual(harness.calls.audits[0].metadata, {
-    orderNumber: 'ORD-1',
-    cashSessionId,
-    previousFiscalPurpose: FiscalDocumentPurpose.CONSUMER,
-    fiscalPurpose: FiscalDocumentPurpose.FISCAL_CREDIT,
-    previousDocumentType: InvoiceDocumentType.CONSUMER_02,
-    documentType: InvoiceDocumentType.FISCAL_CREDIT_01,
-    previousCustomerId: customer.id,
-    customerId: customer.id,
-    fiscalIdentitySource: 'REGISTERED_CUSTOMER',
-    customerNameSource: 'CUSTOMER_RECORD',
-    customerDocumentType: DocumentType.RNC,
-    customerDocumentLast4: '0043',
-  });
 });
 
 test('POS fiscal update captures one-time B01 identity from the order without creating a Customer', async () => {
@@ -419,6 +395,49 @@ test('POS fiscal update preserves a recurrent cash customer while using independ
   });
 });
 
+test('POS permits anonymous B02 immediately below the RD$250,000 pre-ITBIS threshold', async () => {
+  const harness = createHarness({
+    order: { subtotal: new Prisma.Decimal('249999.99') },
+  });
+
+  const updated = await harness.service.updateOrderFiscalDetails(
+    tenantId,
+    cashierUser(),
+    'order-1',
+    { fiscalPurpose: FiscalDocumentPurpose.CONSUMER, customerId: null },
+  );
+
+  assert.equal(updated.fiscalPurpose, FiscalDocumentPurpose.CONSUMER);
+  assert.equal(updated.fiscalDocumentTypeSnapshot, InvoiceDocumentType.CONSUMER_02);
+  assert.equal(harness.calls.updates[0].fiscalCustomerSnapshot, Prisma.JsonNull);
+  assert.deepEqual(harness.calls.availabilityChecks, [
+    { tenantId, documentType: InvoiceDocumentType.CONSUMER_02 },
+  ]);
+  assert.equal(harness.calls.reserveCalls(), 0);
+});
+
+test('POS requires inline identity for B02 at the RD$250,000 pre-ITBIS threshold', async () => {
+  const harness = createHarness({
+    order: { subtotal: new Prisma.Decimal('250000.00') },
+  });
+
+  await assert.rejects(
+    harness.service.updateOrderFiscalDetails(tenantId, cashierUser(), 'order-1', {
+      fiscalPurpose: FiscalDocumentPurpose.CONSUMER,
+      customerId: null,
+    }),
+    (error: unknown) => {
+      assert.equal(error instanceof BadRequestException, true);
+      assert.match((error as BadRequestException).message, /RD\$250,000.*digitar/i);
+      return true;
+    },
+  );
+
+  assert.equal(harness.calls.updates.length, 0);
+  assert.equal(harness.calls.availabilityChecks.length, 0);
+  assert.equal(harness.calls.reserveCalls(), 0);
+});
+
 test('POS fiscal update requires the order name for a one-time B01 identity', async () => {
   const harness = createHarness({ order: { clientName: null } });
 
@@ -440,30 +459,50 @@ test('POS fiscal update requires the order name for a one-time B01 identity', as
   assert.equal(harness.calls.availabilityChecks.length, 0);
 });
 
-test('POS fiscal update does not allow inline identity to replace an approved credit customer', async () => {
+test('POS fiscal update keeps the approved credit debtor while using inline B01 identity', async () => {
+  const approvedCustomer = {
+    id: 'approved-customer',
+    tenantId,
+    name: 'Deudor guardado',
+    documentType: DocumentType.CONSUMER_FINAL,
+    documentNumber: null,
+    status: CustomerStatus.ACTIVE,
+  };
   const harness = createHarness({
+    customer: approvedCustomer,
     order: {
       paymentMode: SalePaymentMode.CREDIT,
-      customerId: 'approved-customer',
+      customerId: approvedCustomer.id,
       creditApproval: {
         status: CreditApprovalStatus.APPROVED,
-        customerId: 'approved-customer',
+        customerId: approvedCustomer.id,
       },
     },
   });
 
-  await assert.rejects(
-    harness.service.updateOrderFiscalDetails(tenantId, cashierUser(), 'order-1', {
+  const updated = await harness.service.updateOrderFiscalDetails(
+    tenantId,
+    cashierUser(),
+    'order-1',
+    {
       fiscalPurpose: FiscalDocumentPurpose.FISCAL_CREDIT,
-      customerId: 'approved-customer',
+      customerId: approvedCustomer.id,
       documentType: DocumentType.RNC,
       documentNumber: '101850043',
-    }),
-    BadRequestException,
+    },
   );
 
-  assert.equal(harness.calls.updates.length, 0);
-  assert.equal(harness.calls.customerQueries.length, 0);
+  assert.equal(updated.customerId, approvedCustomer.id);
+  assert.equal(Object.hasOwn(harness.calls.updates[0], 'customerId'), false);
+  assert.deepEqual(harness.calls.updates[0].fiscalCustomerSnapshot, {
+    id: null,
+    name: 'Cliente Ocasional',
+    documentType: DocumentType.RNC,
+    documentNumber: '101850043',
+  });
+  assert.equal(harness.calls.audits[0].metadata.fiscalIdentitySource, 'ORDER_INLINE');
+  assert.equal(harness.calls.audits[0].metadata.customerNameSource, 'SALES_ORDER_CLIENT_NAME');
+  assert.equal(harness.calls.reserveCalls(), 0);
 });
 
 test('POS fiscal update rejects an invalid B01 identity before checking or consuming a sequence', async () => {
@@ -483,6 +522,8 @@ test('POS fiscal update rejects an invalid B01 identity before checking or consu
     harness.service.updateOrderFiscalDetails(tenantId, cashierUser(), 'order-1', {
       fiscalPurpose: FiscalDocumentPurpose.FISCAL_CREDIT,
       customerId: 'invalid-customer',
+      documentType: DocumentType.RNC,
+      documentNumber: '123456789',
     }),
     BadRequestException,
   );

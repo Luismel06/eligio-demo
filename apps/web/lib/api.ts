@@ -684,7 +684,7 @@ export type CreateSalesOrderPayload = {
   customerId?: string;
   priceLevel?: SalesOrderPriceLevel;
   paymentMode?: SalePaymentMode;
-  fiscalPurpose: FiscalDocumentPurpose;
+  fiscalPurpose?: FiscalDocumentPurpose;
   initialPaymentOption?: InitialPaymentOption;
   creditTermOption?: CreditTermOption;
   customDueDate?: string;
