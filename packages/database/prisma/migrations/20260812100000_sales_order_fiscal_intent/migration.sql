@@ -1,3 +1,5 @@
+BEGIN;
+
 CREATE TYPE "FiscalDocumentPurpose" AS ENUM ('CONSUMER', 'FISCAL_CREDIT');
 CREATE TYPE "FiscalIssuanceMode" AS ENUM ('LOCAL_NCF', 'ELECTRONIC_ECF');
 
@@ -125,3 +127,5 @@ ALTER TABLE "SalesOrder"
 
 CREATE INDEX "SalesOrder_tenantId_fiscalDocumentTypeSnapshot_status_idx"
   ON "SalesOrder"("tenantId", "fiscalDocumentTypeSnapshot", "status");
+
+COMMIT;
