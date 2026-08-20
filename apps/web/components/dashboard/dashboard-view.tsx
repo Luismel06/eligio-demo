@@ -260,7 +260,10 @@ export function DashboardView() {
               <div className="min-w-0">
                 <p className="capitalize font-medium text-foreground">{dateLabel}</p>
                 <p className="text-xs text-muted-foreground">
-                  Actualizado {summaryQuery.dataUpdatedAt ? formatDateTime(new Date(summaryQuery.dataUpdatedAt)) : 'ahora'}
+                  Actualizado{' '}
+                  {summaryQuery.dataUpdatedAt
+                    ? formatDateTime(new Date(summaryQuery.dataUpdatedAt))
+                    : 'ahora'}
                 </p>
               </div>
             </div>
@@ -278,7 +281,10 @@ export function DashboardView() {
         </div>
       </section>
 
-      <section aria-label="Indicadores principales" className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+      <section
+        aria-label="Indicadores principales"
+        className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4"
+      >
         <MetricCard
           label="Cobrado neto del mes"
           value={formatCurrency(summary.netSalesMonth)}
@@ -292,7 +298,11 @@ export function DashboardView() {
         <MetricCard
           label="Saldo por cobrar"
           value={formatCurrency(accounting.receivables.outstandingBalance)}
-          detail={buildDueDetail(accounting.receivables.overdueCount, accounting.receivables.overdueBalance, 'vencida')}
+          detail={buildDueDetail(
+            accounting.receivables.overdueCount,
+            accounting.receivables.overdueBalance,
+            'vencida',
+          )}
           icon={BadgeDollarSign}
           href="/receivables"
           session={session}
@@ -302,7 +312,11 @@ export function DashboardView() {
         <MetricCard
           label="Saldo por pagar"
           value={formatCurrency(accounting.payables.outstandingBalance)}
-          detail={buildDueDetail(accounting.payables.overdueCount, accounting.payables.overdueBalance, 'vencida')}
+          detail={buildDueDetail(
+            accounting.payables.overdueCount,
+            accounting.payables.overdueBalance,
+            'vencida',
+          )}
           icon={Wallet}
           href="/payables"
           session={session}
@@ -347,12 +361,19 @@ export function DashboardView() {
                   href={action.href}
                   className="group flex min-w-0 items-center gap-3 rounded-lg border border-border bg-card px-3 py-3 shadow-sm transition hover:-translate-y-px hover:border-primary/30 hover:shadow-md"
                 >
-                  <span className={cn('flex h-10 w-10 shrink-0 items-center justify-center rounded-lg', action.tone)}>
+                  <span
+                    className={cn(
+                      'flex h-10 w-10 shrink-0 items-center justify-center rounded-lg',
+                      action.tone,
+                    )}
+                  >
                     <Icon className="h-5 w-5" />
                   </span>
                   <span className="min-w-0 flex-1">
                     <span className="block truncate text-sm font-semibold">{action.label}</span>
-                    <span className="block truncate text-xs text-muted-foreground">{action.description}</span>
+                    <span className="block truncate text-xs text-muted-foreground">
+                      {action.description}
+                    </span>
                   </span>
                   <ArrowRight className="h-4 w-4 shrink-0 text-muted-foreground transition group-hover:translate-x-0.5 group-hover:text-primary" />
                 </Link>
@@ -495,7 +516,9 @@ function SessionRequiredCard() {
     <Card>
       <CardHeader>
         <CardTitle>Sesión requerida</CardTitle>
-        <CardDescription>Inicia sesión para consultar los indicadores protegidos de tu empresa.</CardDescription>
+        <CardDescription>
+          Inicia sesión para consultar los indicadores protegidos de tu empresa.
+        </CardDescription>
       </CardHeader>
       <CardContent>
         <Button asChild>
@@ -512,7 +535,8 @@ function DashboardUnavailableCard() {
       <CardHeader>
         <CardTitle>Panel no disponible</CardTitle>
         <CardDescription>
-          No pudimos cargar los datos del panel. Revisa que el API esté corriendo y que tu sesión tenga acceso al tenant.
+          No pudimos cargar los datos del panel. Revisa que el API esté corriendo y que tu sesión
+          tenga acceso al tenant.
         </CardDescription>
       </CardHeader>
     </Card>
@@ -551,14 +575,29 @@ function MetricCard({
     <CardContent className="flex min-w-0 items-start justify-between gap-3 p-4 sm:p-5">
       <div className="min-w-0">
         <p className="text-sm font-medium text-muted-foreground">{label}</p>
-        <p className={cn('mt-2 truncate text-xl font-semibold tracking-tight sm:text-2xl', negative && 'text-danger')}>
+        <p
+          className={cn(
+            'mt-2 truncate text-xl font-semibold tracking-tight sm:text-2xl',
+            negative && 'text-danger',
+          )}
+        >
           {value}
         </p>
-        <p className={cn('mt-1.5 truncate text-xs text-muted-foreground', detailDanger && 'font-medium text-danger')}>
+        <p
+          className={cn(
+            'mt-1.5 truncate text-xs text-muted-foreground',
+            detailDanger && 'font-medium text-danger',
+          )}
+        >
           {detail}
         </p>
       </div>
-      <span className={cn('flex h-11 w-11 shrink-0 items-center justify-center rounded-lg', tones[tone])}>
+      <span
+        className={cn(
+          'flex h-11 w-11 shrink-0 items-center justify-center rounded-lg',
+          tones[tone],
+        )}
+      >
         <Icon className="h-5 w-5" />
       </span>
     </CardContent>
@@ -582,19 +621,28 @@ function SalesChart({ summary }: { summary: DashboardSummary }) {
     <Card className="rounded-xl">
       <CardHeader className="flex-row items-start justify-between gap-4">
         <div>
-          <p className="text-xs font-semibold uppercase tracking-[0.16em] text-accent">Rendimiento</p>
+          <p className="text-xs font-semibold uppercase tracking-[0.16em] text-accent">
+            Rendimiento
+          </p>
           <CardTitle className="mt-2">Cobros netos</CardTitle>
-          <CardDescription className="mt-1">Últimos seis meses, después de devoluciones completadas.</CardDescription>
+          <CardDescription className="mt-1">
+            Últimos seis meses, después de devoluciones completadas.
+          </CardDescription>
         </div>
         <div className="hidden rounded-lg bg-success/10 px-3 py-2 text-right sm:block">
           <p className="text-xs text-success">Mes actual</p>
-          <p className="text-sm font-semibold text-success">{formatCurrency(summary.netSalesMonth)}</p>
+          <p className="text-sm font-semibold text-success">
+            {formatCurrency(summary.netSalesMonth)}
+          </p>
         </div>
       </CardHeader>
       <CardContent>
         <div className="h-56 w-full sm:h-72">
           <ResponsiveContainer width="100%" height="100%">
-            <AreaChart data={summary.salesSeries} margin={{ left: -12, right: 8, top: 8, bottom: 0 }}>
+            <AreaChart
+              data={summary.salesSeries}
+              margin={{ left: -12, right: 8, top: 8, bottom: 0 }}
+            >
               <defs>
                 <linearGradient id="dashboard-sales-area" x1="0" y1="0" x2="0" y2="1">
                   <stop offset="5%" stopColor="hsl(var(--accent))" stopOpacity={0.26} />
@@ -658,11 +706,19 @@ function AttentionCard({
     <Card className="rounded-xl">
       <CardHeader className="flex-row items-start justify-between gap-4">
         <div>
-          <p className="text-xs font-semibold uppercase tracking-[0.16em] text-warning">Prioridades</p>
+          <p className="text-xs font-semibold uppercase tracking-[0.16em] text-warning">
+            Prioridades
+          </p>
           <CardTitle className="mt-2">Atención hoy</CardTitle>
-          <CardDescription className="mt-1">Tareas que pueden afectar cobros, compras o continuidad fiscal.</CardDescription>
+          <CardDescription className="mt-1">
+            Tareas que pueden afectar cobros, compras o continuidad fiscal.
+          </CardDescription>
         </div>
-        {items.length ? <Badge variant="warning">{items.length}</Badge> : <Badge variant="success">Al día</Badge>}
+        {items.length ? (
+          <Badge variant="warning">{items.length}</Badge>
+        ) : (
+          <Badge variant="success">Al día</Badge>
+        )}
       </CardHeader>
       <CardContent>
         {items.length ? (
@@ -677,7 +733,9 @@ function AttentionCard({
               <CheckCircle2 className="h-5 w-5" />
             </span>
             <p className="mt-3 text-sm font-semibold">No hay pendientes críticos</p>
-            <p className="mt-1 text-xs leading-5 text-muted-foreground">La cartera, compras y alertas principales están bajo control.</p>
+            <p className="mt-1 text-xs leading-5 text-muted-foreground">
+              La cartera, compras y alertas principales están bajo control.
+            </p>
           </div>
         )}
       </CardContent>
@@ -711,7 +769,9 @@ function AttentionRow({
         <p className="truncate text-xs text-muted-foreground">{item.detail}</p>
       </div>
       <span className="shrink-0 text-lg font-semibold">{item.value}</span>
-      {canAccessPath(session, item.href) ? <ArrowRight className="h-4 w-4 shrink-0 text-muted-foreground" /> : null}
+      {canAccessPath(session, item.href) ? (
+        <ArrowRight className="h-4 w-4 shrink-0 text-muted-foreground" />
+      ) : null}
     </div>
   );
 
@@ -772,7 +832,12 @@ function QueueCard({
           <CardDescription className="mt-2 leading-5">{description}</CardDescription>
         </div>
         {canAccessPath(session, href) ? (
-          <Button asChild variant="ghost" size="sm" className="-mr-2 shrink-0 text-accent hover:text-accent">
+          <Button
+            asChild
+            variant="ghost"
+            size="sm"
+            className="-mr-2 shrink-0 text-accent hover:text-accent"
+          >
             <Link href={href}>
               Ver todo
               <ArrowRight className="h-3.5 w-3.5" />
@@ -810,28 +875,45 @@ function QueueItem({
         : 'bg-muted text-foreground';
   const content = (
     <div className="flex min-w-0 items-center gap-3 rounded-lg px-2 py-2 transition hover:bg-muted/65">
-      <span className={cn('flex h-7 min-w-7 items-center justify-center rounded-md px-1 text-xs font-semibold', tone)}>
+      <span
+        className={cn(
+          'flex h-7 min-w-7 items-center justify-center rounded-md px-1 text-xs font-semibold',
+          tone,
+        )}
+      >
         {item.value}
       </span>
       <div className="min-w-0 flex-1">
         <p className="truncate text-sm font-medium">{item.label}</p>
         <p className="truncate text-xs text-muted-foreground">{item.detail}</p>
       </div>
-      {canAccessPath(session, item.href) ? <ArrowRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" /> : null}
+      {canAccessPath(session, item.href) ? (
+        <ArrowRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+      ) : null}
     </div>
   );
 
   return canAccessPath(session, item.href) ? <Link href={item.href}>{content}</Link> : content;
 }
 
-function ActivityCard({ activity, session }: { activity: ActivityFeedItem[]; session: AuthSession }) {
+function ActivityCard({
+  activity,
+  session,
+}: {
+  activity: ActivityFeedItem[];
+  session: AuthSession;
+}) {
   return (
     <Card className="rounded-xl">
       <CardHeader className="flex-row items-start justify-between gap-3">
         <div>
-          <p className="text-xs font-semibold uppercase tracking-[0.16em] text-accent">Trazabilidad</p>
+          <p className="text-xs font-semibold uppercase tracking-[0.16em] text-accent">
+            Trazabilidad
+          </p>
           <CardTitle className="mt-2">Actividad reciente</CardTitle>
-          <CardDescription className="mt-1">Compras, créditos, pagos y operación del equipo.</CardDescription>
+          <CardDescription className="mt-1">
+            Compras, créditos, pagos y operación del equipo.
+          </CardDescription>
         </div>
         {canAccessPath(session, '/operations/logs') ? (
           <Button asChild variant="ghost" size="sm" className="-mr-2 text-accent hover:text-accent">
@@ -845,19 +927,30 @@ function ActivityCard({ activity, session }: { activity: ActivityFeedItem[]; ses
             {activity.map((item) => {
               const content = (
                 <div className="flex min-w-0 items-start gap-3 py-3 first:pt-0 last:pb-0">
-                  <span className={cn('mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full', item.tone)}>
+                  <span
+                    className={cn(
+                      'mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full',
+                      item.tone,
+                    )}
+                  >
                     <item.icon className="h-4 w-4" />
                   </span>
                   <div className="min-w-0 flex-1">
                     <p className="truncate text-sm font-medium">{item.label}</p>
                     <p className="truncate text-xs text-muted-foreground">{item.description}</p>
                   </div>
-                  <p className="shrink-0 text-xs text-muted-foreground">{formatDateTime(item.createdAt)}</p>
+                  <p className="shrink-0 text-xs text-muted-foreground">
+                    {formatDateTime(item.createdAt)}
+                  </p>
                 </div>
               );
 
               return item.href && canAccessPath(session, item.href) ? (
-                <Link key={item.id} href={item.href} className="block rounded-md px-1 transition hover:bg-muted/55">
+                <Link
+                  key={item.id}
+                  href={item.href}
+                  className="block rounded-md px-1 transition hover:bg-muted/55"
+                >
                   {content}
                 </Link>
               ) : (
@@ -884,9 +977,13 @@ function RecentInvoicesCard({
     <Card className="rounded-xl">
       <CardHeader className="flex-row items-start justify-between gap-3">
         <div>
-          <p className="text-xs font-semibold uppercase tracking-[0.16em] text-accent">Documentos</p>
+          <p className="text-xs font-semibold uppercase tracking-[0.16em] text-accent">
+            Documentos
+          </p>
           <CardTitle className="mt-2">Facturas recientes</CardTitle>
-          <CardDescription className="mt-1">Las últimas ventas registradas en la empresa.</CardDescription>
+          <CardDescription className="mt-1">
+            Las últimas ventas registradas en la empresa.
+          </CardDescription>
         </div>
         {canAccessPath(session, '/invoices') ? (
           <Button asChild variant="ghost" size="sm" className="-mr-2 text-accent hover:text-accent">
@@ -950,7 +1047,9 @@ function ProductPerformanceCard({
         <div>
           <p className="text-xs font-semibold uppercase tracking-[0.16em] text-accent">Productos</p>
           <CardTitle className="mt-2">Rendimiento del catálogo</CardTitle>
-          <CardDescription className="mt-1">Ranking histórico por cantidad facturada.</CardDescription>
+          <CardDescription className="mt-1">
+            Ranking histórico por cantidad facturada.
+          </CardDescription>
         </div>
         <Button asChild variant="ghost" size="sm" className="-mr-2 text-accent hover:text-accent">
           <Link href="/dashboard/productos-vendidos">Ver ranking</Link>
@@ -961,7 +1060,9 @@ function ProductPerformanceCard({
           title="Más vendidos"
           products={topSellingProducts}
           icon={TrendingUp}
-          emptyMessage={loading ? 'Calculando ventas...' : 'Aún no hay ventas para calcular este ranking.'}
+          emptyMessage={
+            loading ? 'Calculando ventas...' : 'Aún no hay ventas para calcular este ranking.'
+          }
         />
         <ProductList
           title="Menos vendidos"
@@ -1009,26 +1110,38 @@ function ProductList({
                 </span>
               </span>
               <span className="shrink-0 text-right">
-                <span className="block text-sm font-semibold">{formatQuantity(product.quantitySold)}</span>
-                <span className="block text-[11px] text-muted-foreground">{formatCurrency(product.grossAmount)}</span>
+                <span className="block text-sm font-semibold">
+                  {formatQuantity(product.quantitySold)}
+                </span>
+                <span className="block text-[11px] text-muted-foreground">
+                  {formatCurrency(product.grossAmount)}
+                </span>
               </span>
             </Link>
           ))}
         </div>
       ) : (
-        <p className="rounded-lg border border-dashed border-border px-3 py-4 text-sm leading-5 text-muted-foreground">{emptyMessage}</p>
+        <p className="rounded-lg border border-dashed border-border px-3 py-4 text-sm leading-5 text-muted-foreground">
+          {emptyMessage}
+        </p>
       )}
     </div>
   );
 }
 
-function ControlAlertsCard({ summary, session }: { summary: DashboardSummary; session: AuthSession }) {
+function ControlAlertsCard({
+  summary,
+  session,
+}: {
+  summary: DashboardSummary;
+  session: AuthSession;
+}) {
   const alerts = [
     {
       label: 'Productos bajo mínimo',
       value: summary.lowStockProducts,
       detail: `${summary.activeProducts} productos activos`,
-      href: '/products',
+      href: '/products?stock=LOW&status=ACTIVE',
       tone: summary.lowStockProducts ? 'danger' : 'success',
       icon: AlertTriangle,
     },
@@ -1055,7 +1168,9 @@ function ControlAlertsCard({ summary, session }: { summary: DashboardSummary; se
       <CardHeader>
         <p className="text-xs font-semibold uppercase tracking-[0.16em] text-accent">Control</p>
         <CardTitle className="mt-2">Alertas y seguimiento</CardTitle>
-        <CardDescription className="mt-1">Una lectura rápida de inventario, documentos fiscales y usuarios.</CardDescription>
+        <CardDescription className="mt-1">
+          Una lectura rápida de inventario, documentos fiscales y usuarios.
+        </CardDescription>
       </CardHeader>
       <CardContent className="space-y-2">
         {alerts.map((alert) => {
@@ -1070,7 +1185,9 @@ function ControlAlertsCard({ summary, session }: { summary: DashboardSummary; se
                   : 'bg-muted text-foreground';
           const content = (
             <div className="flex min-w-0 items-center gap-3 rounded-lg border border-border px-3 py-3 transition hover:border-primary/25 hover:bg-muted/45">
-              <span className={cn('flex h-9 w-9 shrink-0 items-center justify-center rounded-md', tone)}>
+              <span
+                className={cn('flex h-9 w-9 shrink-0 items-center justify-center rounded-md', tone)}
+              >
                 <Icon className="h-4 w-4" />
               </span>
               <div className="min-w-0 flex-1">
@@ -1078,7 +1195,9 @@ function ControlAlertsCard({ summary, session }: { summary: DashboardSummary; se
                 <p className="truncate text-xs text-muted-foreground">{alert.detail}</p>
               </div>
               <span className="text-lg font-semibold">{alert.value}</span>
-              {canAccessPath(session, alert.href) ? <ArrowRight className="h-4 w-4 shrink-0 text-muted-foreground" /> : null}
+              {canAccessPath(session, alert.href) ? (
+                <ArrowRight className="h-4 w-4 shrink-0 text-muted-foreground" />
+              ) : null}
             </div>
           );
 
@@ -1093,7 +1212,9 @@ function ControlAlertsCard({ summary, session }: { summary: DashboardSummary; se
 
         {summary.recentInventoryAlerts.length ? (
           <div className="pt-1">
-            <p className="mb-2 text-xs font-medium text-muted-foreground">Con menor disponibilidad</p>
+            <p className="mb-2 text-xs font-medium text-muted-foreground">
+              Con menor disponibilidad
+            </p>
             <div className="space-y-1">
               {summary.recentInventoryAlerts.slice(0, 3).map((product) => (
                 <Link
@@ -1103,7 +1224,8 @@ function ControlAlertsCard({ summary, session }: { summary: DashboardSummary; se
                 >
                   <span className="min-w-0 truncate">{product.name}</span>
                   <span className="shrink-0 text-xs font-semibold text-danger">
-                    {formatQuantity(Math.max(product.stock - product.reservedStock, 0))}/{formatQuantity(product.minStock)}
+                    {formatQuantity(Math.max(product.stock - product.reservedStock, 0))}/
+                    {formatQuantity(product.minStock)}
                   </span>
                 </Link>
               ))}
@@ -1171,17 +1293,21 @@ function getActivityIcon(entity: string): LucideIcon {
 }
 
 function getActivityTone(entity: string) {
-  if (entity === 'SupplierInvoice' || entity === 'SupplierInvoiceAttachment') return 'bg-violet-500/10 text-violet-700';
-  if (entity === 'SupplierPayment' || entity === 'Payment') return 'bg-orange-500/10 text-orange-700';
+  if (entity === 'SupplierInvoice' || entity === 'SupplierInvoiceAttachment')
+    return 'bg-violet-500/10 text-violet-700';
+  if (entity === 'SupplierPayment' || entity === 'Payment')
+    return 'bg-orange-500/10 text-orange-700';
   if (entity === 'CreditSaleApproval') return 'bg-rose-500/10 text-rose-700';
   if (entity === 'GoodsReceipt') return 'bg-cyan-500/10 text-cyan-700';
   if (entity === 'PurchaseOrder') return 'bg-sky-500/10 text-sky-700';
-  if (entity === 'CashSession' || entity === 'CashMovement') return 'bg-emerald-500/10 text-emerald-700';
+  if (entity === 'CashSession' || entity === 'CashMovement')
+    return 'bg-emerald-500/10 text-emerald-700';
   return 'bg-primary/8 text-primary';
 }
 
 function getAuditActivityHref(entity: string, action: string) {
-  if (entity === 'SupplierInvoice' || entity === 'SupplierInvoiceAttachment') return '/supplier-invoices';
+  if (entity === 'SupplierInvoice' || entity === 'SupplierInvoiceAttachment')
+    return '/supplier-invoices';
   if (entity === 'SupplierPayment') return '/payables';
   if (entity === 'CreditSaleApproval') return '/credit-approvals';
   if (entity === 'GoodsReceipt') return '/supplier-invoices';
@@ -1192,7 +1318,8 @@ function getAuditActivityHref(entity: string, action: string) {
 }
 
 function getEmployeeActivityHref(action: string, entity: string) {
-  if (entity === 'CashSession' || entity === 'CashMovement' || action.includes('CASH')) return '/cash/logs';
+  if (entity === 'CashSession' || entity === 'CashMovement' || action.includes('CASH'))
+    return '/cash/logs';
   if (entity === 'Product' || entity === 'InventoryMovement') return '/products';
   if (entity === 'ReturnRequest') return '/returns';
   if (entity === 'Invoice') return '/invoices';

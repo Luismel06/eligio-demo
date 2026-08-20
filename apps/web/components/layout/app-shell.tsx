@@ -104,7 +104,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         toast.warning('Debes cerrar la caja antes de salir.', {
           description: `${currentCashSession.cashRegister.name} sigue abierta con fondo inicial ${formatCurrency(Number(currentCashSession.openingAmount))}.`,
         });
-        router.push(canAccessPath(session, '/cash/sessions') ? '/cash/sessions' : getDefaultPathForSession(session));
+        router.push(
+          canAccessPath(session, '/cash/sessions')
+            ? '/cash/sessions'
+            : getDefaultPathForSession(session),
+        );
         return;
       }
     } catch (error) {
@@ -142,7 +146,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="min-h-screen bg-zinc-100">
-      <Sidebar collapsed={sidebarCollapsed} onToggle={() => setSidebarCollapsed((current) => !current)} />
+      <Sidebar
+        collapsed={sidebarCollapsed}
+        onToggle={() => setSidebarCollapsed((current) => !current)}
+      />
 
       <div
         className={cn(
@@ -207,10 +214,17 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 </div>
                 <div className="hidden sm:block">
                   <p className="text-sm font-medium">{session?.user.name ?? 'Ferreteria RIVNU'}</p>
-                  <p className="text-xs text-muted-foreground">{translateRole(session?.role) ?? 'Operacion'}</p>
+                  <p className="text-xs text-muted-foreground">
+                    {translateRole(session?.role) ?? 'Operacion'}
+                  </p>
                 </div>
               </div>
-              <Button variant="outline" size="icon" aria-label="Cerrar sesion" onClick={handleLogout}>
+              <Button
+                variant="outline"
+                size="icon"
+                aria-label="Cerrar sesion"
+                onClick={handleLogout}
+              >
                 <LogOut className="h-4 w-4" />
               </Button>
             </div>
@@ -266,7 +280,7 @@ function NotificationsPanel({
       label: 'Productos bajo stock',
       description: 'Productos en o por debajo de su mínimo.',
       value: summary?.lowStockProducts ?? 0,
-      href: '/products',
+      href: '/products?stock=LOW&status=ACTIVE',
       tone: 'danger',
     },
     {
@@ -520,8 +534,7 @@ function surfaceNewOperationalAlerts({
   }
 
   newAlerts.sort(
-    (left, right) =>
-      Number(right.severity === 'CRITICAL') - Number(left.severity === 'CRITICAL'),
+    (left, right) => Number(right.severity === 'CRITICAL') - Number(left.severity === 'CRITICAL'),
   );
 
   if (newAlerts.length === 1) {
@@ -530,7 +543,10 @@ function surfaceNewOperationalAlerts({
   }
 
   const critical = newAlerts.some((alert) => alert.severity === 'CRITICAL');
-  const listedAlerts = newAlerts.slice(0, 2).map((alert) => alert.title).join(' · ');
+  const listedAlerts = newAlerts
+    .slice(0, 2)
+    .map((alert) => alert.title)
+    .join(' · ');
   const remainingCount = newAlerts.length - 2;
   const description =
     remainingCount > 0 ? `${listedAlerts} · y ${remainingCount} más` : listedAlerts;
@@ -570,7 +586,7 @@ function buildPopupAlerts(summary: OperationalAlertsSummary, session: AuthSessio
       severity: 'WARNING',
       title: `${summary.lowStockProducts} ${summary.lowStockProducts === 1 ? 'producto bajo mínimo' : 'productos bajo mínimo'}`,
       description: 'Revisa el inventario para evitar faltantes.',
-      href: '/products',
+      href: '/products?stock=LOW&status=ACTIVE',
     });
   }
 
@@ -647,10 +663,7 @@ function readAlertTransitions(storageKey: string): Record<string, AlertSeverity>
   }
 }
 
-function writeAlertTransitions(
-  storageKey: string,
-  transitions: Record<string, AlertSeverity>,
-) {
+function writeAlertTransitions(storageKey: string, transitions: Record<string, AlertSeverity>) {
   try {
     window.localStorage.setItem(storageKey, JSON.stringify(transitions));
   } catch {

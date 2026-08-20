@@ -507,9 +507,24 @@ export class DashboardService {
       }),
     ]);
 
-    const lowStockProductsList = productsForStock.filter(
-      (product) => product.stock - product.reservedStock <= product.minStock,
-    );
+    const lowStockProductsList = productsForStock
+      .filter((product) => product.stock - product.reservedStock <= product.minStock)
+      .sort((left, right) => {
+        const leftAvailable = left.stock - left.reservedStock;
+        const rightAvailable = right.stock - right.reservedStock;
+        const leftOutOfStock = leftAvailable <= 0;
+        const rightOutOfStock = rightAvailable <= 0;
+
+        if (leftOutOfStock !== rightOutOfStock) {
+          return leftOutOfStock ? -1 : 1;
+        }
+
+        return (
+          leftAvailable - rightAvailable ||
+          right.minStock - left.minStock ||
+          left.name.localeCompare(right.name, 'es', { sensitivity: 'base' })
+        );
+      });
     const recentInventoryAlerts = lowStockProductsList.slice(0, 5);
     const grossSalesMonth = this.sumInvoicePaidAmount(invoicesForMonth);
     const grossSalesToday = this.sumInvoicePaidAmount(invoicesForToday);
@@ -881,7 +896,7 @@ export class DashboardService {
   }
 
   private fiscalSequenceAlertThreshold(authorizedCount: number) {
-    return Math.min(25, Math.max(1, Math.ceil(Math.max(authorizedCount, 1) * 0.2)));
+    return Math.floor(Math.max(authorizedCount, 0) * 0.2);
   }
 
   private buildSalesSeries(
