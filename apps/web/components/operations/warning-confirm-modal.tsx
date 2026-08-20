@@ -7,6 +7,7 @@ type WarningConfirmModalProps = {
   title: string;
   description: string;
   confirmLabel: string;
+  cancelLabel?: string;
   isPending?: boolean;
   onClose: () => void;
   onConfirm: () => void;
@@ -17,6 +18,7 @@ export function WarningConfirmModal({
   title,
   description,
   confirmLabel,
+  cancelLabel = 'Revisar monto',
   isPending = false,
   onClose,
   onConfirm,
@@ -28,7 +30,7 @@ export function WarningConfirmModal({
       description={description}
       tone="warning"
       confirmLabel={confirmLabel}
-      cancelLabel="Revisar monto"
+      cancelLabel={cancelLabel}
       isPending={isPending}
       onClose={onClose}
       onConfirm={onConfirm}

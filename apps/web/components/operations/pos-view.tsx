@@ -75,6 +75,11 @@ type BarcodeDetectorConstructor = new (options?: { formats?: string[] }) => Barc
 type WindowWithBarcodeDetector = Window &
   typeof globalThis & { BarcodeDetector?: BarcodeDetectorConstructor };
 
+type NonCashPaymentConfirmation = {
+  method: Extract<PosPaymentMethod, 'CARD' | 'TRANSFER'>;
+  amount: number;
+};
+
 function getOrderFiscalPurpose(order?: SalesOrder | null): FiscalDocumentPurpose {
   if (order?.fiscalPurpose) {
     return order.fiscalPurpose;
@@ -132,6 +137,9 @@ export function PosView() {
   const [message, setMessage] = useState<string | null>(null);
   const [loadedOrder, setLoadedOrder] = useState<SalesOrder | null>(null);
   const [zeroClosingWarningOpen, setZeroClosingWarningOpen] = useState(false);
+  const [paymentConfirmation, setPaymentConfirmation] =
+    useState<NonCashPaymentConfirmation | null>(null);
+  const paymentConfirmationSubmittingRef = useRef(false);
 
   const registersQuery = useQuery({
     queryKey: ['cash-registers', session?.tenantId],
@@ -376,6 +384,8 @@ export function PosView() {
       });
     },
     onSuccess: async (invoice) => {
+      paymentConfirmationSubmittingRef.current = false;
+      setPaymentConfirmation(null);
       setMessage(`Factura ${invoice.invoiceNumber} creada correctamente.`);
       setCart([]);
       setLoadedOrder(null);
@@ -393,6 +403,7 @@ export function PosView() {
       router.push(`/invoices/${invoice.id}/print?autoPrint=1`);
     },
     onError: (error) => {
+      paymentConfirmationSubmittingRef.current = false;
       setMessage(error instanceof Error ? error.message : 'No se pudo completar la venta.');
       toast.error(error instanceof Error ? error.message : 'No se pudo completar la venta.');
     },
@@ -532,6 +543,40 @@ export function PosView() {
     }
 
     setCart([]);
+  }
+
+  function requestCompleteSale() {
+    if (completeSaleMutation.isPending) {
+      return;
+    }
+
+    if (paymentMethod === 'CARD' || paymentMethod === 'TRANSFER') {
+      setPaymentConfirmation({
+        method: paymentMethod,
+        amount: totals.requiredPayment,
+      });
+      return;
+    }
+
+    completeSaleMutation.mutate();
+  }
+
+  function confirmNonCashPayment() {
+    if (!paymentConfirmation || paymentConfirmationSubmittingRef.current) {
+      return;
+    }
+
+    const paymentChanged =
+      paymentMethod !== paymentConfirmation.method ||
+      Math.abs(totals.requiredPayment - paymentConfirmation.amount) > 0.005;
+    if (paymentChanged) {
+      setPaymentConfirmation(null);
+      toast.warning('El método o el monto cambió. Revisa el cobro y confirma nuevamente.');
+      return;
+    }
+
+    paymentConfirmationSubmittingRef.current = true;
+    completeSaleMutation.mutate();
   }
 
   function requestCloseCashSession() {
@@ -808,7 +853,7 @@ export function PosView() {
                 onPaymentMethodChange={setPaymentMethod}
                 onAmountReceivedChange={setAmountReceived}
                 onFiscalOrderUpdated={updateLoadedOrderFiscalDetails}
-                onCompleteSale={() => completeSaleMutation.mutate()}
+                onCompleteSale={requestCompleteSale}
               />
             ) : null}
 
@@ -826,6 +871,23 @@ export function PosView() {
           </div>
         </section>
       )}
+
+      <WarningConfirmModal
+        open={Boolean(paymentConfirmation)}
+        title={`Confirmar cobro por ${
+          paymentConfirmation?.method === 'CARD' ? 'tarjeta' : 'transferencia'
+        }`}
+        description={`¿Confirmas que cobraste ${formatCurrency(
+          paymentConfirmation?.amount ?? 0,
+        )} por ${
+          paymentConfirmation?.method === 'CARD' ? 'tarjeta' : 'transferencia'
+        }? Al continuar se emitirá la factura y se asignará el NCF.`}
+        confirmLabel="Sí, facturar"
+        cancelLabel="No"
+        isPending={completeSaleMutation.isPending}
+        onClose={() => setPaymentConfirmation(null)}
+        onConfirm={confirmNonCashPayment}
+      />
 
       <WarningConfirmModal
         open={zeroClosingWarningOpen}
