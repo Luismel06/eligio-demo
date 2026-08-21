@@ -705,6 +705,25 @@ export function OrdersView() {
     }
   }
 
+  function toggleSpecialCustomerSelection(
+    nextCustomerId: typeof finalDiscountCustomerId | typeof finalPreferredCustomerId,
+  ) {
+    if (customerId !== nextCustomerId) {
+      handleCustomerSelection(nextCustomerId);
+      return;
+    }
+
+    setCustomerId('');
+    setPriceLevel('REGULAR');
+
+    // Drafts created by older versions could use the discount label as the
+    // customer name. Clear only that legacy placeholder; preserve any real
+    // name entered for the order when the discount is removed.
+    if (specialCustomerLabels.includes(clientName.trim())) {
+      setClientName('');
+    }
+  }
+
   function handleClientNameChange(nextClientName: string) {
     const registeredCustomerId = getRegisteredCustomerId(customerId);
     const currentCustomer = activeCustomers.find(
@@ -1334,7 +1353,8 @@ export function OrdersView() {
                         type="button"
                         size="sm"
                         variant={customerId === finalDiscountCustomerId ? 'default' : 'outline'}
-                        onClick={() => handleCustomerSelection(finalDiscountCustomerId)}
+                        aria-pressed={customerId === finalDiscountCustomerId}
+                        onClick={() => toggleSpecialCustomerSelection(finalDiscountCustomerId)}
                       >
                         Descuento 5%
                       </Button>
@@ -1342,11 +1362,15 @@ export function OrdersView() {
                         type="button"
                         size="sm"
                         variant={customerId === finalPreferredCustomerId ? 'default' : 'outline'}
-                        onClick={() => handleCustomerSelection(finalPreferredCustomerId)}
+                        aria-pressed={customerId === finalPreferredCustomerId}
+                        onClick={() => toggleSpecialCustomerSelection(finalPreferredCustomerId)}
                       >
                         Cliente preferencial 10%
                       </Button>
                     </div>
+                    <p className="text-xs text-muted-foreground">
+                      Pulsa nuevamente la opción activa para quitar el descuento.
+                    </p>
                   </div>
                 ) : null}
                 {priceLevel !== 'REGULAR' ? (
