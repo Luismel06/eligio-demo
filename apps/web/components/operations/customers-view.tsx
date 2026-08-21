@@ -23,6 +23,7 @@ import {
   deleteCustomer,
   getCustomers,
   type Customer,
+  type TaxIdentityOverrideResult,
   updateCustomer,
 } from '@/lib/api';
 import { getStatusVariant, translateDocumentType, translateStatus } from '@/lib/display-labels';
@@ -30,6 +31,14 @@ import { normalizeDominicanDocument, validateDominicanDocument } from '@/lib/dom
 import { formatDate } from '@/lib/utils';
 import { ModuleHeader } from './module-header';
 import { SessionRequired, useCurrentSession } from './session-required';
+import { TaxIdentityOverrideDialog } from './tax-identity-override-dialog';
+import {
+  hasStoredTaxIdentityVerification,
+  hasVerifiedTaxIdentity,
+  TaxIdentityVerification,
+  TaxIdentityVerificationBadge,
+  type TaxIdentityVerificationState,
+} from './tax-identity-verification';
 
 type CustomerFormState = {
   name: string;
@@ -64,12 +73,38 @@ export function CustomersView() {
   const [creditCustomer, setCreditCustomer] = useState<Customer | null>(null);
   const [formOpen, setFormOpen] = useState(false);
   const [form, setForm] = useState<CustomerFormState>(emptyCustomerForm);
+  const [taxIdentity, setTaxIdentity] = useState<TaxIdentityVerificationState | null>(null);
+  const [taxIdentityContextId, setTaxIdentityContextId] = useState('');
+  const [manualOverride, setManualOverride] = useState<TaxIdentityOverrideResult | null>(null);
+  const [overrideDialogOpen, setOverrideDialogOpen] = useState(false);
   const [creditForm, setCreditForm] = useState<CreditFormState>({
     creditEnabled: false,
     creditStatus: 'BLOCKED',
     creditLimit: '0',
     creditTermDays: '30',
   });
+  const fiscalDocumentType =
+    form.documentType === 'RNC' || form.documentType === 'CEDULA' ? form.documentType : null;
+  const unchangedStoredFiscalIdentity = Boolean(
+    fiscalDocumentType &&
+    editingCustomer?.documentType === fiscalDocumentType &&
+    normalizeDominicanDocument(editingCustomer.documentNumber ?? '') ===
+      normalizeDominicanDocument(form.documentNumber) &&
+    hasStoredTaxIdentityVerification(editingCustomer.taxIdentityVerification),
+  );
+  const storedFiscalIdentityFallback = Boolean(
+    unchangedStoredFiscalIdentity &&
+    taxIdentity?.checksumValid &&
+    !taxIdentity.pending &&
+    (!taxIdentity.result ||
+      taxIdentity.result.outcome === 'UNAVAILABLE' ||
+      taxIdentity.result.outcome === 'REGISTRY_STALE'),
+  );
+  const fiscalIdentityReady = Boolean(
+    fiscalDocumentType &&
+    (hasVerifiedTaxIdentity(taxIdentity, fiscalDocumentType, form.documentNumber) ||
+      storedFiscalIdentityFallback),
+  );
 
   useEffect(() => {
     const query = new URLSearchParams(window.location.search).get('q');
@@ -99,15 +134,25 @@ export function CustomersView() {
         }
 
         documentNumber = normalizeDominicanDocument(documentNumber);
+
+        if (!fiscalIdentityReady) {
+          throw new Error('Verifica el RNC o la cédula en DGII antes de guardar el cliente.');
+        }
       }
 
       const payload = {
-        name: form.name,
+        name: storedFiscalIdentityFallback && editingCustomer ? editingCustomer.name : form.name,
         documentType: form.documentType,
         documentNumber: documentNumber || undefined,
         email: form.email || undefined,
         phone: form.phone || undefined,
         address: form.address || undefined,
+        taxIdentityOverrideId:
+          taxIdentity?.result?.source === 'MANUAL_OVERRIDE'
+            ? taxIdentity.result.overrideId
+            : undefined,
+        taxIdentityContextId:
+          taxIdentity?.result?.source === 'MANUAL_OVERRIDE' ? taxIdentityContextId : undefined,
       };
 
       if (editingCustomer) {
@@ -201,6 +246,10 @@ export function CustomersView() {
   function openCreateForm() {
     setEditingCustomer(null);
     setForm(emptyCustomerForm);
+    setTaxIdentity(null);
+    setManualOverride(null);
+    setTaxIdentityContextId(createTaxIdentityDraftId('customer-create'));
+    setOverrideDialogOpen(false);
     setFormOpen(true);
   }
 
@@ -214,13 +263,50 @@ export function CustomersView() {
       phone: customer.phone ?? '',
       address: customer.address ?? '',
     });
+    setTaxIdentity(null);
+    setManualOverride(null);
+    setTaxIdentityContextId(customer.id);
+    setOverrideDialogOpen(false);
     setFormOpen(true);
   }
 
   function closeForm() {
     setEditingCustomer(null);
     setForm(emptyCustomerForm);
+    setTaxIdentity(null);
+    setManualOverride(null);
+    setTaxIdentityContextId('');
+    setOverrideDialogOpen(false);
     setFormOpen(false);
+  }
+
+  function handleTaxIdentityChange(state: TaxIdentityVerificationState) {
+    setTaxIdentity(state);
+    const fiscalName = state.result?.outcome === 'VERIFIED' ? state.result.fiscalName : null;
+    if (!fiscalName) return;
+
+    setForm((current) => {
+      if (
+        current.documentType !== state.documentType ||
+        normalizeDominicanDocument(current.documentNumber) !== state.documentNumber ||
+        current.name === fiscalName
+      ) {
+        return current;
+      }
+      return { ...current, name: fiscalName };
+    });
+  }
+
+  function handleManualOverride(result: TaxIdentityOverrideResult) {
+    setManualOverride(result);
+    setTaxIdentity({
+      result,
+      documentType: result.documentType,
+      documentNumber: normalizeDominicanDocument(result.documentNumber),
+      checksumValid: true,
+      pending: false,
+    });
+    setForm((current) => ({ ...current, name: result.fiscalName ?? current.name }));
   }
 
   function openCreditForm(customer: Customer) {
@@ -248,7 +334,11 @@ export function CustomersView() {
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="relative max-w-md flex-1">
           <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+          <Label htmlFor="customer-search" className="sr-only">
+            Buscar clientes
+          </Label>
           <Input
+            id="customer-search"
             value={search}
             onChange={(event) => setSearch(event.target.value)}
             className="bg-white pl-9"
@@ -271,32 +361,63 @@ export function CustomersView() {
                 <CardTitle>{editingCustomer ? 'Editar cliente' : 'Nuevo cliente'}</CardTitle>
                 <CardDescription>Datos fiscales y contacto operativo del cliente.</CardDescription>
               </div>
-              <Button type="button" variant="ghost" size="icon" onClick={closeForm}>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                onClick={closeForm}
+                aria-label="Cerrar formulario de cliente"
+              >
                 <X className="h-4 w-4" />
               </Button>
             </div>
           </CardHeader>
           <CardContent>
             <form className="grid gap-4 md:grid-cols-2" onSubmit={submitForm}>
-              <Field label="Razón social / nombre legal">
+              <Field
+                htmlFor="customer-name"
+                label={
+                  form.documentType === 'RNC' || form.documentType === 'CEDULA'
+                    ? 'Razón social verificada'
+                    : 'Razón social / nombre legal'
+                }
+              >
                 <Input
+                  id="customer-name"
                   value={form.name}
+                  readOnly={form.documentType === 'RNC' || form.documentType === 'CEDULA'}
+                  placeholder={
+                    form.documentType === 'RNC' || form.documentType === 'CEDULA'
+                      ? 'Se completará al verificar en DGII'
+                      : undefined
+                  }
                   onChange={(event) =>
-                    setForm((current) => ({ ...current, name: event.target.value }))
+                    setForm((current) => ({
+                      ...current,
+                      name: event.target.value,
+                    }))
                   }
                   required
                 />
               </Field>
-              <Field label="Documento">
+              <Field label="Documento" htmlFor="customer-document-type">
                 <select
+                  id="customer-document-type"
                   value={form.documentType}
-                  onChange={(event) =>
-                    setForm((current) => ({
-                      ...current,
-                      documentType: event.target.value,
-                      documentNumber: '',
-                    }))
-                  }
+                  onChange={(event) => {
+                    setTaxIdentity(null);
+                    setManualOverride(null);
+                    setForm((current) => {
+                      const documentType = event.target.value;
+                      return {
+                        ...current,
+                        documentType,
+                        documentNumber: '',
+                        name:
+                          documentType === 'RNC' || documentType === 'CEDULA' ? '' : current.name,
+                      };
+                    });
+                  }}
                   className="h-10 w-full rounded-md border border-input bg-card px-3 text-sm"
                 >
                   <option value="CONSUMER_FINAL">Consumidor final</option>
@@ -306,8 +427,9 @@ export function CustomersView() {
                   <option value="OTHER">Otro</option>
                 </select>
               </Field>
-              <Field label="Numero documento">
+              <Field label="Número de documento" htmlFor="customer-document-number">
                 <Input
+                  id="customer-document-number"
                   value={form.documentNumber}
                   required={form.documentType === 'RNC' || form.documentType === 'CEDULA'}
                   inputMode={
@@ -322,38 +444,91 @@ export function CustomersView() {
                         ? '001-0000000-1'
                         : undefined
                   }
-                  onChange={(event) =>
-                    setForm((current) => ({ ...current, documentNumber: event.target.value }))
-                  }
+                  onChange={(event) => {
+                    const documentNumber = event.target.value;
+                    setTaxIdentity(null);
+                    setManualOverride(null);
+                    setForm((current) => ({
+                      ...current,
+                      documentNumber,
+                      name:
+                        editingCustomer?.documentType === current.documentType &&
+                        normalizeDominicanDocument(editingCustomer.documentNumber ?? '') ===
+                          normalizeDominicanDocument(documentNumber)
+                          ? editingCustomer.name
+                          : '',
+                    }));
+                  }}
                 />
               </Field>
-              <Field label="Correo">
+              {form.documentType === 'RNC' || form.documentType === 'CEDULA' ? (
+                <TaxIdentityVerification
+                  tenantId={session.tenantId}
+                  accessToken={session.accessToken}
+                  documentType={form.documentType}
+                  documentNumber={form.documentNumber}
+                  onChange={handleTaxIdentityChange}
+                  manualOverride={manualOverride}
+                  overrideAction={
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={() => setOverrideDialogOpen(true)}
+                    >
+                      Autorizar con supervisor
+                    </Button>
+                  }
+                  storedVerification={
+                    unchangedStoredFiscalIdentity ? editingCustomer?.taxIdentityVerification : null
+                  }
+                  className="md:col-span-2"
+                />
+              ) : null}
+              <Field label="Correo" htmlFor="customer-email">
                 <Input
+                  id="customer-email"
                   type="email"
                   value={form.email}
                   onChange={(event) =>
-                    setForm((current) => ({ ...current, email: event.target.value }))
+                    setForm((current) => ({
+                      ...current,
+                      email: event.target.value,
+                    }))
                   }
                 />
               </Field>
-              <Field label="Telefono">
+              <Field label="Teléfono" htmlFor="customer-phone">
                 <Input
+                  id="customer-phone"
                   value={form.phone}
                   onChange={(event) =>
-                    setForm((current) => ({ ...current, phone: event.target.value }))
+                    setForm((current) => ({
+                      ...current,
+                      phone: event.target.value,
+                    }))
                   }
                 />
               </Field>
-              <Field label="Direccion">
+              <Field label="Dirección" htmlFor="customer-address">
                 <Input
+                  id="customer-address"
                   value={form.address}
                   onChange={(event) =>
-                    setForm((current) => ({ ...current, address: event.target.value }))
+                    setForm((current) => ({
+                      ...current,
+                      address: event.target.value,
+                    }))
                   }
                 />
               </Field>
               <div className="md:col-span-2">
-                <Button type="submit" disabled={saveMutation.isPending}>
+                <Button
+                  type="submit"
+                  disabled={
+                    saveMutation.isPending || (Boolean(fiscalDocumentType) && !fiscalIdentityReady)
+                  }
+                >
                   <Save className="h-4 w-4" />
                   Guardar cliente
                 </Button>
@@ -361,6 +536,21 @@ export function CustomersView() {
             </form>
           </CardContent>
         </Card>
+      ) : null}
+
+      {formOpen && fiscalDocumentType && taxIdentityContextId ? (
+        <TaxIdentityOverrideDialog
+          open={overrideDialogOpen}
+          onClose={() => setOverrideDialogOpen(false)}
+          session={session}
+          contextType={editingCustomer ? 'CUSTOMER' : 'CUSTOMER_CREATE'}
+          contextId={editingCustomer?.id ?? taxIdentityContextId}
+          documentType={fiscalDocumentType}
+          documentNumber={form.documentNumber}
+          suggestedFiscalName={taxIdentity?.result?.fiscalName ?? form.name}
+          registryOutcome={taxIdentity?.result?.outcome}
+          onAuthorized={handleManualOverride}
+        />
       ) : null}
 
       {creditCustomer && !readOnly ? (
@@ -379,6 +569,7 @@ export function CustomersView() {
                 variant="ghost"
                 size="icon"
                 onClick={() => setCreditCustomer(null)}
+                aria-label="Cerrar configuración de crédito"
               >
                 <X className="h-4 w-4" />
               </Button>
@@ -392,8 +583,9 @@ export function CustomersView() {
                 creditMutation.mutate();
               }}
             >
-              <Field label="Acceso a crédito">
+              <Field label="Acceso a crédito" htmlFor="customer-credit-access">
                 <select
+                  id="customer-credit-access"
                   value={creditForm.creditEnabled ? 'ENABLED' : 'DISABLED'}
                   onChange={(event) =>
                     setCreditForm((current) => ({
@@ -409,8 +601,9 @@ export function CustomersView() {
                   <option value="ENABLED">Habilitado</option>
                 </select>
               </Field>
-              <Field label="Estado">
+              <Field label="Estado" htmlFor="customer-credit-status">
                 <select
+                  id="customer-credit-status"
                   value={creditForm.creditStatus}
                   disabled={!creditForm.creditEnabled}
                   onChange={(event) =>
@@ -425,8 +618,9 @@ export function CustomersView() {
                   <option value="BLOCKED">Bloqueado</option>
                 </select>
               </Field>
-              <Field label="Límite de crédito (RD$)">
+              <Field label="Límite de crédito (RD$)" htmlFor="customer-credit-limit">
                 <Input
+                  id="customer-credit-limit"
                   type="number"
                   min="0"
                   step="0.01"
@@ -440,8 +634,9 @@ export function CustomersView() {
                   required
                 />
               </Field>
-              <Field label="Días de crédito recomendados">
+              <Field label="Días de crédito recomendados" htmlFor="customer-credit-term-days">
                 <Input
+                  id="customer-credit-term-days"
                   type="number"
                   min="1"
                   max="365"
@@ -495,6 +690,13 @@ export function CustomersView() {
                       {translateDocumentType(customer.documentType)}
                       {customer.documentNumber ? ` ${customer.documentNumber}` : ''}
                     </p>
+                    <TaxIdentityVerificationBadge
+                      verification={customer.taxIdentityVerification}
+                      applicable={
+                        customer.documentType === 'RNC' || customer.documentType === 'CEDULA'
+                      }
+                      className="mt-2"
+                    />
                   </div>
                   <Badge variant={getStatusVariant(customer.status)}>
                     {translateStatus(customer.status)}
@@ -566,8 +768,17 @@ export function CustomersView() {
                   <TableRow key={customer.id}>
                     <TableCell className="font-medium">{customer.name}</TableCell>
                     <TableCell>
-                      {translateDocumentType(customer.documentType)}
-                      {customer.documentNumber ? ` ${customer.documentNumber}` : ''}
+                      <div>
+                        {translateDocumentType(customer.documentType)}
+                        {customer.documentNumber ? ` ${customer.documentNumber}` : ''}
+                      </div>
+                      <TaxIdentityVerificationBadge
+                        verification={customer.taxIdentityVerification}
+                        applicable={
+                          customer.documentType === 'RNC' || customer.documentType === 'CEDULA'
+                        }
+                        className="mt-1"
+                      />
                     </TableCell>
                     <TableCell>
                       <div className="text-sm">{customer.email ?? 'Sin correo'}</div>
@@ -645,11 +856,23 @@ export function CustomersView() {
   );
 }
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
+function Field({
+  label,
+  htmlFor,
+  children,
+}: {
+  label: string;
+  htmlFor: string;
+  children: React.ReactNode;
+}) {
   return (
     <div className="space-y-2">
-      <Label>{label}</Label>
+      <Label htmlFor={htmlFor}>{label}</Label>
       {children}
     </div>
   );
+}
+
+function createTaxIdentityDraftId(prefix: string) {
+  return `${prefix}-${crypto.randomUUID()}`;
 }

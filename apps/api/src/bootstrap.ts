@@ -2,18 +2,21 @@ import 'reflect-metadata';
 import { INestApplication, ValidationPipe } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { NestFactory } from '@nestjs/core';
+import { JwtService } from '@nestjs/jwt';
 import { json, urlencoded } from 'express';
-import { rateLimit } from 'express-rate-limit';
+import { ipKeyGenerator, rateLimit } from 'express-rate-limit';
 import type { NextFunction, Request, Response } from 'express';
 import helmet from 'helmet';
 import { AppModule } from './app.module';
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
+import { getTaxIdentityHmacSecret } from './common/security/tax-identity-hmac-secret';
 
 export async function createQorvexApiApp() {
   const app = await NestFactory.create(AppModule, {
     bodyParser: false,
   });
   const config = app.get(ConfigService);
+  const jwt = app.get(JwtService);
   const expressApp = app.getHttpAdapter().getInstance();
 
   assertSecurityConfiguration(config);
@@ -110,6 +113,27 @@ export async function createQorvexApiApp() {
     }),
   );
 
+  app.use(
+    '/tax-identities/overrides',
+    rateLimit({
+      windowMs: getNumberConfig(
+        config,
+        'TAX_IDENTITY_OVERRIDE_RATE_LIMIT_WINDOW_MS',
+        15 * 60 * 1000,
+      ),
+      limit: getNumberConfig(config, 'TAX_IDENTITY_OVERRIDE_RATE_LIMIT_MAX', 5),
+      standardHeaders: 'draft-8',
+      legacyHeaders: false,
+      skip: (request) => request.method === 'OPTIONS',
+      skipSuccessfulRequests: true,
+      keyGenerator: createAuthenticatedPrincipalRateLimitKey(config, jwt),
+      message: {
+        statusCode: 429,
+        message: 'Demasiados intentos de autorización. Espera unos minutos.',
+      },
+    }),
+  );
+
   app.use(json({ limit: getStringConfig(config, 'API_JSON_BODY_LIMIT', '1mb') }));
   app.use(
     urlencoded({ extended: false, limit: getStringConfig(config, 'API_FORM_BODY_LIMIT', '1mb') }),
@@ -140,6 +164,8 @@ function assertSecurityConfiguration(config: ConfigService) {
   if (!jwtSecret) {
     throw new Error('JWT_SECRET is required.');
   }
+
+  getTaxIdentityHmacSecret(config);
 
   if (process.env.NODE_ENV !== 'production') {
     return;
@@ -177,6 +203,33 @@ function assertSecurityConfiguration(config: ConfigService) {
       throw new Error(`CORS_ORIGIN must use HTTPS in production: ${origin}`);
     }
   }
+}
+
+function createAuthenticatedPrincipalRateLimitKey(config: ConfigService, jwt: JwtService) {
+  const jwtSecret = config.getOrThrow<string>('JWT_SECRET');
+
+  return (request: Request) => {
+    const authorization = request.headers.authorization;
+    const header = Array.isArray(authorization) ? authorization[0] : authorization;
+    const token = header?.match(/^Bearer\s+(.+)$/i)?.[1]?.trim();
+
+    if (token) {
+      try {
+        const payload = jwt.verify<{ sub?: unknown }>(token, { secret: jwtSecret });
+        if (typeof payload.sub === 'string' && payload.sub.trim()) {
+          // The signed subject is stable across token refreshes and prevents one
+          // employee from evading the limiter by repeatedly logging in.
+          return `authenticated-user:${payload.sub}`;
+        }
+      } catch {
+        // JwtAuthGuard will reject the request. Keeping unauthenticated traffic
+        // on its IP bucket prevents arbitrary bearer strings bypassing limits.
+      }
+    }
+
+    const address = request.ip || request.socket.remoteAddress || '127.0.0.1';
+    return `unauthenticated-ip:${ipKeyGenerator(address)}`;
+  };
 }
 
 type IpRule =

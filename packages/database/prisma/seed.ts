@@ -84,6 +84,10 @@ function getInvoiceAmounts(lines: SeedLine[]) {
 }
 
 async function main() {
+  // Overrides reference users with RESTRICT because their approval trail must
+  // survive normal user lifecycle operations. A destructive demo reseed must
+  // explicitly clear them before users and tenants.
+  await prisma.taxIdentityOverride.deleteMany();
   await prisma.importRowError.deleteMany();
   await prisma.importBatch.deleteMany();
   await prisma.employeeActivityLog.deleteMany();

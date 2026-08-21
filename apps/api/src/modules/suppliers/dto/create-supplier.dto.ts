@@ -86,4 +86,15 @@ export class CreateSupplierDto {
   @IsOptional()
   @IsEnum(SupplierStatus)
   status?: SupplierStatus;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  taxIdentityOverrideId?: string;
+
+  /** Client-generated identifier that binds a supervisor override to this form. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(80)
+  taxIdentityContextId?: string;
 }

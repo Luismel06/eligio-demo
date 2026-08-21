@@ -151,6 +151,37 @@ enum DocumentType {
   OTHER
 }
 
+enum DgiiRegistrySource {
+  DGII_OFFICIAL
+  TEST_FIXTURE
+}
+
+enum DgiiRegistryDatasetStatus {
+  IMPORTING
+  READY
+  ACTIVE
+  SUPERSEDED
+  FAILED
+}
+
+enum DgiiTaxpayerStatus {
+  ACTIVE
+  SUSPENDED
+  DEREGISTERED
+  TEMPORARY_CESSATION
+  ANNULLED
+  REJECTED
+  UNKNOWN
+}
+
+enum TaxIdentityContextType {
+  POS_ORDER
+  CUSTOMER
+  SUPPLIER
+  CUSTOMER_CREATE
+  SUPPLIER_CREATE
+}
+
 enum InvoiceFiscalStatus {
   NOT_APPLICABLE
   PENDING_SEQUENCE
@@ -450,6 +481,7 @@ model Tenant {
   goodsReceiptItems          GoodsReceiptItem[]
   creditSaleApprovals        CreditSaleApproval[]
   mobileOcrCaptureSessions   MobileOcrCaptureSession[]
+  taxIdentityOverrides       TaxIdentityOverride[]
 
   @@index([status])
   @@index([createdAt])
@@ -525,6 +557,8 @@ model User {
   creditSaleApprovalsCancelled        CreditSaleApproval[]        @relation("CreditSaleApprovalCancelledBy")
   paymentsCancelled                   Payment[]                   @relation("PaymentCancelledBy")
   mobileOcrCaptureSessionsCreated     MobileOcrCaptureSession[]   @relation("MobileOcrCaptureCreatedBy")
+  taxIdentityOverridesRequested       TaxIdentityOverride[]       @relation("TaxIdentityOverrideRequestedBy")
+  taxIdentityOverridesApproved        TaxIdentityOverride[]       @relation("TaxIdentityOverrideApprovedBy")
 
   @@index([status])
   @@index([createdAt])
@@ -561,29 +595,30 @@ model Membership {
 }
 
 model Customer {
-  id                  String               @id @default(cuid())
-  tenantId            String
-  name                String
-  documentType        DocumentType
-  documentNumber      String?
-  email               String?
-  phone               String?
-  address             String?
-  status              CustomerStatus       @default(ACTIVE)
-  creditEnabled       Boolean              @default(false)
-  creditLimit         Decimal              @default(0) @db.Decimal(14, 2)
-  creditBalance       Decimal              @default(0) @db.Decimal(14, 2)
-  creditTermDays      Int                  @default(30)
-  creditStatus        CustomerCreditStatus @default(BLOCKED)
-  creditEnabledAt     DateTime?
-  creditEnabledById   String?
-  createdAt           DateTime             @default(now())
-  updatedAt           DateTime             @updatedAt
-  tenant              Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  creditEnabledBy     User?                @relation("CustomerCreditEnabledBy", fields: [creditEnabledById], references: [id], onDelete: SetNull)
-  invoices            Invoice[]
-  salesOrders         SalesOrder[]
-  creditSaleApprovals CreditSaleApproval[]
+  id                      String               @id @default(cuid())
+  tenantId                String
+  name                    String
+  documentType            DocumentType
+  documentNumber          String?
+  email                   String?
+  phone                   String?
+  address                 String?
+  status                  CustomerStatus       @default(ACTIVE)
+  creditEnabled           Boolean              @default(false)
+  creditLimit             Decimal              @default(0) @db.Decimal(14, 2)
+  creditBalance           Decimal              @default(0) @db.Decimal(14, 2)
+  creditTermDays          Int                  @default(30)
+  creditStatus            CustomerCreditStatus @default(BLOCKED)
+  creditEnabledAt         DateTime?
+  creditEnabledById       String?
+  taxIdentityVerification Json?
+  createdAt               DateTime             @default(now())
+  updatedAt               DateTime             @updatedAt
+  tenant                  Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  creditEnabledBy         User?                @relation("CustomerCreditEnabledBy", fields: [creditEnabledById], references: [id], onDelete: SetNull)
+  invoices                Invoice[]
+  salesOrders             SalesOrder[]
+  creditSaleApprovals     CreditSaleApproval[]
 
   @@unique([tenantId, documentType, documentNumber])
   @@index([tenantId])
@@ -864,36 +899,37 @@ model SalesOrderItem {
 }
 
 model Supplier {
-  id              String            @id @default(cuid())
-  tenantId        String
-  commercialName  String
-  legalName       String?
-  documentType    DocumentType
-  documentNumber  String
-  phone           String?
-  email           String?
-  contactName     String?
-  contactPhone    String?
-  contactEmail    String?
-  address         String?
-  paymentTerms    String?
-  creditDays      Int               @default(0)
-  notes           String?
-  status          SupplierStatus    @default(ACTIVE)
-  createdById     String
-  updatedById     String?
-  deactivatedById String?
-  deactivatedAt   DateTime?
-  createdAt       DateTime          @default(now())
-  updatedAt       DateTime          @updatedAt
-  tenant          Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  createdBy       User              @relation("SupplierCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
-  updatedBy       User?             @relation("SupplierUpdatedBy", fields: [updatedById], references: [id], onDelete: SetNull)
-  deactivatedBy   User?             @relation("SupplierDeactivatedBy", fields: [deactivatedById], references: [id], onDelete: SetNull)
-  products        SupplierProduct[]
-  purchaseOrders  PurchaseOrder[]
-  invoices        SupplierInvoice[]
-  goodsReceipts   GoodsReceipt[]
+  id                      String            @id @default(cuid())
+  tenantId                String
+  commercialName          String
+  legalName               String?
+  documentType            DocumentType
+  documentNumber          String
+  phone                   String?
+  email                   String?
+  contactName             String?
+  contactPhone            String?
+  contactEmail            String?
+  address                 String?
+  paymentTerms            String?
+  creditDays              Int               @default(0)
+  notes                   String?
+  status                  SupplierStatus    @default(ACTIVE)
+  createdById             String
+  updatedById             String?
+  deactivatedById         String?
+  deactivatedAt           DateTime?
+  taxIdentityVerification Json?
+  createdAt               DateTime          @default(now())
+  updatedAt               DateTime          @updatedAt
+  tenant                  Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  createdBy               User              @relation("SupplierCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+  updatedBy               User?             @relation("SupplierUpdatedBy", fields: [updatedById], references: [id], onDelete: SetNull)
+  deactivatedBy           User?             @relation("SupplierDeactivatedBy", fields: [deactivatedById], references: [id], onDelete: SetNull)
+  products                SupplierProduct[]
+  purchaseOrders          PurchaseOrder[]
+  invoices                SupplierInvoice[]
+  goodsReceipts           GoodsReceipt[]
 
   @@unique([tenantId, documentType, documentNumber])
   @@index([tenantId])
@@ -1702,4 +1738,75 @@ model AuditLog {
   @@index([userId])
   @@index([entity, entityId])
   @@index([createdAt])
+}
+
+/// One immutable import attempt of the official DGII taxpayer registry.
+/// Records are loaded while IMPORTING and only become visible after an atomic
+/// status switch to ACTIVE. At most one ACTIVE dataset is enforced in SQL.
+model DgiiRegistryDataset {
+  id                 String                    @id @default(cuid())
+  version            String                    @unique
+  source             DgiiRegistrySource
+  status             DgiiRegistryDatasetStatus @default(IMPORTING)
+  filename           String?
+  checksumSha256     String?                   @unique
+  sourceUpdatedAt    DateTime
+  startedAt          DateTime                  @default(now())
+  importedAt         DateTime?
+  activatedAt        DateTime?
+  deactivatedAt      DateTime?
+  recordCount        Int                       @default(0)
+  invalidRecordCount Int                       @default(0)
+  failureCode        String?
+  records            DgiiTaxpayerRecord[]
+
+  @@index([status])
+  @@index([source, sourceUpdatedAt])
+  @@index([activatedAt])
+}
+
+/// Taxpayer data is deliberately limited to the fields needed for identity
+/// validation. Raw DGII rows and reserved columns are never persisted.
+model DgiiTaxpayerRecord {
+  datasetId      String
+  documentType   DocumentType
+  documentNumber String
+  fiscalName     String
+  registryStatus String
+  status         DgiiTaxpayerStatus
+  dataset        DgiiRegistryDataset @relation(fields: [datasetId], references: [id], onDelete: Cascade)
+
+  @@id([datasetId, documentType, documentNumber])
+  @@index([datasetId, status])
+}
+
+/// A short-lived supervisor authorization for an identity that cannot be
+/// verified against a fresh DGII dataset. The document is bound by HMAC; only
+/// its last four digits are retained for support/audit display.
+model TaxIdentityOverride {
+  id            String                 @id @default(cuid())
+  tenantId      String
+  contextType   TaxIdentityContextType
+  contextId     String
+  documentType  DocumentType
+  documentHash  String                 @db.VarChar(64)
+  documentLast4 String                 @db.VarChar(4)
+  fiscalName    String
+  reason        String
+  requestedById String
+  approvedById  String
+  expiresAt     DateTime
+  revokedAt     DateTime?
+  usedAt        DateTime?
+  createdAt     DateTime               @default(now())
+  updatedAt     DateTime               @updatedAt
+  tenant        Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  requestedBy   User                   @relation("TaxIdentityOverrideRequestedBy", fields: [requestedById], references: [id], onDelete: Restrict)
+  approvedBy    User                   @relation("TaxIdentityOverrideApprovedBy", fields: [approvedById], references: [id], onDelete: Restrict)
+
+  @@index([tenantId, contextType, contextId, documentHash, expiresAt])
+  @@index([requestedById])
+  @@index([approvedById])
+  @@index([expiresAt])
+  @@index([usedAt])
 }

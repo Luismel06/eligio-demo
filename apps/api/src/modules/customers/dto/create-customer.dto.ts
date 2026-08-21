@@ -27,4 +27,15 @@ export class CreateCustomerDto {
   @IsString()
   @MaxLength(240)
   address?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  taxIdentityOverrideId?: string;
+
+  /** Client-generated identifier that binds a supervisor override to this form. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(80)
+  taxIdentityContextId?: string;
 }

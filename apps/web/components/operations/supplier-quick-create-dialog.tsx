@@ -11,6 +11,7 @@ import {
   updateSupplier,
   type Supplier,
   type SupplierPayload,
+  type TaxIdentityOverrideResult,
 } from '@/lib/api';
 import type { AuthSession } from '@/lib/auth-session';
 import {
@@ -19,6 +20,12 @@ import {
   validateDominicanDocument,
 } from '@/lib/dominican-documents';
 import { FormField, selectClassName } from './procurement-ui';
+import { TaxIdentityOverrideDialog } from './tax-identity-override-dialog';
+import {
+  hasVerifiedTaxIdentity,
+  TaxIdentityVerification,
+  type TaxIdentityVerificationState,
+} from './tax-identity-verification';
 
 type SupplierDocumentType = 'RNC' | 'CEDULA';
 
@@ -45,6 +52,7 @@ type SupplierQuickCreateDialogProps = {
 
 type QuickSupplierForm = {
   commercialName: string;
+  legalName: string;
   documentType: SupplierDocumentType;
   documentNumber: string;
   phone: string;
@@ -68,14 +76,28 @@ export function SupplierQuickCreateDialog({
   const [showOptionalFields, setShowOptionalFields] = useState(hasOptionalPrefill(prefill));
   const [formError, setFormError] = useState<string | null>(null);
   const [confirmedSameName, setConfirmedSameName] = useState(false);
+  const [taxIdentity, setTaxIdentity] = useState<TaxIdentityVerificationState | null>(null);
+  const [taxIdentityContextId, setTaxIdentityContextId] = useState('');
+  const [manualOverride, setManualOverride] = useState<TaxIdentityOverrideResult | null>(null);
+  const [overrideDialogOpen, setOverrideDialogOpen] = useState(false);
 
   useEffect(() => {
-    if (!open) return;
+    if (!open) {
+      setTaxIdentityContextId('');
+      setManualOverride(null);
+      setOverrideDialogOpen(false);
+      setTaxIdentity(null);
+      return;
+    }
 
     setForm(buildForm(prefill));
     setShowOptionalFields(hasOptionalPrefill(prefill));
     setFormError(null);
     setConfirmedSameName(false);
+    setTaxIdentity(null);
+    setManualOverride(null);
+    setOverrideDialogOpen(false);
+    setTaxIdentityContextId((current) => current || createTaxIdentityDraftId('supplier-create'));
   }, [
     open,
     prefill?.commercialName,
@@ -136,7 +158,9 @@ export function SupplierQuickCreateDialog({
   const reactivateMutation = useMutation({
     mutationFn: (supplier: Supplier) => {
       if (!session) throw new Error('La sesión ya no está disponible. Vuelve a iniciar sesión.');
-      return updateSupplier(session.tenantId, session.accessToken, supplier.id, { status: 'ACTIVE' });
+      return updateSupplier(session.tenantId, session.accessToken, supplier.id, {
+        status: 'ACTIVE',
+      });
     },
     onSuccess: async (supplier) => {
       await queryClient.invalidateQueries({ queryKey: ['suppliers'] });
@@ -172,6 +196,10 @@ export function SupplierQuickCreateDialog({
       );
       return;
     }
+    if (!hasVerifiedTaxIdentity(taxIdentity, form.documentType, normalizedDocument)) {
+      setFormError('Verifica el RNC o la cédula en DGII antes de registrar el suplidor.');
+      return;
+    }
     if (duplicateByDocument) {
       setFormError('Ese RNC o cédula ya está registrado para este suplidor.');
       return;
@@ -185,6 +213,10 @@ export function SupplierQuickCreateDialog({
 
     createMutation.mutate({
       commercialName,
+      legalName:
+        taxIdentity?.result?.outcome === 'VERIFIED'
+          ? (taxIdentity.result.fiscalName ?? form.legalName)
+          : form.legalName,
       documentType: form.documentType,
       documentNumber: normalizedDocument,
       phone: optional(form.phone),
@@ -192,6 +224,12 @@ export function SupplierQuickCreateDialog({
       contactName: optional(form.contactName),
       paymentTerms: optional(form.paymentTerms),
       creditDays: toCreditDays(form.creditDays),
+      taxIdentityOverrideId:
+        taxIdentity?.result?.source === 'MANUAL_OVERRIDE'
+          ? taxIdentity.result.overrideId
+          : undefined,
+      taxIdentityContextId:
+        taxIdentity?.result?.source === 'MANUAL_OVERRIDE' ? taxIdentityContextId : undefined,
     });
   }
 
@@ -200,221 +238,342 @@ export function SupplierQuickCreateDialog({
   const createDisabled =
     isBusy ||
     Boolean(duplicateByDocument) ||
-    (duplicateNameNeedsConfirmation && !confirmedSameName);
+    (duplicateNameNeedsConfirmation && !confirmedSameName) ||
+    !hasVerifiedTaxIdentity(taxIdentity, form.documentType, normalizedDocument);
+
+  function handleTaxIdentityChange(state: TaxIdentityVerificationState) {
+    setTaxIdentity(state);
+    const fiscalName = state.result?.outcome === 'VERIFIED' ? state.result.fiscalName : null;
+    if (!fiscalName) return;
+
+    setForm((current) => {
+      if (
+        current.documentType !== state.documentType ||
+        normalizeDominicanDocument(current.documentNumber) !== state.documentNumber ||
+        current.legalName === fiscalName
+      ) {
+        return current;
+      }
+      return { ...current, legalName: fiscalName };
+    });
+  }
+
+  function handleManualOverride(result: TaxIdentityOverrideResult) {
+    setManualOverride(result);
+    setTaxIdentity({
+      result,
+      documentType: result.documentType,
+      documentNumber: normalizeDominicanDocument(result.documentNumber),
+      checksumValid: true,
+      pending: false,
+    });
+    setForm((current) => ({
+      ...current,
+      legalName: result.fiscalName ?? current.legalName,
+    }));
+  }
 
   return (
-    <ActionDialog
-      open={open}
-      onClose={close}
-      onConfirm={submit}
-      title="Registrar suplidor para esta factura"
-      description="Completa los datos básicos. El RNC o la cédula se valida antes de guardarse para evitar registros duplicados."
-      tone="default"
-      icon={<UserRoundPlus className="h-5 w-5" aria-hidden="true" />}
-      confirmLabel="Registrar y usar suplidor"
-      cancelLabel="Cancelar"
-      size="lg"
-      isPending={isBusy}
-      confirmDisabled={createDisabled}
-    >
-      <div className="grid gap-4 sm:grid-cols-2">
-        <FormField label="Nombre comercial" htmlFor="quick-supplier-commercial" className="sm:col-span-2">
-          <Input
-            id="quick-supplier-commercial"
-            data-dialog-autofocus
-            required
-            maxLength={160}
-            value={form.commercialName}
-            onChange={(event) => {
-              setConfirmedSameName(false);
-              setForm((current) => ({ ...current, commercialName: event.target.value }));
-            }}
-            placeholder="Ej.: Comercial del Caribe"
-          />
-        </FormField>
-        <FormField label="Tipo de documento" htmlFor="quick-supplier-document-type">
-          <select
-            id="quick-supplier-document-type"
-            className={selectClassName}
-            value={form.documentType}
-            onChange={(event) => {
-              setConfirmedSameName(false);
-              setForm((current) => ({
-                ...current,
-                documentType: event.target.value as SupplierDocumentType,
-              }));
-            }}
+    <>
+      <ActionDialog
+        open={open && !overrideDialogOpen}
+        onClose={close}
+        onConfirm={submit}
+        title="Registrar suplidor para esta factura"
+        description="Completa los datos básicos. El documento y la razón social se verifican en DGII antes de guardar."
+        tone="default"
+        icon={<UserRoundPlus className="h-5 w-5" aria-hidden="true" />}
+        confirmLabel="Registrar y usar suplidor"
+        cancelLabel="Cancelar"
+        size="lg"
+        isPending={isBusy}
+        confirmDisabled={createDisabled}
+      >
+        <div className="grid gap-4 sm:grid-cols-2">
+          <FormField
+            label="Nombre comercial"
+            htmlFor="quick-supplier-commercial"
+            className="sm:col-span-2"
           >
-            <option value="RNC">RNC</option>
-            <option value="CEDULA">Cédula</option>
-          </select>
-        </FormField>
-        <FormField
-          label={form.documentType === 'RNC' ? 'RNC' : 'Cédula'}
-          htmlFor="quick-supplier-document"
-          hint={
-            form.documentNumber.trim()
-              ? formatDominicanDocument(form.documentType, form.documentNumber)
-              : form.documentType === 'RNC'
-                ? 'Ej.: 1-01-00000-1'
-                : 'Ej.: 001-0000000-1'
-          }
-        >
-          <Input
-            id="quick-supplier-document"
-            required
-            inputMode="numeric"
-            maxLength={20}
-            value={form.documentNumber}
-            onChange={(event) => {
-              setConfirmedSameName(false);
-              setForm((current) => ({ ...current, documentNumber: event.target.value }));
-            }}
-            placeholder={form.documentType === 'RNC' ? '1-01-00000-1' : '001-0000000-1'}
+            <Input
+              id="quick-supplier-commercial"
+              data-dialog-autofocus
+              required
+              maxLength={160}
+              value={form.commercialName}
+              onChange={(event) => {
+                setConfirmedSameName(false);
+                setForm((current) => ({
+                  ...current,
+                  commercialName: event.target.value,
+                }));
+              }}
+              placeholder="Ej.: Comercial del Caribe"
+            />
+          </FormField>
+          <FormField label="Tipo de documento" htmlFor="quick-supplier-document-type">
+            <select
+              id="quick-supplier-document-type"
+              className={selectClassName}
+              value={form.documentType}
+              onChange={(event) => {
+                setConfirmedSameName(false);
+                setTaxIdentity(null);
+                setManualOverride(null);
+                setForm((current) => ({
+                  ...current,
+                  documentType: event.target.value as SupplierDocumentType,
+                  documentNumber: '',
+                  legalName: '',
+                }));
+              }}
+            >
+              <option value="RNC">RNC</option>
+              <option value="CEDULA">Cédula</option>
+            </select>
+          </FormField>
+          <FormField
+            label={form.documentType === 'RNC' ? 'RNC' : 'Cédula'}
+            htmlFor="quick-supplier-document"
+            hint={
+              form.documentNumber.trim()
+                ? formatDominicanDocument(form.documentType, form.documentNumber)
+                : form.documentType === 'RNC'
+                  ? 'Ej.: 1-01-00000-1'
+                  : 'Ej.: 001-0000000-1'
+            }
+          >
+            <Input
+              id="quick-supplier-document"
+              required
+              inputMode="numeric"
+              maxLength={20}
+              value={form.documentNumber}
+              onChange={(event) => {
+                setConfirmedSameName(false);
+                setTaxIdentity(null);
+                setManualOverride(null);
+                setForm((current) => ({
+                  ...current,
+                  documentNumber: event.target.value,
+                  legalName: '',
+                }));
+              }}
+              placeholder={form.documentType === 'RNC' ? '1-01-00000-1' : '001-0000000-1'}
+            />
+          </FormField>
+          <FormField
+            label="Razón social verificada"
+            htmlFor="quick-supplier-legal"
+            className="sm:col-span-2"
+          >
+            <Input
+              id="quick-supplier-legal"
+              value={form.legalName}
+              readOnly
+              placeholder="Se completará al verificar en DGII"
+            />
+          </FormField>
+          <TaxIdentityVerification
+            tenantId={session?.tenantId ?? ''}
+            accessToken={session?.accessToken ?? ''}
+            documentType={form.documentType}
+            documentNumber={form.documentNumber}
+            onChange={handleTaxIdentityChange}
+            manualOverride={manualOverride}
+            overrideAction={
+              <button
+                type="button"
+                className="font-medium text-primary underline-offset-4 hover:underline"
+                onClick={() => setOverrideDialogOpen(true)}
+              >
+                Autorizar con supervisor
+              </button>
+            }
+            className="sm:col-span-2"
           />
-        </FormField>
-      </div>
+        </div>
 
-      {duplicateSummary ? (
-        <div className="rounded-lg border border-warning/35 bg-warning/10 p-3 text-sm">
-          <div className="flex items-start gap-2">
-            <CircleAlert className="mt-0.5 h-4 w-4 shrink-0 text-warning" aria-hidden="true" />
-            <div className="min-w-0 space-y-1">
-              <p className="font-medium text-foreground">
-                {duplicateByDocument
-                  ? 'Este documento ya pertenece a un suplidor registrado.'
-                  : 'Ya existe un suplidor con el mismo nombre.'}
-              </p>
-              <p className="text-muted-foreground">
-                {duplicateSummary.commercialName} · {duplicateSummary.documentType}{' '}
-                {formatDominicanDocument(
-                  duplicateSummary.documentType,
-                  duplicateSummary.documentNumber,
-                )}
-              </p>
-              {duplicateByDocument ? (
-                <p className="text-xs text-muted-foreground">
-                  No se creará un registro nuevo con ese documento.
+        {duplicateSummary ? (
+          <div className="rounded-lg border border-warning/35 bg-warning/10 p-3 text-sm">
+            <div className="flex items-start gap-2">
+              <CircleAlert className="mt-0.5 h-4 w-4 shrink-0 text-warning" aria-hidden="true" />
+              <div className="min-w-0 space-y-1">
+                <p className="font-medium text-foreground">
+                  {duplicateByDocument
+                    ? 'Este documento ya pertenece a un suplidor registrado.'
+                    : 'Ya existe un suplidor con el mismo nombre.'}
                 </p>
-              ) : (
-                <label className="mt-2 flex cursor-pointer items-start gap-2 text-xs text-foreground">
-                  <input
-                    type="checkbox"
-                    className="mt-0.5 h-3.5 w-3.5 rounded border-input text-primary focus:ring-ring"
-                    checked={confirmedSameName}
-                    onChange={(event) => setConfirmedSameName(event.target.checked)}
-                  />
-                  Confirmo que es un suplidor distinto y que su RNC/cédula fue verificado.
-                </label>
-              )}
-              {onExistingSupplier && duplicateIsInactive ? (
-                <button
-                  type="button"
-                  className="mt-1 inline-flex items-center gap-1 font-medium text-primary underline-offset-4 hover:underline"
-                  disabled={isBusy}
-                  onClick={() => reactivateMutation.mutate(duplicateSummary)}
-                >
-                  <Building2 className="h-3.5 w-3.5" aria-hidden="true" />
-                  Reactivar y usar suplidor
-                </button>
-              ) : onExistingSupplier && !duplicateIsInactive ? (
-                <button
-                  type="button"
-                  className="mt-1 inline-flex items-center gap-1 font-medium text-primary underline-offset-4 hover:underline"
-                  disabled={isBusy}
-                  onClick={() => {
-                    onExistingSupplier(duplicateSummary);
-                    onOpenChange(false);
-                  }}
-                >
-                  <Building2 className="h-3.5 w-3.5" aria-hidden="true" />
-                  Usar este suplidor
-                </button>
-              ) : null}
+                <p className="text-muted-foreground">
+                  {duplicateSummary.commercialName} · {duplicateSummary.documentType}{' '}
+                  {formatDominicanDocument(
+                    duplicateSummary.documentType,
+                    duplicateSummary.documentNumber,
+                  )}
+                </p>
+                {duplicateByDocument ? (
+                  <p className="text-xs text-muted-foreground">
+                    No se creará un registro nuevo con ese documento.
+                  </p>
+                ) : (
+                  <label className="mt-2 flex cursor-pointer items-start gap-2 text-xs text-foreground">
+                    <input
+                      type="checkbox"
+                      className="mt-0.5 h-3.5 w-3.5 rounded border-input text-primary focus:ring-ring"
+                      checked={confirmedSameName}
+                      onChange={(event) => setConfirmedSameName(event.target.checked)}
+                    />
+                    Confirmo que es un suplidor distinto y que su RNC/cédula fue verificado.
+                  </label>
+                )}
+                {onExistingSupplier && duplicateIsInactive ? (
+                  <button
+                    type="button"
+                    className="mt-1 inline-flex items-center gap-1 font-medium text-primary underline-offset-4 hover:underline"
+                    disabled={isBusy}
+                    onClick={() => reactivateMutation.mutate(duplicateSummary)}
+                  >
+                    <Building2 className="h-3.5 w-3.5" aria-hidden="true" />
+                    Reactivar y usar suplidor
+                  </button>
+                ) : onExistingSupplier && !duplicateIsInactive ? (
+                  <button
+                    type="button"
+                    className="mt-1 inline-flex items-center gap-1 font-medium text-primary underline-offset-4 hover:underline"
+                    disabled={isBusy}
+                    onClick={() => {
+                      onExistingSupplier(duplicateSummary);
+                      onOpenChange(false);
+                    }}
+                  >
+                    <Building2 className="h-3.5 w-3.5" aria-hidden="true" />
+                    Usar este suplidor
+                  </button>
+                ) : null}
+              </div>
             </div>
           </div>
-        </div>
-      ) : null}
+        ) : null}
 
-      <div className="rounded-lg border border-border bg-muted/20 p-3">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <div>
-            <p className="text-sm font-medium">Datos opcionales</p>
-            <p className="text-xs text-muted-foreground">
-              Puedes completarlos ahora o editarlos después desde Suplidores.
-            </p>
+        <div className="rounded-lg border border-border bg-muted/20 p-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <p className="text-sm font-medium">Datos opcionales</p>
+              <p className="text-xs text-muted-foreground">
+                Puedes completarlos ahora o editarlos después desde Suplidores.
+              </p>
+            </div>
+            <button
+              type="button"
+              className="text-sm font-medium text-primary underline-offset-4 hover:underline"
+              onClick={() => setShowOptionalFields((current) => !current)}
+            >
+              {showOptionalFields ? 'Ocultar' : 'Agregar datos'}
+            </button>
           </div>
-          <button
-            type="button"
-            className="text-sm font-medium text-primary underline-offset-4 hover:underline"
-            onClick={() => setShowOptionalFields((current) => !current)}
-          >
-            {showOptionalFields ? 'Ocultar' : 'Agregar datos'}
-          </button>
+          {showOptionalFields ? (
+            <div className="mt-4 grid gap-4 sm:grid-cols-2">
+              <FormField label="Teléfono" htmlFor="quick-supplier-phone">
+                <Input
+                  id="quick-supplier-phone"
+                  maxLength={40}
+                  value={form.phone}
+                  onChange={(event) =>
+                    setForm((current) => ({
+                      ...current,
+                      phone: event.target.value,
+                    }))
+                  }
+                />
+              </FormField>
+              <FormField label="Correo" htmlFor="quick-supplier-email">
+                <Input
+                  id="quick-supplier-email"
+                  type="email"
+                  maxLength={254}
+                  value={form.email}
+                  onChange={(event) =>
+                    setForm((current) => ({
+                      ...current,
+                      email: event.target.value,
+                    }))
+                  }
+                />
+              </FormField>
+              <FormField label="Persona de contacto" htmlFor="quick-supplier-contact">
+                <Input
+                  id="quick-supplier-contact"
+                  maxLength={160}
+                  value={form.contactName}
+                  onChange={(event) =>
+                    setForm((current) => ({
+                      ...current,
+                      contactName: event.target.value,
+                    }))
+                  }
+                />
+              </FormField>
+              <FormField label="Condición de pago" htmlFor="quick-supplier-terms">
+                <Input
+                  id="quick-supplier-terms"
+                  maxLength={240}
+                  value={form.paymentTerms}
+                  onChange={(event) =>
+                    setForm((current) => ({
+                      ...current,
+                      paymentTerms: event.target.value,
+                    }))
+                  }
+                  placeholder="Ej.: crédito a 30 días"
+                />
+              </FormField>
+              <FormField label="Días de crédito" htmlFor="quick-supplier-credit-days">
+                <Input
+                  id="quick-supplier-credit-days"
+                  type="number"
+                  inputMode="numeric"
+                  min={0}
+                  max={3650}
+                  value={form.creditDays}
+                  onChange={(event) =>
+                    setForm((current) => ({
+                      ...current,
+                      creditDays: event.target.value,
+                    }))
+                  }
+                />
+              </FormField>
+            </div>
+          ) : null}
         </div>
-        {showOptionalFields ? (
-          <div className="mt-4 grid gap-4 sm:grid-cols-2">
-            <FormField label="Teléfono" htmlFor="quick-supplier-phone">
-              <Input
-                id="quick-supplier-phone"
-                maxLength={40}
-                value={form.phone}
-                onChange={(event) => setForm((current) => ({ ...current, phone: event.target.value }))}
-              />
-            </FormField>
-            <FormField label="Correo" htmlFor="quick-supplier-email">
-              <Input
-                id="quick-supplier-email"
-                type="email"
-                maxLength={254}
-                value={form.email}
-                onChange={(event) => setForm((current) => ({ ...current, email: event.target.value }))}
-              />
-            </FormField>
-            <FormField label="Persona de contacto" htmlFor="quick-supplier-contact">
-              <Input
-                id="quick-supplier-contact"
-                maxLength={160}
-                value={form.contactName}
-                onChange={(event) =>
-                  setForm((current) => ({ ...current, contactName: event.target.value }))
-                }
-              />
-            </FormField>
-            <FormField label="Condición de pago" htmlFor="quick-supplier-terms">
-              <Input
-                id="quick-supplier-terms"
-                maxLength={240}
-                value={form.paymentTerms}
-                onChange={(event) =>
-                  setForm((current) => ({ ...current, paymentTerms: event.target.value }))
-                }
-                placeholder="Ej.: crédito a 30 días"
-              />
-            </FormField>
-            <FormField label="Días de crédito" htmlFor="quick-supplier-credit-days">
-              <Input
-                id="quick-supplier-credit-days"
-                type="number"
-                inputMode="numeric"
-                min={0}
-                max={3650}
-                value={form.creditDays}
-                onChange={(event) =>
-                  setForm((current) => ({ ...current, creditDays: event.target.value }))
-                }
-              />
-            </FormField>
+
+        {formError ? (
+          <div
+            className="rounded-lg border border-danger/30 bg-danger/5 p-3 text-sm text-danger"
+            role="alert"
+            aria-live="assertive"
+          >
+            {formError}
           </div>
         ) : null}
-      </div>
-
-      {formError ? (
-        <div className="rounded-lg border border-danger/30 bg-danger/5 p-3 text-sm text-danger">
-          {formError}
-        </div>
+      </ActionDialog>
+      {session && taxIdentityContextId ? (
+        <TaxIdentityOverrideDialog
+          open={open && overrideDialogOpen}
+          onClose={() => setOverrideDialogOpen(false)}
+          session={session}
+          contextType="SUPPLIER_CREATE"
+          contextId={taxIdentityContextId}
+          documentType={form.documentType}
+          documentNumber={form.documentNumber}
+          suggestedFiscalName={
+            taxIdentity?.result?.fiscalName || form.legalName || form.commercialName
+          }
+          registryOutcome={taxIdentity?.result?.outcome}
+          onAuthorized={handleManualOverride}
+        />
       ) : null}
-    </ActionDialog>
+    </>
   );
 }
 
@@ -422,6 +581,7 @@ function buildForm(prefill?: SupplierQuickCreatePrefill): QuickSupplierForm {
   const documentNumber = prefill?.documentNumber ?? '';
   return {
     commercialName: prefill?.commercialName?.trim() ?? '',
+    legalName: '',
     documentType: prefill?.documentType ?? inferDocumentType(documentNumber),
     documentNumber,
     phone: prefill?.phone ?? '',
@@ -438,10 +598,7 @@ function inferDocumentType(value: string): SupplierDocumentType {
 
 function hasOptionalPrefill(prefill?: SupplierQuickCreatePrefill) {
   return Boolean(
-    prefill?.phone ||
-      prefill?.email ||
-      prefill?.paymentTerms ||
-      prefill?.creditDays !== undefined,
+    prefill?.phone || prefill?.email || prefill?.paymentTerms || prefill?.creditDays !== undefined,
   );
 }
 
@@ -465,6 +622,16 @@ function normalizeSupplierName(value: string) {
 }
 
 function isDuplicateSupplierError(message: string) {
-  const normalized = message.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
-  return normalized.includes('ya existe un proveedor con este rnc') || normalized.includes('already exists');
+  const normalized = message
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase();
+  return (
+    normalized.includes('ya existe un proveedor con este rnc') ||
+    normalized.includes('already exists')
+  );
+}
+
+function createTaxIdentityDraftId(prefix: string) {
+  return `${prefix}-${crypto.randomUUID()}`;
 }

@@ -1,8 +1,8 @@
 'use client';
 
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { CheckCircle2, LoaderCircle, ReceiptText } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { CheckCircle2, LoaderCircle, ReceiptText, Search, ShieldCheck } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -13,8 +13,9 @@ import type {
   InvoiceDocumentType,
   PosPaymentMethod,
   SalesOrder,
+  TaxIdentityLookup,
 } from '@/lib/api';
-import { updatePosOrderFiscalDetails } from '@/lib/api';
+import { lookupTaxIdentity, updatePosOrderFiscalDetails } from '@/lib/api';
 import {
   formatDominicanDocument,
   normalizeDominicanDocument,
@@ -27,6 +28,7 @@ import {
   sanitizeCurrencyInput,
 } from './currency-input';
 import { PaymentCalculator } from './payment-calculator';
+import { TaxIdentityOverrideDialog } from '../tax-identity-override-dialog';
 import type { PosTotals } from './types';
 
 type PosPaymentPanelProps = {
@@ -50,6 +52,15 @@ type PosPaymentPanelProps = {
 };
 
 type FiscalIdentityDocumentType = Extract<CustomerDocumentType, 'RNC' | 'CEDULA'>;
+type UsableTaxIdentityLookup = TaxIdentityLookup & {
+  overrideId?: string;
+  expiresAt?: string;
+};
+type TaxIdentityLookupRequest = {
+  orderId: string;
+  documentType: FiscalIdentityDocumentType;
+  documentNumber: string;
+};
 
 export function PosPaymentPanel({
   tenantId,
@@ -74,12 +85,25 @@ export function PosPaymentPanel({
   const [draftPurpose, setDraftPurpose] = useState<FiscalDocumentPurpose>(fiscalPurpose);
   const [draftDocumentType, setDraftDocumentType] = useState<FiscalIdentityDocumentType>('RNC');
   const [draftDocumentNumber, setDraftDocumentNumber] = useState('');
+  const [overrideDialogOpen, setOverrideDialogOpen] = useState(false);
+  const [overrideClockMs, setOverrideClockMs] = useState(() => Date.now());
+  const activeOrderIdRef = useRef(order?.id);
+  const lastAutomaticLookupKeyRef = useRef<string | null>(null);
+  const [taxIdentityLookup, setTaxIdentityLookup] = useState<{
+    orderId: string;
+    documentType: FiscalIdentityDocumentType;
+    documentNumber: string;
+    result: UsableTaxIdentityLookup;
+  } | null>(null);
+
+  activeOrderIdRef.current = order?.id;
 
   useEffect(() => {
     const persistedIdentity = getPersistedFiscalIdentity(order);
     setDraftPurpose(fiscalPurpose);
     setDraftDocumentType(persistedIdentity?.documentType ?? 'RNC');
     setDraftDocumentNumber(persistedIdentity?.documentNumber ?? '');
+    setOverrideDialogOpen(false);
   }, [
     fiscalPurpose,
     order?.fiscalCustomerSnapshot?.documentNumber,
@@ -95,16 +119,50 @@ export function PosPaymentPanel({
   const creditSale = salePaymentMode === 'CREDIT';
   const draftFiscalDocumentType = getDraftFiscalDocumentType(fiscalDocumentType, draftPurpose);
   const fiscalDocument = getFiscalDocumentDisplay(draftPurpose, draftFiscalDocumentType);
-  const customerName = getOrderFiscalName(order);
+  const operationalCustomerName = getOrderOperationalName(order);
   const persistedIdentity = getPersistedFiscalIdentity(order);
   const normalizedDraftDocumentNumber = normalizeDominicanDocument(draftDocumentNumber);
   const inlineIdentityRequired =
     draftPurpose === 'FISCAL_CREDIT' ||
     (draftFiscalDocumentType === 'CONSUMER_02' && totals.subtotal >= 250_000);
-  const fiscalNameMissing = inlineIdentityRequired && !customerName;
+  const operationalNameMissing = inlineIdentityRequired && !operationalCustomerName;
   const fiscalDocumentInvalid =
     inlineIdentityRequired &&
     !validateDominicanDocument(draftDocumentType, normalizedDraftDocumentNumber);
+  const matchingLocalTaxIdentityLookup =
+    taxIdentityLookup !== null &&
+    taxIdentityLookup.orderId === order?.id &&
+    taxIdentityLookup.documentType === draftDocumentType &&
+    taxIdentityLookup.documentNumber === normalizedDraftDocumentNumber
+      ? taxIdentityLookup
+      : null;
+  const localTaxIdentityLookup = matchingLocalTaxIdentityLookup?.result ?? null;
+  const localOverrideExpiresAtMs =
+    localTaxIdentityLookup?.source === 'MANUAL_OVERRIDE'
+      ? parseTimestamp(localTaxIdentityLookup.expiresAt)
+      : null;
+  const localOverrideExpired = Boolean(
+    localTaxIdentityLookup?.source === 'MANUAL_OVERRIDE' &&
+    (localOverrideExpiresAtMs === null || localOverrideExpiresAtMs <= overrideClockMs),
+  );
+  const persistedTaxIdentityLookup = getPersistedTaxIdentityLookup(order);
+  const currentTaxIdentityLookup = matchingLocalTaxIdentityLookup
+    ? localOverrideExpired
+      ? null
+      : localTaxIdentityLookup
+    : persistedTaxIdentityLookup?.documentType === draftDocumentType &&
+        normalizeDominicanDocument(persistedTaxIdentityLookup.documentNumber) ===
+          normalizedDraftDocumentNumber
+      ? persistedTaxIdentityLookup
+      : null;
+  const fiscalIdentityVerified =
+    !inlineIdentityRequired ||
+    (currentTaxIdentityLookup?.outcome === 'VERIFIED' &&
+      currentTaxIdentityLookup.documentType === draftDocumentType &&
+      normalizeDominicanDocument(currentTaxIdentityLookup.documentNumber) ===
+        normalizedDraftDocumentNumber &&
+      Boolean(currentTaxIdentityLookup.fiscalName?.trim()));
+  const fiscalIdentityVerificationMissing = inlineIdentityRequired && !fiscalIdentityVerified;
   const persistedDocumentNumber = persistedIdentity
     ? normalizeDominicanDocument(persistedIdentity.documentNumber)
     : '';
@@ -112,7 +170,65 @@ export function PosPaymentPanel({
     ? persistedIdentity?.documentType !== draftDocumentType ||
       persistedDocumentNumber !== normalizedDraftDocumentNumber
     : false;
-  const fiscalDetailsDirty = draftPurpose !== fiscalPurpose || fiscalIdentityDirty;
+  const canonicalFiscalNameDirty =
+    inlineIdentityRequired &&
+    fiscalIdentityVerified &&
+    normalizeComparableName(order?.fiscalCustomerSnapshot?.name) !==
+      normalizeComparableName(currentTaxIdentityLookup?.fiscalName);
+  const fiscalDetailsDirty =
+    draftPurpose !== fiscalPurpose || fiscalIdentityDirty || canonicalFiscalNameDirty;
+  const taxIdentityLookupKey =
+    order && inlineIdentityRequired && !fiscalDocumentInvalid
+      ? createTaxIdentityLookupKey(order.id, draftDocumentType, normalizedDraftDocumentNumber)
+      : null;
+
+  const verifyTaxIdentityMutation = useMutation({
+    onMutate: () => {
+      setTaxIdentityLookup(null);
+    },
+    mutationFn: (request: TaxIdentityLookupRequest) => {
+      if (!validateDominicanDocument(request.documentType, request.documentNumber)) {
+        throw new Error(
+          request.documentType === 'RNC'
+            ? 'El RNC digitado no es válido.'
+            : 'La cédula digitada no es válida.',
+        );
+      }
+
+      return lookupTaxIdentity(tenantId, accessToken, {
+        documentType: request.documentType,
+        documentNumber: request.documentNumber,
+      });
+    },
+    onSuccess: (result, request) => {
+      if (activeOrderIdRef.current !== request.orderId) {
+        return;
+      }
+
+      setTaxIdentityLookup({
+        orderId: request.orderId,
+        documentType: request.documentType,
+        documentNumber: request.documentNumber,
+        result,
+      });
+
+      if (result.outcome === 'VERIFIED' && result.fiscalName?.trim()) {
+        toast.success('Identidad fiscal verificada', {
+          description: result.fiscalName.trim(),
+        });
+      }
+    },
+    onError: (error, request) => {
+      if (activeOrderIdRef.current !== request.orderId) {
+        return;
+      }
+
+      setTaxIdentityLookup(null);
+      toast.error(
+        error instanceof Error ? error.message : 'No se pudo consultar el padrón de DGII.',
+      );
+    },
+  });
 
   const saveFiscalDetailsMutation = useMutation({
     mutationFn: () => {
@@ -120,8 +236,8 @@ export function PosPaymentPanel({
         throw new Error('Carga una orden antes de confirmar sus datos fiscales.');
       }
 
-      if (fiscalNameMissing) {
-        throw new Error('La orden no tiene el nombre requerido para emitir este comprobante.');
+      if (operationalNameMissing) {
+        throw new Error('La orden no tiene el nombre operativo requerido para facturar.');
       }
 
       if (fiscalDocumentInvalid) {
@@ -132,18 +248,26 @@ export function PosPaymentPanel({
         );
       }
 
+      if (!fiscalIdentityVerified) {
+        throw new Error('Verifica el RNC o la cédula con DGII antes de confirmar.');
+      }
+
       return updatePosOrderFiscalDetails(tenantId, accessToken, order.id, {
         fiscalPurpose: draftPurpose,
         ...(inlineIdentityRequired
           ? {
               documentType: draftDocumentType,
               documentNumber: normalizedDraftDocumentNumber,
+              ...(currentTaxIdentityLookup?.overrideId
+                ? { taxIdentityOverrideId: currentTaxIdentityLookup.overrideId }
+                : {}),
             }
           : {}),
       });
     },
     onSuccess: async (updatedOrder) => {
       onFiscalOrderUpdated(updatedOrder);
+      setTaxIdentityLookup(null);
       await queryClient.invalidateQueries({ queryKey: ['sales-orders'] });
       toast.success('Datos fiscales confirmados', {
         description: `${
@@ -161,10 +285,132 @@ export function PosPaymentPanel({
     },
   });
 
-  const fiscalDetailsInvalid = fiscalNameMissing || fiscalDocumentInvalid;
+  useEffect(() => {
+    setTaxIdentityLookup(null);
+    setOverrideDialogOpen(false);
+    setOverrideClockMs(Date.now());
+    lastAutomaticLookupKeyRef.current = null;
+    verifyTaxIdentityMutation.reset();
+    saveFiscalDetailsMutation.reset();
+    // React Query exposes stable reset callbacks; this effect intentionally follows persisted order identity.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    fiscalPurpose,
+    order?.fiscalCustomerSnapshot?.documentNumber,
+    order?.fiscalCustomerSnapshot?.documentType,
+    order?.id,
+  ]);
+
+  useEffect(() => {
+    if (localOverrideExpiresAtMs === null || localOverrideExpired) {
+      return;
+    }
+
+    const updateClock = () => setOverrideClockMs(Date.now());
+    const intervalId = window.setInterval(updateClock, 1_000);
+    const expirationId = window.setTimeout(
+      updateClock,
+      Math.max(0, localOverrideExpiresAtMs - Date.now()) + 25,
+    );
+
+    return () => {
+      window.clearInterval(intervalId);
+      window.clearTimeout(expirationId);
+    };
+  }, [localOverrideExpiresAtMs, localOverrideExpired]);
+
+  useEffect(() => {
+    if (
+      !order?.id ||
+      !taxIdentityLookupKey ||
+      fiscalIdentityVerified ||
+      localOverrideExpired ||
+      lastAutomaticLookupKeyRef.current === taxIdentityLookupKey
+    ) {
+      return;
+    }
+
+    const request: TaxIdentityLookupRequest = {
+      orderId: order.id,
+      documentType: draftDocumentType,
+      documentNumber: normalizedDraftDocumentNumber,
+    };
+    const timeoutId = window.setTimeout(() => {
+      if (lastAutomaticLookupKeyRef.current === taxIdentityLookupKey) {
+        return;
+      }
+
+      lastAutomaticLookupKeyRef.current = taxIdentityLookupKey;
+      saveFiscalDetailsMutation.reset();
+      verifyTaxIdentityMutation.mutate(request);
+    }, 650);
+
+    return () => window.clearTimeout(timeoutId);
+    // The request is intentionally keyed by the normalized fiscal identity rather than hook objects.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fiscalIdentityVerified, localOverrideExpired, taxIdentityLookupKey]);
+
+  function invalidateFiscalIdentityVerification() {
+    setTaxIdentityLookup(null);
+    setOverrideDialogOpen(false);
+    setOverrideClockMs(Date.now());
+    lastAutomaticLookupKeyRef.current = null;
+    verifyTaxIdentityMutation.reset();
+    saveFiscalDetailsMutation.reset();
+  }
+
+  function requestTaxIdentityLookup() {
+    if (!order || !taxIdentityLookupKey) {
+      return;
+    }
+
+    lastAutomaticLookupKeyRef.current = taxIdentityLookupKey;
+    saveFiscalDetailsMutation.reset();
+    verifyTaxIdentityMutation.mutate({
+      orderId: order.id,
+      documentType: draftDocumentType,
+      documentNumber: normalizedDraftDocumentNumber,
+    });
+  }
+
+  const fiscalDetailsInvalid =
+    operationalNameMissing || fiscalDocumentInvalid || fiscalIdentityVerificationMissing;
   const fiscalDetailsSaving = saveFiscalDetailsMutation.isPending;
+  const fiscalIdentityChecking = verifyTaxIdentityMutation.isPending;
   const fiscalDetailsBlockPayment =
-    fiscalDetailsDirty || fiscalDetailsInvalid || fiscalDetailsSaving;
+    fiscalDetailsDirty || fiscalDetailsInvalid || fiscalDetailsSaving || fiscalIdentityChecking;
+  const taxIdentityDisplay = getTaxIdentityOutcomeDisplay(currentTaxIdentityLookup?.outcome);
+  const manualIdentityAuthorized = currentTaxIdentityLookup?.source === 'MANUAL_OVERRIDE';
+  const taxIdentityHeading = getTaxIdentityHeading(
+    currentTaxIdentityLookup,
+    fiscalIdentityChecking,
+  );
+  const overrideRemainingMs =
+    manualIdentityAuthorized && localOverrideExpiresAtMs !== null
+      ? Math.max(0, localOverrideExpiresAtMs - overrideClockMs)
+      : null;
+  const lookupAttemptedForCurrentDocument = Boolean(
+    taxIdentityLookupKey &&
+    (lastAutomaticLookupKeyRef.current === taxIdentityLookupKey ||
+      currentTaxIdentityLookup ||
+      verifyTaxIdentityMutation.isError),
+  );
+  const lookupButtonLabel = fiscalIdentityChecking
+    ? 'Consultando DGII...'
+    : currentTaxIdentityLookup?.outcome === 'VERIFIED'
+      ? 'Verificar nuevamente'
+      : lookupAttemptedForCurrentDocument
+        ? 'Reintentar'
+        : 'Verificar ahora';
+  const canRequestManualOverride = Boolean(
+    order &&
+    !fiscalDocumentInvalid &&
+    !fiscalIdentityVerified &&
+    !fiscalIdentityChecking &&
+    (localOverrideExpired ||
+      (currentTaxIdentityLookup && currentTaxIdentityLookup.outcome !== 'VERIFIED') ||
+      verifyTaxIdentityMutation.isError),
+  );
 
   return (
     <div className="space-y-3">
@@ -195,13 +441,19 @@ export function PosPaymentPanel({
             </span>
           </div>
 
-          <fieldset className="space-y-2" disabled={!order || fiscalDetailsSaving || isCompleting}>
+          <fieldset
+            className="space-y-2"
+            disabled={!order || fiscalDetailsSaving || fiscalIdentityChecking || isCompleting}
+          >
             <legend className="text-sm font-medium">Tipo de comprobante</legend>
             <div className="grid gap-2 sm:grid-cols-2">
               <button
                 type="button"
                 aria-pressed={draftPurpose === 'CONSUMER'}
-                onClick={() => setDraftPurpose('CONSUMER')}
+                onClick={() => {
+                  setDraftPurpose('CONSUMER');
+                  invalidateFiscalIdentityVerification();
+                }}
                 className={cn(
                   'rounded-lg border px-3 py-3 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60',
                   draftPurpose === 'CONSUMER'
@@ -217,7 +469,10 @@ export function PosPaymentPanel({
               <button
                 type="button"
                 aria-pressed={draftPurpose === 'FISCAL_CREDIT'}
-                onClick={() => setDraftPurpose('FISCAL_CREDIT')}
+                onClick={() => {
+                  setDraftPurpose('FISCAL_CREDIT');
+                  invalidateFiscalIdentityVerification();
+                }}
                 className={cn(
                   'rounded-lg border px-3 py-3 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60',
                   draftPurpose === 'FISCAL_CREDIT'
@@ -248,17 +503,18 @@ export function PosPaymentPanel({
               </div>
 
               <div className="space-y-2">
-                <Label htmlFor="posFiscalCustomerName">Razón social / nombre</Label>
+                <Label htmlFor="posFiscalCustomerName">Nombre operativo de la orden</Label>
                 <Input
                   id="posFiscalCustomerName"
-                  value={customerName}
+                  value={operationalCustomerName}
                   readOnly
                   aria-readonly="true"
                   className="bg-zinc-100"
                   placeholder="Nombre recibido desde la toma de orden"
                 />
                 <p className="text-xs text-muted-foreground">
-                  Este nombre proviene de la toma de orden.
+                  Proviene de Toma de órdenes y se conserva como referencia. Para la factura se
+                  usará la identidad fiscal verificada o autorizada.
                 </p>
               </div>
 
@@ -268,10 +524,13 @@ export function PosPaymentPanel({
                   <select
                     id="posFiscalDocumentType"
                     value={draftDocumentType}
-                    disabled={!order || fiscalDetailsSaving || isCompleting}
+                    disabled={
+                      !order || fiscalDetailsSaving || fiscalIdentityChecking || isCompleting
+                    }
                     onChange={(event) => {
                       setDraftDocumentType(event.target.value as FiscalIdentityDocumentType);
                       setDraftDocumentNumber('');
+                      invalidateFiscalIdentityVerification();
                     }}
                     className="h-10 w-full rounded-md border border-input bg-white px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:bg-zinc-100"
                   >
@@ -286,11 +545,16 @@ export function PosPaymentPanel({
                   <Input
                     id="posFiscalDocumentNumber"
                     value={draftDocumentNumber}
-                    disabled={!order || fiscalDetailsSaving || isCompleting}
+                    disabled={
+                      !order || fiscalDetailsSaving || fiscalIdentityChecking || isCompleting
+                    }
                     inputMode="numeric"
                     autoComplete="off"
                     placeholder={draftDocumentType === 'RNC' ? '1-01-00000-1' : '001-0000000-1'}
-                    onChange={(event) => setDraftDocumentNumber(event.target.value)}
+                    onChange={(event) => {
+                      setDraftDocumentNumber(event.target.value);
+                      invalidateFiscalIdentityVerification();
+                    }}
                     onBlur={() => {
                       if (normalizedDraftDocumentNumber) {
                         setDraftDocumentNumber(
@@ -304,13 +568,157 @@ export function PosPaymentPanel({
                 </div>
               </div>
 
-              {fiscalNameMissing ? (
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                <p className="text-xs text-muted-foreground">
+                  La consulta no crea ni modifica registros en el módulo Clientes.
+                </p>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={
+                    !order ||
+                    fiscalDocumentInvalid ||
+                    fiscalIdentityChecking ||
+                    fiscalDetailsSaving ||
+                    isCompleting
+                  }
+                  onClick={requestTaxIdentityLookup}
+                  aria-label={`${lookupAttemptedForCurrentDocument ? 'Reintentar la consulta de' : 'Verificar'} ${
+                    draftDocumentType === 'RNC' ? 'RNC' : 'cédula'
+                  } en el padrón de DGII`}
+                >
+                  {fiscalIdentityChecking ? (
+                    <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden="true" />
+                  ) : (
+                    <Search className="h-4 w-4" aria-hidden="true" />
+                  )}
+                  {lookupButtonLabel}
+                </Button>
+              </div>
+
+              <div
+                className={cn('rounded-md border px-3 py-3', taxIdentityDisplay.containerClassName)}
+                role={
+                  currentTaxIdentityLookup && currentTaxIdentityLookup.outcome !== 'VERIFIED'
+                    ? 'alert'
+                    : 'status'
+                }
+                aria-live="polite"
+              >
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <ShieldCheck className="h-4 w-4 shrink-0" aria-hidden="true" />
+                      <p className="text-xs font-semibold uppercase tracking-wide">
+                        {taxIdentityHeading}
+                      </p>
+                    </div>
+                    <p className="mt-1 break-words text-sm font-semibold">
+                      {fiscalIdentityChecking
+                        ? 'Consultando el padrón oficial...'
+                        : currentTaxIdentityLookup?.fiscalName?.trim() ||
+                          taxIdentityDisplay.message}
+                    </p>
+                  </div>
+                  <span
+                    className={cn(
+                      'w-fit shrink-0 rounded-full px-2.5 py-1 text-xs font-semibold',
+                      taxIdentityDisplay.badgeClassName,
+                    )}
+                  >
+                    {fiscalIdentityChecking
+                      ? 'Consultando'
+                      : manualIdentityAuthorized
+                        ? 'Autorizado'
+                        : taxIdentityDisplay.badgeLabel}
+                  </span>
+                </div>
+
+                {currentTaxIdentityLookup ? (
+                  <dl
+                    className={cn(
+                      'mt-3 grid gap-2 border-t border-current/15 pt-3 text-xs',
+                      overrideRemainingMs === null ? 'sm:grid-cols-3' : 'sm:grid-cols-4',
+                    )}
+                  >
+                    <div>
+                      <dt className="font-medium opacity-70">Estado en padrón</dt>
+                      <dd className="mt-0.5 font-semibold">
+                        {formatRegistryStatus(currentTaxIdentityLookup.registryStatus)}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt className="font-medium opacity-70">Fuente / actualización</dt>
+                      <dd className="mt-0.5 font-semibold">
+                        {formatTaxIdentitySource(currentTaxIdentityLookup.source)} ·{' '}
+                        {formatLookupDate(currentTaxIdentityLookup.sourceUpdatedAt)}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt className="font-medium opacity-70">Consultado</dt>
+                      <dd className="mt-0.5 font-semibold">
+                        {formatLookupDate(currentTaxIdentityLookup.checkedAt)}
+                      </dd>
+                    </div>
+                    {overrideRemainingMs !== null ? (
+                      <div>
+                        <dt className="font-medium opacity-70">Autorización vigente</dt>
+                        <dd className="mt-0.5 font-semibold">
+                          {formatOverrideRemainingTime(overrideRemainingMs)}
+                        </dd>
+                      </div>
+                    ) : null}
+                  </dl>
+                ) : null}
+              </div>
+
+              {localOverrideExpired ? (
+                <p className="rounded-md bg-danger/10 px-3 py-2 text-sm text-danger" role="alert">
+                  La autorización temporal del supervisor venció. Solicita una nueva autorización
+                  antes de confirmar los datos fiscales.
+                </p>
+              ) : null}
+
+              {verifyTaxIdentityMutation.isError ? (
+                <p className="rounded-md bg-danger/10 px-3 py-2 text-sm text-danger" role="alert">
+                  {verifyTaxIdentityMutation.error instanceof Error
+                    ? verifyTaxIdentityMutation.error.message
+                    : 'No se pudo consultar el padrón de DGII.'}
+                </p>
+              ) : null}
+
+              {canRequestManualOverride ? (
+                <div className="flex flex-col gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-3 text-sm text-amber-950 sm:flex-row sm:items-center sm:justify-between">
+                  <p>
+                    Para continuar sin una coincidencia activa en DGII, un supervisor debe revisar
+                    el documento y autorizar este caso excepcional.
+                  </p>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    className="shrink-0 border-amber-300 bg-white"
+                    onClick={() => setOverrideDialogOpen(true)}
+                  >
+                    <ShieldCheck className="h-4 w-4" aria-hidden="true" />
+                    Solicitar autorización
+                  </Button>
+                </div>
+              ) : null}
+
+              {operationalNameMissing ? (
                 <p className="rounded-md bg-danger/10 px-3 py-2 text-sm text-danger" role="alert">
                   La orden no tiene nombre. Corrige la orden antes de emitir este comprobante.
                 </p>
               ) : fiscalDocumentInvalid ? (
                 <p className="rounded-md bg-danger/10 px-3 py-2 text-sm text-danger" role="alert">
                   Digita un {draftDocumentType === 'RNC' ? 'RNC' : 'número de cédula'} válido.
+                </p>
+              ) : currentTaxIdentityLookup && !fiscalIdentityVerified ? (
+                <p className="rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-950" role="alert">
+                  No se puede confirmar este comprobante con el resultado actual. Verifica los datos
+                  o solicita la revisión y autorización de un supervisor.
                 </p>
               ) : null}
 
@@ -440,7 +848,15 @@ export function PosPaymentPanel({
             </p>
           ) : null}
 
-          {fiscalDetailsDirty ? (
+          {fiscalIdentityChecking ? (
+            <p className="rounded-md bg-sky-50 px-3 py-2 text-sm text-sky-950" role="status">
+              Consultando la identidad fiscal en el padrón de DGII...
+            </p>
+          ) : fiscalIdentityVerificationMissing && !fiscalDocumentInvalid ? (
+            <p className="rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-900" role="status">
+              Verifica el RNC o la cédula con DGII para habilitar la facturación.
+            </p>
+          ) : fiscalDetailsDirty ? (
             <p className="rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-900" role="status">
               Hay cambios fiscales sin confirmar. Confírmalos arriba para habilitar el cobro.
             </p>
@@ -522,12 +938,197 @@ export function PosPaymentPanel({
 
         {message ? <p className="mt-3 text-sm text-muted-foreground">{message}</p> : null}
       </div>
+
+      {order ? (
+        <TaxIdentityOverrideDialog
+          open={overrideDialogOpen}
+          onClose={() => setOverrideDialogOpen(false)}
+          session={{ tenantId, accessToken }}
+          contextType="POS_ORDER"
+          contextId={order.id}
+          documentType={draftDocumentType}
+          documentNumber={normalizedDraftDocumentNumber}
+          suggestedFiscalName={
+            currentTaxIdentityLookup?.fiscalName?.trim() ||
+            localTaxIdentityLookup?.fiscalName?.trim() ||
+            operationalCustomerName
+          }
+          registryOutcome={currentTaxIdentityLookup?.outcome ?? null}
+          onAuthorized={(result) => {
+            setOverrideClockMs(Date.now());
+            verifyTaxIdentityMutation.reset();
+            saveFiscalDetailsMutation.reset();
+            setTaxIdentityLookup({
+              orderId: order.id,
+              documentType: draftDocumentType,
+              documentNumber: normalizedDraftDocumentNumber,
+              result,
+            });
+          }}
+        />
+      ) : null}
     </div>
   );
 }
 
-function getOrderFiscalName(order: SalesOrder | null) {
-  return order?.clientName?.trim() || order?.fiscalCustomerSnapshot?.name.trim() || '';
+function createTaxIdentityLookupKey(
+  orderId: string,
+  documentType: FiscalIdentityDocumentType,
+  documentNumber: string,
+) {
+  return `${orderId}:${documentType}:${documentNumber}`;
+}
+
+function parseTimestamp(value: string | null | undefined) {
+  if (!value) {
+    return null;
+  }
+
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+function getTaxIdentityHeading(lookup: UsableTaxIdentityLookup | null, checking: boolean) {
+  if (checking) {
+    return 'Consulta de identidad fiscal en curso';
+  }
+
+  if (lookup?.source === 'MANUAL_OVERRIDE') {
+    return 'Nombre fiscal autorizado por supervisor';
+  }
+
+  if (lookup?.outcome === 'VERIFIED') {
+    return lookup.source === 'TEST_FIXTURE'
+      ? 'Identidad verificada en el padrón de prueba'
+      : 'Razón social verificada por DGII';
+  }
+
+  return 'Consulta de identidad fiscal';
+}
+
+function formatTaxIdentitySource(value: string | null | undefined) {
+  switch (value) {
+    case 'DGII_OFFICIAL':
+      return 'Padrón oficial DGII';
+    case 'TEST_FIXTURE':
+      return 'Padrón de prueba';
+    case 'MANUAL_OVERRIDE':
+      return 'Autorización de supervisor';
+    case null:
+    case undefined:
+    case '':
+      return 'Fuente no indicada';
+    default:
+      return value
+        .replace(/_/g, ' ')
+        .toLocaleLowerCase('es-DO')
+        .replace(/^./, (character) => character.toLocaleUpperCase('es-DO'));
+  }
+}
+
+function formatOverrideRemainingTime(value: number) {
+  const totalSeconds = Math.max(0, Math.ceil(value / 1_000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+
+  if (minutes === 0) {
+    return `${seconds} s restantes`;
+  }
+
+  return `${minutes} min ${seconds.toString().padStart(2, '0')} s`;
+}
+
+function getOrderOperationalName(order: SalesOrder | null) {
+  return order?.clientName?.trim() || '';
+}
+
+function normalizeComparableName(value: string | null | undefined) {
+  return (value ?? '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLocaleUpperCase('es-DO');
+}
+
+function formatLookupDate(value: string | null | undefined) {
+  if (!value) {
+    return 'No indicada';
+  }
+
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return 'No indicada';
+  }
+
+  return new Intl.DateTimeFormat('es-DO', {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+  }).format(date);
+}
+
+function formatRegistryStatus(value: string | null | undefined) {
+  if (!value) {
+    return 'No informado';
+  }
+
+  return value
+    .replace(/_/g, ' ')
+    .toLocaleLowerCase('es-DO')
+    .replace(/^./, (character) => character.toLocaleUpperCase('es-DO'));
+}
+
+function getTaxIdentityOutcomeDisplay(outcome: TaxIdentityLookup['outcome'] | undefined) {
+  const displays: Record<
+    TaxIdentityLookup['outcome'],
+    {
+      badgeLabel: string;
+      message: string;
+      containerClassName: string;
+      badgeClassName: string;
+    }
+  > = {
+    VERIFIED: {
+      badgeLabel: 'Verificado',
+      message: 'Identidad fiscal verificada.',
+      containerClassName: 'border-emerald-200 bg-emerald-50 text-emerald-950',
+      badgeClassName: 'bg-emerald-100 text-emerald-900',
+    },
+    NOT_FOUND: {
+      badgeLabel: 'No encontrado',
+      message: 'El documento no aparece en el padrón local sincronizado de DGII.',
+      containerClassName: 'border-amber-200 bg-amber-50 text-amber-950',
+      badgeClassName: 'bg-amber-100 text-amber-900',
+    },
+    NON_ACTIVE: {
+      badgeLabel: 'No activo',
+      message: 'El contribuyente aparece con un estado no activo en DGII.',
+      containerClassName: 'border-red-200 bg-red-50 text-red-950',
+      badgeClassName: 'bg-red-100 text-red-900',
+    },
+    REGISTRY_STALE: {
+      badgeLabel: 'Padrón desactualizado',
+      message: 'La copia local del padrón requiere sincronización antes de validar.',
+      containerClassName: 'border-amber-200 bg-amber-50 text-amber-950',
+      badgeClassName: 'bg-amber-100 text-amber-900',
+    },
+    UNAVAILABLE: {
+      badgeLabel: 'No disponible',
+      message: 'La validación fiscal no está disponible en este momento.',
+      containerClassName: 'border-red-200 bg-red-50 text-red-950',
+      badgeClassName: 'bg-red-100 text-red-900',
+    },
+  };
+
+  return outcome
+    ? displays[outcome]
+    : {
+        badgeLabel: 'Pendiente',
+        message: 'Digita un documento válido para consultarlo automáticamente en DGII.',
+        containerClassName: 'border-zinc-200 bg-white text-zinc-800',
+        badgeClassName: 'bg-zinc-100 text-zinc-700',
+      };
 }
 
 function getPersistedFiscalIdentity(order: SalesOrder | null): {
@@ -545,6 +1146,31 @@ function getPersistedFiscalIdentity(order: SalesOrder | null): {
   return {
     documentType: snapshot.documentType,
     documentNumber: snapshot.documentNumber,
+  };
+}
+
+function getPersistedTaxIdentityLookup(order: SalesOrder | null): UsableTaxIdentityLookup | null {
+  const snapshot = order?.fiscalCustomerSnapshot;
+  const verification = snapshot?.verification;
+  if (
+    !snapshot ||
+    !verification ||
+    (snapshot.documentType !== 'RNC' && snapshot.documentType !== 'CEDULA') ||
+    !snapshot.documentNumber ||
+    !snapshot.name
+  ) {
+    return null;
+  }
+
+  return {
+    outcome: 'VERIFIED',
+    documentType: snapshot.documentType,
+    documentNumber: snapshot.documentNumber,
+    fiscalName: snapshot.name,
+    registryStatus: verification.registryStatus,
+    source: verification.source,
+    sourceUpdatedAt: verification.sourceUpdatedAt,
+    checkedAt: verification.verifiedAt,
   };
 }
 

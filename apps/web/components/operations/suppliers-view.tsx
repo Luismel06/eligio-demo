@@ -30,6 +30,7 @@ import {
   type Supplier,
   type SupplierPayload,
   type SupplierStatus,
+  type TaxIdentityOverrideResult,
 } from '@/lib/api';
 import { isAdminSession } from '@/lib/authorization';
 import {
@@ -47,6 +48,14 @@ import {
   textareaClassName,
 } from './procurement-ui';
 import { SessionRequired, useCurrentSession } from './session-required';
+import { TaxIdentityOverrideDialog } from './tax-identity-override-dialog';
+import {
+  hasStoredTaxIdentityVerification,
+  hasVerifiedTaxIdentity,
+  TaxIdentityVerification,
+  TaxIdentityVerificationBadge,
+  type TaxIdentityVerificationState,
+} from './tax-identity-verification';
 
 type SupplierForm = {
   commercialName: string;
@@ -108,7 +117,12 @@ export function SuppliersView() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [showForm, setShowForm] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [editingSupplier, setEditingSupplier] = useState<Supplier | null>(null);
   const [form, setForm] = useState<SupplierForm>(emptySupplierForm);
+  const [taxIdentity, setTaxIdentity] = useState<TaxIdentityVerificationState | null>(null);
+  const [taxIdentityContextId, setTaxIdentityContextId] = useState('');
+  const [manualOverride, setManualOverride] = useState<TaxIdentityOverrideResult | null>(null);
+  const [overrideDialogOpen, setOverrideDialogOpen] = useState(false);
   const [productId, setProductId] = useState('');
   const [supplierSku, setSupplierSku] = useState('');
   const [lastCostNet, setLastCostNet] = useState('');
@@ -121,6 +135,24 @@ export function SuppliersView() {
   const [supplierStatusAction, setSupplierStatusAction] = useState<SupplierStatusAction | null>(
     null,
   );
+  const unchangedStoredFiscalIdentity = Boolean(
+    editingSupplier &&
+    editingSupplier.documentType === form.documentType &&
+    normalizeDominicanDocument(editingSupplier.documentNumber) ===
+      normalizeDominicanDocument(form.documentNumber) &&
+    hasStoredTaxIdentityVerification(editingSupplier.taxIdentityVerification),
+  );
+  const storedFiscalIdentityFallback = Boolean(
+    unchangedStoredFiscalIdentity &&
+    taxIdentity?.checksumValid &&
+    !taxIdentity.pending &&
+    (!taxIdentity.result ||
+      taxIdentity.result.outcome === 'UNAVAILABLE' ||
+      taxIdentity.result.outcome === 'REGISTRY_STALE'),
+  );
+  const supplierIdentityReady =
+    hasVerifiedTaxIdentity(taxIdentity, form.documentType, form.documentNumber) ||
+    storedFiscalIdentityFallback;
 
   useEffect(() => {
     const query = new URLSearchParams(window.location.search).get('q');
@@ -162,7 +194,12 @@ export function SuppliersView() {
       });
       setSelectedId(supplier.id);
       setEditingId(null);
+      setEditingSupplier(null);
       setForm(emptySupplierForm);
+      setTaxIdentity(null);
+      setManualOverride(null);
+      setTaxIdentityContextId('');
+      setOverrideDialogOpen(false);
       setShowForm(false);
       toast.success('Suplidor guardado correctamente.');
     },
@@ -173,7 +210,9 @@ export function SuppliersView() {
       if (!session) throw new Error('Sesión requerida.');
       return next === 'INACTIVE'
         ? deactivateSupplier(session.tenantId, session.accessToken, supplier.id)
-        : updateSupplier(session.tenantId, session.accessToken, supplier.id, { status: 'ACTIVE' });
+        : updateSupplier(session.tenantId, session.accessToken, supplier.id, {
+            status: 'ACTIVE',
+          });
     },
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['suppliers'] });
@@ -287,9 +326,18 @@ export function SuppliersView() {
       toast.error(`El ${form.documentType === 'RNC' ? 'RNC' : 'número de cédula'} no es válido.`);
       return;
     }
+    if (!supplierIdentityReady) {
+      toast.error('Verifica el RNC o la cédula en DGII antes de guardar el suplidor.');
+      return;
+    }
     saveMutation.mutate({
       commercialName: form.commercialName.trim(),
-      legalName: optional(form.legalName),
+      legalName:
+        taxIdentity?.result?.outcome === 'VERIFIED'
+          ? (taxIdentity.result.fiscalName ?? undefined)
+          : storedFiscalIdentityFallback
+            ? (editingSupplier?.legalName ?? undefined)
+            : optional(form.legalName),
       documentType: form.documentType,
       documentNumber,
       phone: optional(form.phone),
@@ -301,11 +349,18 @@ export function SuppliersView() {
       paymentTerms: optional(form.paymentTerms),
       creditDays: Number(form.creditDays || 0),
       notes: optional(form.notes),
+      taxIdentityOverrideId:
+        taxIdentity?.result?.source === 'MANUAL_OVERRIDE'
+          ? taxIdentity.result.overrideId
+          : undefined,
+      taxIdentityContextId:
+        taxIdentity?.result?.source === 'MANUAL_OVERRIDE' ? taxIdentityContextId : undefined,
     });
   }
 
   function editSupplier(supplier: Supplier) {
     setEditingId(supplier.id);
+    setEditingSupplier(supplier);
     setForm({
       commercialName: supplier.commercialName,
       legalName: supplier.legalName ?? '',
@@ -321,7 +376,43 @@ export function SuppliersView() {
       creditDays: String(supplier.creditDays),
       notes: supplier.notes ?? '',
     });
+    setTaxIdentity(null);
+    setManualOverride(null);
+    setTaxIdentityContextId(supplier.id);
+    setOverrideDialogOpen(false);
     setShowForm(true);
+  }
+
+  function handleTaxIdentityChange(state: TaxIdentityVerificationState) {
+    setTaxIdentity(state);
+    const fiscalName = state.result?.outcome === 'VERIFIED' ? state.result.fiscalName : null;
+    if (!fiscalName) return;
+
+    setForm((current) => {
+      if (
+        current.documentType !== state.documentType ||
+        normalizeDominicanDocument(current.documentNumber) !== state.documentNumber ||
+        current.legalName === fiscalName
+      ) {
+        return current;
+      }
+      return { ...current, legalName: fiscalName };
+    });
+  }
+
+  function handleManualOverride(result: TaxIdentityOverrideResult) {
+    setManualOverride(result);
+    setTaxIdentity({
+      result,
+      documentType: result.documentType,
+      documentNumber: normalizeDominicanDocument(result.documentNumber),
+      checksumValid: true,
+      pending: false,
+    });
+    setForm((current) => ({
+      ...current,
+      legalName: result.fiscalName ?? current.legalName,
+    }));
   }
 
   return (
@@ -335,7 +426,12 @@ export function SuppliersView() {
           <Button
             onClick={() => {
               setEditingId(null);
+              setEditingSupplier(null);
               setForm(emptySupplierForm);
+              setTaxIdentity(null);
+              setManualOverride(null);
+              setOverrideDialogOpen(false);
+              setTaxIdentityContextId(showForm ? '' : createTaxIdentityDraftId('supplier-create'));
               setShowForm((value) => !value);
             }}
           >
@@ -351,7 +447,7 @@ export function SuppliersView() {
           <CardHeader>
             <CardTitle>{editingId ? 'Editar suplidor' : 'Registrar suplidor'}</CardTitle>
             <CardDescription>
-              El RNC o la cédula se validará con el dígito verificador dominicano.
+              El RNC o la cédula y la razón social se verificarán en el padrón fiscal de DGII.
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -364,7 +460,10 @@ export function SuppliersView() {
                     maxLength={160}
                     value={form.commercialName}
                     onChange={(event) =>
-                      setForm((current) => ({ ...current, commercialName: event.target.value }))
+                      setForm((current) => ({
+                        ...current,
+                        commercialName: event.target.value,
+                      }))
                     }
                   />
                 </FormField>
@@ -373,9 +472,8 @@ export function SuppliersView() {
                     id="supplier-legal"
                     maxLength={200}
                     value={form.legalName}
-                    onChange={(event) =>
-                      setForm((current) => ({ ...current, legalName: event.target.value }))
-                    }
+                    readOnly
+                    placeholder="Se completará al verificar en DGII"
                   />
                 </FormField>
                 <FormField label="Tipo de documento" htmlFor="supplier-document-type">
@@ -383,117 +481,206 @@ export function SuppliersView() {
                     id="supplier-document-type"
                     className={selectClassName}
                     value={form.documentType}
-                    onChange={(event) =>
+                    onChange={(event) => {
+                      setTaxIdentity(null);
+                      setManualOverride(null);
                       setForm((current) => ({
                         ...current,
                         documentType: event.target.value as 'RNC' | 'CEDULA',
                         documentNumber: '',
-                      }))
-                    }
+                        legalName: '',
+                      }));
+                    }}
                   >
                     <option value="RNC">RNC</option>
                     <option value="CEDULA">Cédula</option>
                   </select>
                 </FormField>
-                <FormField label={form.documentType === 'RNC' ? 'RNC' : 'Cédula'}>
+                <FormField
+                  label={form.documentType === 'RNC' ? 'RNC' : 'Cédula'}
+                  htmlFor="supplier-document"
+                >
                   <Input
+                    id="supplier-document"
                     required
                     inputMode="numeric"
                     value={form.documentNumber}
-                    onChange={(event) =>
+                    onChange={(event) => {
+                      const documentNumber = event.target.value;
+                      setTaxIdentity(null);
+                      setManualOverride(null);
                       setForm((current) => ({
                         ...current,
-                        documentNumber: event.target.value,
-                      }))
-                    }
+                        documentNumber,
+                        legalName:
+                          editingSupplier?.documentType === current.documentType &&
+                          normalizeDominicanDocument(editingSupplier.documentNumber) ===
+                            normalizeDominicanDocument(documentNumber)
+                            ? (editingSupplier.legalName ?? '')
+                            : '',
+                      }));
+                    }}
                     placeholder={form.documentType === 'RNC' ? '1-01-00000-1' : '001-0000000-1'}
                   />
                 </FormField>
-                <FormField label="Teléfono">
+                <TaxIdentityVerification
+                  tenantId={session.tenantId}
+                  accessToken={session.accessToken}
+                  documentType={form.documentType}
+                  documentNumber={form.documentNumber}
+                  onChange={handleTaxIdentityChange}
+                  manualOverride={manualOverride}
+                  overrideAction={
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={() => setOverrideDialogOpen(true)}
+                    >
+                      Autorizar con supervisor
+                    </Button>
+                  }
+                  storedVerification={
+                    unchangedStoredFiscalIdentity ? editingSupplier?.taxIdentityVerification : null
+                  }
+                  className="md:col-span-2 xl:col-span-4"
+                />
+                <FormField label="Teléfono" htmlFor="supplier-phone">
                   <Input
+                    id="supplier-phone"
                     value={form.phone}
                     onChange={(event) =>
-                      setForm((current) => ({ ...current, phone: event.target.value }))
+                      setForm((current) => ({
+                        ...current,
+                        phone: event.target.value,
+                      }))
                     }
                   />
                 </FormField>
-                <FormField label="Correo">
+                <FormField label="Correo" htmlFor="supplier-email">
                   <Input
+                    id="supplier-email"
                     type="email"
                     value={form.email}
                     onChange={(event) =>
-                      setForm((current) => ({ ...current, email: event.target.value }))
+                      setForm((current) => ({
+                        ...current,
+                        email: event.target.value,
+                      }))
                     }
                   />
                 </FormField>
-                <FormField label="Persona de contacto">
+                <FormField label="Persona de contacto" htmlFor="supplier-contact-name">
                   <Input
+                    id="supplier-contact-name"
                     value={form.contactName}
                     onChange={(event) =>
-                      setForm((current) => ({ ...current, contactName: event.target.value }))
+                      setForm((current) => ({
+                        ...current,
+                        contactName: event.target.value,
+                      }))
                     }
                   />
                 </FormField>
-                <FormField label="Teléfono del contacto">
+                <FormField label="Teléfono del contacto" htmlFor="supplier-contact-phone">
                   <Input
+                    id="supplier-contact-phone"
                     value={form.contactPhone}
                     onChange={(event) =>
-                      setForm((current) => ({ ...current, contactPhone: event.target.value }))
+                      setForm((current) => ({
+                        ...current,
+                        contactPhone: event.target.value,
+                      }))
                     }
                   />
                 </FormField>
-                <FormField label="Correo del contacto">
+                <FormField label="Correo del contacto" htmlFor="supplier-contact-email">
                   <Input
+                    id="supplier-contact-email"
                     type="email"
                     value={form.contactEmail}
                     onChange={(event) =>
-                      setForm((current) => ({ ...current, contactEmail: event.target.value }))
+                      setForm((current) => ({
+                        ...current,
+                        contactEmail: event.target.value,
+                      }))
                     }
                   />
                 </FormField>
-                <FormField label="Días de crédito">
+                <FormField label="Días de crédito" htmlFor="supplier-credit-days">
                   <Input
+                    id="supplier-credit-days"
                     type="number"
                     min={0}
                     max={3650}
                     value={form.creditDays}
                     onChange={(event) =>
-                      setForm((current) => ({ ...current, creditDays: event.target.value }))
+                      setForm((current) => ({
+                        ...current,
+                        creditDays: event.target.value,
+                      }))
                     }
                   />
                 </FormField>
-                <FormField label="Condiciones de pago" className="md:col-span-2">
+                <FormField
+                  label="Condiciones de pago"
+                  htmlFor="supplier-payment-terms"
+                  className="md:col-span-2"
+                >
                   <Input
+                    id="supplier-payment-terms"
                     value={form.paymentTerms}
                     onChange={(event) =>
-                      setForm((current) => ({ ...current, paymentTerms: event.target.value }))
+                      setForm((current) => ({
+                        ...current,
+                        paymentTerms: event.target.value,
+                      }))
                     }
                     placeholder="Ej.: crédito a 30 días"
                   />
                 </FormField>
-                <FormField label="Dirección" className="md:col-span-2">
+                <FormField label="Dirección" htmlFor="supplier-address" className="md:col-span-2">
                   <Input
+                    id="supplier-address"
                     value={form.address}
                     onChange={(event) =>
-                      setForm((current) => ({ ...current, address: event.target.value }))
+                      setForm((current) => ({
+                        ...current,
+                        address: event.target.value,
+                      }))
                     }
                   />
                 </FormField>
-                <FormField label="Notas" className="md:col-span-2">
+                <FormField label="Notas" htmlFor="supplier-notes" className="md:col-span-2">
                   <textarea
+                    id="supplier-notes"
                     className={textareaClassName}
                     value={form.notes}
                     onChange={(event) =>
-                      setForm((current) => ({ ...current, notes: event.target.value }))
+                      setForm((current) => ({
+                        ...current,
+                        notes: event.target.value,
+                      }))
                     }
                   />
                 </FormField>
               </div>
               <div className="flex flex-wrap justify-end gap-2">
-                <Button type="button" variant="outline" onClick={() => setShowForm(false)}>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => {
+                    setShowForm(false);
+                    setEditingSupplier(null);
+                    setTaxIdentity(null);
+                    setManualOverride(null);
+                    setTaxIdentityContextId('');
+                    setOverrideDialogOpen(false);
+                  }}
+                >
                   Cerrar
                 </Button>
-                <Button disabled={saveMutation.isPending}>
+                <Button disabled={saveMutation.isPending || !supplierIdentityReady}>
                   {saveMutation.isPending ? 'Guardando...' : 'Guardar suplidor'}
                 </Button>
               </div>
@@ -501,11 +688,29 @@ export function SuppliersView() {
           </CardContent>
         </Card>
       ) : null}
+      {showForm && taxIdentityContextId ? (
+        <TaxIdentityOverrideDialog
+          open={overrideDialogOpen}
+          onClose={() => setOverrideDialogOpen(false)}
+          session={session}
+          contextType={editingSupplier ? 'SUPPLIER' : 'SUPPLIER_CREATE'}
+          contextId={editingSupplier?.id ?? taxIdentityContextId}
+          documentType={form.documentType}
+          documentNumber={form.documentNumber}
+          suggestedFiscalName={
+            taxIdentity?.result?.fiscalName || form.legalName || form.commercialName
+          }
+          registryOutcome={taxIdentity?.result?.outcome}
+          onAuthorized={handleManualOverride}
+        />
+      ) : null}
       <Card>
         <CardContent className="grid gap-3 p-4 md:grid-cols-[1fr_220px]">
           <div className="relative">
             <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
             <Input
+              id="supplier-search"
+              aria-label="Buscar suplidores"
               className="pl-9"
               value={search}
               onChange={(event) => setSearch(event.target.value)}
@@ -513,6 +718,8 @@ export function SuppliersView() {
             />
           </div>
           <select
+            id="supplier-status-filter"
+            aria-label="Filtrar suplidores por estado"
             className={selectClassName}
             value={status}
             onChange={(event) => setStatus(event.target.value as typeof status)}
@@ -550,10 +757,17 @@ export function SuppliersView() {
                     <div className="flex justify-between gap-3">
                       <div>
                         <p className="font-semibold">{supplier.commercialName}</p>
+                        <p className="mt-0.5 text-xs text-muted-foreground">
+                          Razón social: {supplier.legalName ?? 'Sin razón social'}
+                        </p>
                         <p className="text-xs text-muted-foreground">
                           {supplier.documentType}{' '}
                           {formatDominicanDocument(supplier.documentType, supplier.documentNumber)}
                         </p>
+                        <TaxIdentityVerificationBadge
+                          verification={supplier.taxIdentityVerification}
+                          className="mt-2"
+                        />
                       </div>
                       <ProcurementStatusBadge status={supplier.status} />
                     </div>
@@ -586,8 +800,17 @@ export function SuppliersView() {
                           </p>
                         </TableCell>
                         <TableCell>
-                          {supplier.documentType}{' '}
-                          {formatDominicanDocument(supplier.documentType, supplier.documentNumber)}
+                          <div>
+                            {supplier.documentType}{' '}
+                            {formatDominicanDocument(
+                              supplier.documentType,
+                              supplier.documentNumber,
+                            )}
+                          </div>
+                          <TaxIdentityVerificationBadge
+                            verification={supplier.taxIdentityVerification}
+                            className="mt-1"
+                          />
                         </TableCell>
                         <TableCell>
                           <p>{supplier.contactName ?? supplier.phone ?? 'Sin contacto'}</p>
@@ -670,6 +893,32 @@ export function SuppliersView() {
                       detailQuery.data.paymentTerms ??
                       `${detailQuery.data.creditDays} días de crédito`
                     }
+                  />
+                </div>
+                <div className="rounded-md border bg-muted/10 p-4">
+                  <p className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                    Identidad fiscal
+                  </p>
+                  <dl className="mb-3 grid gap-3 text-sm sm:grid-cols-2">
+                    <div>
+                      <dt className="text-xs text-muted-foreground">Razón social</dt>
+                      <dd className="mt-0.5 font-medium">
+                        {detailQuery.data.legalName ?? 'Sin razón social'}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt className="text-xs text-muted-foreground">Documento fiscal</dt>
+                      <dd className="mt-0.5 font-medium">
+                        {detailQuery.data.documentType}{' '}
+                        {formatDominicanDocument(
+                          detailQuery.data.documentType,
+                          detailQuery.data.documentNumber,
+                        )}
+                      </dd>
+                    </div>
+                  </dl>
+                  <TaxIdentityVerificationBadge
+                    verification={detailQuery.data.taxIdentityVerification}
                   />
                 </div>
 
@@ -901,7 +1150,10 @@ export function SuppliersView() {
                       disabled={statusMutation.isPending}
                       onClick={() => {
                         const next = detailQuery.data!.status === 'ACTIVE' ? 'INACTIVE' : 'ACTIVE';
-                        setSupplierStatusAction({ supplier: detailQuery.data!, next });
+                        setSupplierStatusAction({
+                          supplier: detailQuery.data!,
+                          next,
+                        });
                       }}
                     >
                       {detailQuery.data.status === 'ACTIVE' ? 'Desactivar' : 'Reactivar'}
@@ -1087,7 +1339,9 @@ export function SuppliersView() {
         onConfirm={() => {
           const action = supplierStatusAction;
           if (!action) return;
-          statusMutation.mutate(action, { onSuccess: () => setSupplierStatusAction(null) });
+          statusMutation.mutate(action, {
+            onSuccess: () => setSupplierStatusAction(null),
+          });
         }}
         summary={
           supplierStatusAction ? (
@@ -1137,4 +1391,8 @@ function isOptionalNonNegativeInteger(value: string) {
 }
 function showError(error: unknown) {
   toast.error(error instanceof Error ? error.message : 'No se pudo completar la operación.');
+}
+
+function createTaxIdentityDraftId(prefix: string) {
+  return `${prefix}-${crypto.randomUUID()}`;
 }

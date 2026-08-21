@@ -206,6 +206,68 @@ export type LoginResponse = {
 };
 
 export type CustomerDocumentType = 'RNC' | 'CEDULA' | 'PASSPORT' | 'CONSUMER_FINAL' | 'OTHER';
+export type TaxIdentityDocumentType = 'RNC' | 'CEDULA';
+export type TaxIdentityLookupOutcome =
+  | 'VERIFIED'
+  | 'NOT_FOUND'
+  | 'NON_ACTIVE'
+  | 'REGISTRY_STALE'
+  | 'UNAVAILABLE';
+export type TaxIdentityLookup = {
+  outcome: TaxIdentityLookupOutcome;
+  documentType: TaxIdentityDocumentType;
+  documentNumber: string;
+  fiscalName: string | null;
+  registryStatus: string | null;
+  source: string | null;
+  sourceUpdatedAt: string | null;
+  checkedAt: string;
+  overrideId?: string;
+};
+export type TaxIdentityVerificationEvidence = {
+  outcome: 'VERIFIED' | 'MANUAL_OVERRIDE';
+  documentType: TaxIdentityDocumentType;
+  documentNumber: string;
+  fiscalName: string;
+  source: 'DGII_OFFICIAL' | 'TEST_FIXTURE' | 'MANUAL_OVERRIDE';
+  sourceUpdatedAt: string | null;
+  verifiedAt: string;
+  registryStatus: string;
+  overrideId?: string;
+};
+export type FiscalCustomerVerificationEvidence = Pick<
+  TaxIdentityVerificationEvidence,
+  'outcome' | 'source' | 'sourceUpdatedAt' | 'verifiedAt' | 'registryStatus' | 'overrideId'
+>;
+export type TaxIdentityContextType =
+  | 'POS_ORDER'
+  | 'CUSTOMER'
+  | 'SUPPLIER'
+  | 'CUSTOMER_CREATE'
+  | 'SUPPLIER_CREATE';
+export type TaxIdentityOverridePayload = {
+  contextType: TaxIdentityContextType;
+  contextId: string;
+  documentType: TaxIdentityDocumentType;
+  documentNumber: string;
+  fiscalName: string;
+  reason: string;
+  supervisorEmail: string;
+  supervisorPassword: string;
+  expiresInMinutes?: number;
+};
+export type TaxIdentityOverrideResult = TaxIdentityLookup & {
+  overrideId: string;
+  expiresAt: string;
+};
+export type FiscalCustomerSnapshot = {
+  id: string | null;
+  name: string;
+  operationalName?: string;
+  documentType: CustomerDocumentType;
+  documentNumber: string;
+  verification?: FiscalCustomerVerificationEvidence;
+};
 export type FiscalDocumentPurpose = 'CONSUMER' | 'FISCAL_CREDIT';
 export type LocalNcfDocumentType = 'CONSUMER_02' | 'FISCAL_CREDIT_01';
 export type InvoiceDocumentType =
@@ -262,6 +324,7 @@ export type Customer = {
   creditStatus: 'ACTIVE' | 'BLOCKED';
   creditEnabledAt: string | null;
   creditEnabledById: string | null;
+  taxIdentityVerification: TaxIdentityVerificationEvidence | null;
   createdAt: string;
 };
 
@@ -271,6 +334,7 @@ export type UpdatePosOrderFiscalDetailsPayload = {
   customerId?: string | null;
   documentType?: 'RNC' | 'CEDULA';
   documentNumber?: string;
+  taxIdentityOverrideId?: string;
 };
 
 export type ProductTaxCategory = 'ITBIS_18' | 'ITBIS_16' | 'EXEMPT';
@@ -361,12 +425,7 @@ export type Invoice = {
     pointOfSale: string;
     pointOfSaleLocation: string | null;
   } | null;
-  fiscalCustomerSnapshot: {
-    id: string | null;
-    name: string;
-    documentType: CustomerDocumentType;
-    documentNumber: string;
-  } | null;
+  fiscalCustomerSnapshot: FiscalCustomerSnapshot | null;
   status: string;
   fiscalStatus: InvoiceFiscalStatus;
   subtotal: string;
@@ -601,12 +660,7 @@ export type SalesOrder = {
   paymentMode: SalePaymentMode;
   fiscalPurpose: FiscalDocumentPurpose;
   fiscalDocumentTypeSnapshot: InvoiceDocumentType;
-  fiscalCustomerSnapshot: {
-    id: string | null;
-    name: string;
-    documentType: CustomerDocumentType;
-    documentNumber: string;
-  } | null;
+  fiscalCustomerSnapshot: FiscalCustomerSnapshot | null;
   initialPaymentOption: InitialPaymentOption | null;
   initialPaymentRate: string;
   initialPaymentAmount: string;
@@ -1124,6 +1178,7 @@ export type Supplier = {
   notes: string | null;
   status: SupplierStatus;
   deactivatedAt: string | null;
+  taxIdentityVerification: TaxIdentityVerificationEvidence | null;
   createdAt: string;
   updatedAt: string;
   products?: SupplierProduct[];
@@ -1147,6 +1202,8 @@ export type SupplierPayload = {
   creditDays?: number;
   notes?: string;
   status?: SupplierStatus;
+  taxIdentityOverrideId?: string;
+  taxIdentityContextId?: string;
 };
 
 export type PurchaseOrderStatus =
@@ -2031,6 +2088,33 @@ export function getCustomers(tenantId: string, accessToken: string) {
   });
 }
 
+export function lookupTaxIdentity(
+  tenantId: string,
+  accessToken: string,
+  payload: {
+    documentType: TaxIdentityDocumentType;
+    documentNumber: string;
+  },
+) {
+  return fetchJson<TaxIdentityLookup>('/tax-identities/lookup', {
+    method: 'POST',
+    headers: tenantHeaders(tenantId, accessToken),
+    body: JSON.stringify(payload),
+  });
+}
+
+export function authorizeTaxIdentityOverride(
+  tenantId: string,
+  accessToken: string,
+  payload: TaxIdentityOverridePayload,
+) {
+  return fetchJson<TaxIdentityOverrideResult>('/tax-identities/overrides', {
+    method: 'POST',
+    headers: tenantHeaders(tenantId, accessToken),
+    body: JSON.stringify(payload),
+  });
+}
+
 export function createCustomer(
   tenantId: string,
   accessToken: string,
@@ -2285,7 +2369,11 @@ export function approveReturnRequest(
   tenantId: string,
   accessToken: string,
   returnRequestId: string,
-  payload: { cashSessionId?: string; refundMethod?: string; adminNote?: string },
+  payload: {
+    cashSessionId?: string;
+    refundMethod?: string;
+    adminNote?: string;
+  },
 ) {
   return fetchJson<ReturnRequest>(`/returns/${returnRequestId}/approve`, {
     method: 'POST',

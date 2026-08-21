@@ -4,7 +4,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { DocumentType, Prisma, SupplierStatus } from '@qorvex/database';
+import { DocumentType, Prisma, SupplierStatus, TaxIdentityContextType } from '@qorvex/database';
 import {
   normalizeDominicanDocument,
   validateDominicanDocument,
@@ -15,6 +15,7 @@ import { CreateSupplierDto } from './dto/create-supplier.dto';
 import { ListSuppliersQueryDto } from './dto/list-suppliers-query.dto';
 import { AddSupplierProductDto, UpdateSupplierProductDto } from './dto/supplier-product.dto';
 import { UpdateSupplierDto } from './dto/update-supplier.dto';
+import { TaxIdentitiesService } from '../tax-identities/tax-identities.service';
 
 const supplierProductInclude = {
   product: {
@@ -37,6 +38,7 @@ export class SuppliersService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
+    private readonly taxIdentities: TaxIdentitiesService,
   ) {}
 
   findAll(tenantId: string, query: ListSuppliersQueryDto) {
@@ -80,6 +82,7 @@ export class SuppliersService {
   }
 
   async create(tenantId: string, userId: string, dto: CreateSupplierDto) {
+    const { taxIdentityOverrideId, taxIdentityContextId } = dto;
     const commercialName = this.normalizeRequiredName(dto.commercialName);
     const documentNumber = this.normalizeAndValidateDocument(dto.documentType, dto.documentNumber);
 
@@ -88,31 +91,43 @@ export class SuppliersService {
     const status = dto.status ?? SupplierStatus.ACTIVE;
 
     try {
-      const supplier = await this.prisma.supplier.create({
-        data: {
+      const supplier = await this.prisma.$transaction(async (tx) => {
+        const verification = await this.resolveTaxIdentity(tx, {
           tenantId,
-          commercialName,
-          legalName: normalizeOptionalText(dto.legalName),
           documentType: dto.documentType,
           documentNumber,
-          phone: normalizeOptionalText(dto.phone),
-          email: normalizeOptionalEmail(dto.email),
-          address: normalizeOptionalText(dto.address),
-          contactName: normalizeOptionalText(dto.contactName),
-          contactPhone: normalizeOptionalText(dto.contactPhone),
-          contactEmail: normalizeOptionalEmail(dto.contactEmail),
-          paymentTerms: normalizeOptionalText(dto.paymentTerms),
-          creditDays: dto.creditDays ?? 0,
-          notes: normalizeOptionalText(dto.notes),
-          status,
-          createdById: userId,
-          ...(status === SupplierStatus.INACTIVE
-            ? {
-                deactivatedById: userId,
-                deactivatedAt: new Date(),
-              }
-            : {}),
-        },
+          overrideId: taxIdentityOverrideId,
+          contextType: TaxIdentityContextType.SUPPLIER_CREATE,
+          contextId: taxIdentityContextId?.trim() || `supplier-create-${userId}`,
+        });
+
+        return tx.supplier.create({
+          data: {
+            tenantId,
+            commercialName,
+            legalName: verification.fiscalName,
+            documentType: dto.documentType,
+            documentNumber,
+            taxIdentityVerification: verification,
+            phone: normalizeOptionalText(dto.phone),
+            email: normalizeOptionalEmail(dto.email),
+            address: normalizeOptionalText(dto.address),
+            contactName: normalizeOptionalText(dto.contactName),
+            contactPhone: normalizeOptionalText(dto.contactPhone),
+            contactEmail: normalizeOptionalEmail(dto.contactEmail),
+            paymentTerms: normalizeOptionalText(dto.paymentTerms),
+            creditDays: dto.creditDays ?? 0,
+            notes: normalizeOptionalText(dto.notes),
+            status,
+            createdById: userId,
+            ...(status === SupplierStatus.INACTIVE
+              ? {
+                  deactivatedById: userId,
+                  deactivatedAt: new Date(),
+                }
+              : {}),
+          },
+        });
       });
 
       await this.audit.log({
@@ -124,6 +139,8 @@ export class SuppliersService {
         metadata: {
           commercialName: supplier.commercialName,
           documentType: supplier.documentType,
+          documentLast4: supplier.documentNumber.slice(-4),
+          taxIdentitySource: readVerificationSource(supplier.taxIdentityVerification),
         },
       });
 
@@ -174,6 +191,18 @@ export class SuppliersService {
 
     try {
       const supplier = await this.prisma.$transaction(async (tx) => {
+        const verification = await this.resolveTaxIdentity(tx, {
+          tenantId,
+          documentType,
+          documentNumber,
+          overrideId: dto.taxIdentityOverrideId,
+          contextType: TaxIdentityContextType.SUPPLIER,
+          contextId: id,
+          fallbackVerification:
+            documentType === current.documentType && documentNumber === current.documentNumber
+              ? current.taxIdentityVerification
+              : undefined,
+        });
         const updated = await tx.supplier.update({
           where: { id },
           data: {
@@ -181,10 +210,10 @@ export class SuppliersService {
               dto.commercialName === undefined
                 ? undefined
                 : this.normalizeRequiredName(dto.commercialName),
-            legalName:
-              dto.legalName === undefined ? undefined : normalizeOptionalText(dto.legalName),
+            legalName: verification.fiscalName,
             documentType: dto.documentType,
             documentNumber: dto.documentNumber === undefined ? undefined : documentNumber,
+            taxIdentityVerification: verification,
             phone: dto.phone === undefined ? undefined : normalizeOptionalText(dto.phone),
             email: dto.email === undefined ? undefined : normalizeOptionalEmail(dto.email),
             address: dto.address === undefined ? undefined : normalizeOptionalText(dto.address),
@@ -249,7 +278,13 @@ export class SuppliersService {
               : 'SUPPLIER_UPDATED',
         entity: 'Supplier',
         entityId: id,
-        metadata: { fields: Object.keys(dto) },
+        metadata: {
+          fields: Object.keys(dto).filter(
+            (field) => field !== 'taxIdentityOverrideId' && field !== 'taxIdentityContextId',
+          ),
+          documentLast4: supplier.documentNumber.slice(-4),
+          taxIdentitySource: readVerificationSource(supplier.taxIdentityVerification),
+        },
       });
 
       return status === SupplierStatus.INACTIVE ? this.findOne(tenantId, id) : supplier;
@@ -332,12 +367,7 @@ export class SuppliersService {
     this.ensurePrimaryIsActive(isPrimary, active);
     this.ensureCosts(dto.lastCostNet, dto.lastCostWithTax);
     if (active) {
-      await this.ensureUniqueActiveSupplierSku(
-        tenantId,
-        supplierId,
-        dto.productId,
-        supplierSku,
-      );
+      await this.ensureUniqueActiveSupplierSku(tenantId, supplierId, dto.productId, supplierSku);
     }
 
     try {
@@ -426,8 +456,7 @@ export class SuppliersService {
       dto.supplierSku === undefined ? undefined : this.normalizeSupplierSku(dto.supplierSku);
     const nextSupplierSku = supplierSku === undefined ? current.supplierSku : supplierSku;
     const needsSupplierSkuValidation =
-      nextActive &&
-      (supplierSku !== undefined || (dto.active === true && !current.active));
+      nextActive && (supplierSku !== undefined || (dto.active === true && !current.active));
 
     if (nextActive && supplier.status !== SupplierStatus.ACTIVE) {
       throw new BadRequestException(
@@ -441,12 +470,7 @@ export class SuppliersService {
       dto.lastCostWithTax ?? decimalToNumber(current.lastCostWithTax),
     );
     if (needsSupplierSkuValidation) {
-      await this.ensureUniqueActiveSupplierSku(
-        tenantId,
-        supplierId,
-        productId,
-        nextSupplierSku,
-      );
+      await this.ensureUniqueActiveSupplierSku(tenantId, supplierId, productId, nextSupplierSku);
     }
 
     try {
@@ -618,6 +642,33 @@ export class SuppliersService {
     return normalizeDominicanDocument(value);
   }
 
+  private async resolveTaxIdentity(
+    tx: Prisma.TransactionClient,
+    input: {
+      tenantId: string;
+      documentType: DocumentType;
+      documentNumber: string;
+      overrideId?: string;
+      contextType: TaxIdentityContextType;
+      contextId: string;
+      fallbackVerification?: unknown;
+    },
+  ) {
+    const identity = await this.taxIdentities.requireUsableIdentity(
+      {
+        ...input,
+        overrideId: input.overrideId,
+      },
+      {
+        db: tx,
+        consumeOverride: Boolean(input.overrideId),
+        fallbackVerification: input.fallbackVerification,
+      },
+    );
+
+    return this.taxIdentities.toVerificationSnapshot(identity);
+  }
+
   private validateDocument(type: DocumentType, documentNumber: string) {
     if (type !== DocumentType.RNC && type !== DocumentType.CEDULA) {
       throw new BadRequestException(
@@ -760,10 +811,7 @@ export class SuppliersService {
         if (canRetry) {
           continue;
         }
-        if (
-          error instanceof Prisma.PrismaClientKnownRequestError &&
-          error.code === 'P2034'
-        ) {
+        if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2034') {
           throw new ConflictException(
             'No se pudo guardar la relación por concurrencia. Inténtalo nuevamente.',
           );
@@ -816,6 +864,15 @@ function normalizeOptionalEmail(value?: string) {
   }
 
   return value.trim().toLowerCase() || null;
+}
+
+function readVerificationSource(value: Prisma.JsonValue | null | undefined) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+
+  const source = (value as Prisma.JsonObject).source;
+  return typeof source === 'string' && source.trim() ? source.trim() : null;
 }
 
 function toOptionalDecimal(value?: number) {

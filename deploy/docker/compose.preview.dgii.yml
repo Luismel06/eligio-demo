@@ -1,0 +1,291 @@
+name: rivnu-dgii-preview
+
+services:
+  rivnu-dgii-preview-db:
+    image: postgres:17-alpine
+    container_name: rivnu-dgii-preview-db
+    init: true
+    restart: unless-stopped
+    cpus: ${RIVNU_DGII_PREVIEW_DB_CPUS:-0.25}
+    mem_limit: ${RIVNU_DGII_PREVIEW_DB_MEMORY_LIMIT:-256m}
+    memswap_limit: ${RIVNU_DGII_PREVIEW_DB_MEMORY_SWAP_LIMIT:-256m}
+    mem_reservation: ${RIVNU_DGII_PREVIEW_DB_MEMORY_RESERVATION:-128m}
+    pids_limit: ${RIVNU_DGII_PREVIEW_DB_PIDS_LIMIT:-96}
+    env_file:
+      - path: ${RIVNU_DGII_PREVIEW_SECRET_DIR:-/opt/corestack/apps/rivnu/secrets/preview-dgii}/db.env
+        required: true
+    volumes:
+      - rivnu-dgii-preview-pgdata:/var/lib/postgresql/data
+    networks:
+      - rivnu-dgii-preview-data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    logging:
+      driver: local
+      options:
+        max-size: 5m
+        max-file: '2'
+    security_opt:
+      - no-new-privileges:true
+
+  rivnu-dgii-preview-migrate:
+    image: corestack/rivnu-api:${RIVNU_DGII_PREVIEW_TAG:?RIVNU_DGII_PREVIEW_TAG is required}
+    container_name: rivnu-dgii-preview-migrate
+    profiles: ['setup']
+    env_file:
+      - path: ${RIVNU_DGII_PREVIEW_SECRET_DIR:-/opt/corestack/apps/rivnu/secrets/preview-dgii}/api.env
+        required: true
+    environment:
+      NODE_ENV: development
+      RIVNU_PREVIEW_GUARD: RIVNU_DGII_PREVIEW_ONLY
+    entrypoint:
+      - /usr/local/bin/rivnu-preview-environment-guard
+    command:
+      - node
+      - packages/database/node_modules/prisma/build/index.js
+      - migrate
+      - deploy
+      - --schema
+      - packages/database/prisma/schema.prisma
+    volumes:
+      - ./preview-environment-guard.sh:/usr/local/bin/rivnu-preview-environment-guard:ro
+    depends_on:
+      rivnu-dgii-preview-db:
+        condition: service_healthy
+    networks:
+      - rivnu-dgii-preview-data
+    restart: 'no'
+    cpus: 0.35
+    mem_limit: 384m
+    memswap_limit: 384m
+    pids_limit: 96
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+
+  rivnu-dgii-preview-seed:
+    image: corestack/rivnu-api:${RIVNU_DGII_PREVIEW_TAG:?RIVNU_DGII_PREVIEW_TAG is required}
+    container_name: rivnu-dgii-preview-seed
+    profiles: ['setup']
+    env_file:
+      - path: ${RIVNU_DGII_PREVIEW_SECRET_DIR:-/opt/corestack/apps/rivnu/secrets/preview-dgii}/api.env
+        required: true
+    environment:
+      NODE_ENV: development
+      RIVNU_PREVIEW_GUARD: RIVNU_DGII_PREVIEW_ONLY
+    entrypoint:
+      - /usr/local/bin/rivnu-preview-environment-guard
+    command:
+      - node
+      - packages/database/node_modules/tsx/dist/cli.mjs
+      - packages/database/prisma/seed.ts
+    volumes:
+      - ./preview-environment-guard.sh:/usr/local/bin/rivnu-preview-environment-guard:ro
+    depends_on:
+      rivnu-dgii-preview-db:
+        condition: service_healthy
+    networks:
+      - rivnu-dgii-preview-data
+    restart: 'no'
+    cpus: 0.35
+    mem_limit: 384m
+    memswap_limit: 384m
+    pids_limit: 96
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+
+  rivnu-dgii-preview-configure:
+    image: corestack/rivnu-api:${RIVNU_DGII_PREVIEW_TAG:?RIVNU_DGII_PREVIEW_TAG is required}
+    container_name: rivnu-dgii-preview-configure
+    profiles: ['setup']
+    env_file:
+      - path: ${RIVNU_DGII_PREVIEW_SECRET_DIR:-/opt/corestack/apps/rivnu/secrets/preview-dgii}/api.env
+        required: true
+    environment:
+      NODE_ENV: development
+      RIVNU_PREVIEW_GUARD: RIVNU_DGII_PREVIEW_ONLY
+    entrypoint:
+      - /usr/local/bin/rivnu-preview-environment-guard
+    command:
+      - node
+      - apps/api/dist/cli/configure-dgii-preview.js
+    volumes:
+      - ./preview-environment-guard.sh:/usr/local/bin/rivnu-preview-environment-guard:ro
+    depends_on:
+      rivnu-dgii-preview-db:
+        condition: service_healthy
+    networks:
+      - rivnu-dgii-preview-data
+    restart: 'no'
+    cpus: 0.20
+    mem_limit: 256m
+    memswap_limit: 256m
+    pids_limit: 96
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+
+  rivnu-dgii-preview-fixture:
+    image: corestack/rivnu-api:${RIVNU_DGII_PREVIEW_TAG:?RIVNU_DGII_PREVIEW_TAG is required}
+    container_name: rivnu-dgii-preview-fixture
+    profiles: ['setup']
+    env_file:
+      - path: ${RIVNU_DGII_PREVIEW_SECRET_DIR:-/opt/corestack/apps/rivnu/secrets/preview-dgii}/api.env
+        required: true
+    environment:
+      NODE_ENV: development
+      RIVNU_PREVIEW_GUARD: RIVNU_DGII_PREVIEW_ONLY
+      DGII_ALLOW_TEST_FIXTURE: 'true'
+    entrypoint:
+      - /usr/local/bin/rivnu-preview-environment-guard
+    command:
+      - node
+      - apps/api/dist/cli/load-dgii-preview-fixture.js
+    volumes:
+      - ./preview-environment-guard.sh:/usr/local/bin/rivnu-preview-environment-guard:ro
+    depends_on:
+      rivnu-dgii-preview-db:
+        condition: service_healthy
+    networks:
+      - rivnu-dgii-preview-data
+    restart: 'no'
+    cpus: 0.25
+    mem_limit: 320m
+    memswap_limit: 320m
+    pids_limit: 96
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+
+  rivnu-dgii-preview-api:
+    image: corestack/rivnu-api:${RIVNU_DGII_PREVIEW_TAG:?RIVNU_DGII_PREVIEW_TAG is required}
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      target: api
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://127.0.0.1:4101}
+        NEXT_PUBLIC_APP_URL: ${NEXT_PUBLIC_APP_URL:-http://127.0.0.1:3101}
+    container_name: rivnu-dgii-preview-api
+    init: true
+    restart: unless-stopped
+    cpus: ${RIVNU_DGII_PREVIEW_API_CPUS:-0.45}
+    mem_limit: ${RIVNU_DGII_PREVIEW_API_MEMORY_LIMIT:-384m}
+    memswap_limit: ${RIVNU_DGII_PREVIEW_API_MEMORY_SWAP_LIMIT:-384m}
+    mem_reservation: ${RIVNU_DGII_PREVIEW_API_MEMORY_RESERVATION:-160m}
+    pids_limit: ${RIVNU_DGII_PREVIEW_API_PIDS_LIMIT:-96}
+    env_file:
+      - path: ${RIVNU_DGII_PREVIEW_SECRET_DIR:-/opt/corestack/apps/rivnu/secrets/preview-dgii}/api.env
+        required: true
+    environment:
+      NODE_ENV: development
+      RIVNU_PREVIEW_GUARD: RIVNU_DGII_PREVIEW_ONLY
+    entrypoint:
+      - /usr/local/bin/rivnu-preview-environment-guard
+    command:
+      - node
+      - apps/api/dist/main.js
+    ports:
+      - '127.0.0.1:4101:4000'
+    depends_on:
+      rivnu-dgii-preview-db:
+        condition: service_healthy
+    networks:
+      - rivnu-dgii-preview-data
+      - rivnu-dgii-preview-edge
+    volumes:
+      - ./preview-environment-guard.sh:/usr/local/bin/rivnu-preview-environment-guard:ro
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:4000/health').then((response) => { if (!response.ok) process.exit(1); }).catch(() => process.exit(1));"
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    logging:
+      driver: local
+      options:
+        max-size: 5m
+        max-file: '2'
+    security_opt:
+      - no-new-privileges:true
+
+  rivnu-dgii-preview-web:
+    image: corestack/rivnu-web:${RIVNU_DGII_PREVIEW_TAG:?RIVNU_DGII_PREVIEW_TAG is required}
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      target: web
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://127.0.0.1:4101}
+        NEXT_PUBLIC_APP_URL: ${NEXT_PUBLIC_APP_URL:-http://127.0.0.1:3101}
+    container_name: rivnu-dgii-preview-web
+    init: true
+    restart: unless-stopped
+    cpus: ${RIVNU_DGII_PREVIEW_WEB_CPUS:-0.30}
+    mem_limit: ${RIVNU_DGII_PREVIEW_WEB_MEMORY_LIMIT:-384m}
+    memswap_limit: ${RIVNU_DGII_PREVIEW_WEB_MEMORY_SWAP_LIMIT:-384m}
+    mem_reservation: ${RIVNU_DGII_PREVIEW_WEB_MEMORY_RESERVATION:-128m}
+    pids_limit: ${RIVNU_DGII_PREVIEW_WEB_PIDS_LIMIT:-96}
+    environment:
+      NODE_ENV: production
+      INTERNAL_ALLOWED_IPS: ''
+    ports:
+      - '127.0.0.1:3101:3000'
+    depends_on:
+      rivnu-dgii-preview-api:
+        condition: service_healthy
+    networks:
+      - rivnu-dgii-preview-edge
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:3000/login').then((response) => { if (response.status >= 500) process.exit(1); }).catch(() => process.exit(1));"
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    logging:
+      driver: local
+      options:
+        max-size: 5m
+        max-file: '2'
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  rivnu-dgii-preview-pgdata:
+    name: rivnu-dgii-preview-pgdata
+
+networks:
+  rivnu-dgii-preview-data:
+    name: rivnu-dgii-preview-data
+    internal: true
+  rivnu-dgii-preview-edge:
+    name: rivnu-dgii-preview-edge

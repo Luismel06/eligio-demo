@@ -77,6 +77,7 @@ async function main() {
 
   await prisma.$transaction(
     async (tx) => {
+      await tx.taxIdentityOverride.deleteMany({ where: { tenantId: tenant.id } });
       await tx.returnRequest.deleteMany({ where: { tenantId: tenant.id } });
       await tx.employeeActivityLog.deleteMany({ where: { tenantId: tenant.id } });
       await tx.cashMovement.deleteMany({ where: { tenantId: tenant.id } });
@@ -143,6 +144,7 @@ async function main() {
 
 async function getCleanupCounts(tenantId: string, preservedUserIds: string[]) {
   const [
+    taxIdentityOverrides,
     returnRequests,
     employeeActivityLogs,
     cashMovements,
@@ -165,6 +167,7 @@ async function getCleanupCounts(tenantId: string, preservedUserIds: string[]) {
     removableEmployeeProfiles,
     removableUsers,
   ] = await Promise.all([
+    prisma.taxIdentityOverride.count({ where: { tenantId } }),
     prisma.returnRequest.count({ where: { tenantId } }),
     prisma.employeeActivityLog.count({ where: { tenantId } }),
     prisma.cashMovement.count({ where: { tenantId } }),
@@ -203,6 +206,7 @@ async function getCleanupCounts(tenantId: string, preservedUserIds: string[]) {
 
   return {
     delete: {
+      taxIdentityOverrides,
       returnRequests,
       employeeActivityLogs,
       cashMovements,
