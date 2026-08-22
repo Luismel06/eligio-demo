@@ -156,9 +156,6 @@ export function InvoiceDetail({
     const customerDestination = printRegistration?.isReprint
       ? 'REIMPRESIÓN PARA CLIENTE'
       : 'ORIGINAL: CLIENTE';
-    const sellerDestination = printRegistration?.isReprint
-      ? 'REIMPRESIÓN PARA VENDEDOR'
-      : 'COPIA: VENDEDOR';
 
     return (
       <main className="mx-auto max-w-sm bg-white p-4 text-zinc-950 print:max-w-none print:p-0">
@@ -168,13 +165,6 @@ export function InvoiceDetail({
             destination={customerDestination}
             printRegistration={printRegistration}
           />
-          <div className="mt-8 border-t-2 border-dashed border-zinc-500 pt-8 print:break-before-page print:border-0 print:pt-0">
-            <Receipt
-              invoice={invoice}
-              destination={sellerDestination}
-              printRegistration={printRegistration}
-            />
-          </div>
         </div>
         {!printRegistration ? (
           <div className="hidden p-8 text-center font-bold print:block">
