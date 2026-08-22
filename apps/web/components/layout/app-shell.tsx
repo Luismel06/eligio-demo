@@ -8,10 +8,11 @@ import { useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { clearSession, getSession, type AuthSession } from '@/lib/auth-session';
-import { canAccessPath, getDefaultPathForSession } from '@/lib/authorization';
+import { canAccessPath, getDefaultPathForSession, isAdminSession } from '@/lib/authorization';
 import {
   getCurrentCashSession,
   getOperationalAlerts,
+  getTaxIdentityApprovalRequests,
   type OperationalAlertsSummary,
 } from '@/lib/api';
 import { translateInvoiceDocumentType, translateRole } from '@/lib/display-labels';
@@ -24,6 +25,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [session, setSession] = useState<AuthSession | null | undefined>(undefined);
   const surfacedAlertTransitionsRef = useRef(new Set<string>());
+  const surfacedFiscalApprovalIdsRef = useRef(new Set<string>());
+  const fiscalApprovalBaselineReadyRef = useRef(false);
   const pathname = usePathname();
   const router = useRouter();
 
@@ -39,6 +42,17 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     queryKey: ['cash-session-current', session?.tenantId, 'logout-guard'],
     queryFn: () => getCurrentCashSession(session?.tenantId ?? '', session?.accessToken ?? ''),
     enabled: Boolean(session),
+  });
+  const fiscalApprovalsQuery = useQuery({
+    queryKey: ['tax-identity-approval-requests', session?.tenantId, 'PENDING', 'notification'],
+    queryFn: () =>
+      getTaxIdentityApprovalRequests(session?.tenantId ?? '', session?.accessToken ?? '', {
+        status: 'PENDING',
+      }),
+    enabled: Boolean(session && isAdminSession(session)),
+    refetchInterval: 15_000,
+    refetchIntervalInBackground: false,
+    refetchOnWindowFocus: 'always',
   });
 
   useEffect(() => {
@@ -89,6 +103,50 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       navigate: (href) => router.push(href),
     });
   }, [operationalAlertsQuery.data, router, session]);
+
+  useEffect(() => {
+    fiscalApprovalBaselineReadyRef.current = false;
+    surfacedFiscalApprovalIdsRef.current.clear();
+  }, [session?.tenantId, session?.user.id]);
+
+  useEffect(() => {
+    if (!session || !isAdminSession(session) || !fiscalApprovalsQuery.data) {
+      return;
+    }
+
+    if (!fiscalApprovalBaselineReadyRef.current) {
+      readSeenFiscalApprovalIds(session).forEach((requestId) =>
+        surfacedFiscalApprovalIdsRef.current.add(requestId),
+      );
+      fiscalApprovalBaselineReadyRef.current = true;
+    }
+
+    const newRequests = fiscalApprovalsQuery.data.filter(
+      (request) => !surfacedFiscalApprovalIdsRef.current.has(request.id),
+    );
+    fiscalApprovalsQuery.data.forEach((request) =>
+      surfacedFiscalApprovalIdsRef.current.add(request.id),
+    );
+    persistSeenFiscalApprovalIds(session, surfacedFiscalApprovalIdsRef.current);
+    if (!newRequests.length) return;
+
+    toast.warning(
+      newRequests.length === 1
+        ? 'Nueva validación fiscal pendiente'
+        : `${newRequests.length} validaciones fiscales pendientes`,
+      {
+        description:
+          newRequests.length === 1
+            ? `${newRequests[0].requestedBy.name} solicita revisar ${newRequests[0].documentType}.`
+            : 'Caja, Clientes o Suplidores esperan una decisión administrativa.',
+        duration: 10_000,
+        action: {
+          label: 'Revisar',
+          onClick: () => router.push('/tax-identity-approvals'),
+        },
+      },
+    );
+  }, [fiscalApprovalsQuery.data, router, session]);
 
   async function handleLogout() {
     if (!session) {
@@ -142,7 +200,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   }
 
   const canViewOperationalAlerts = canAccessPath(session, '/dashboard');
-  const activeAlertCount = countActiveAlerts(operationalAlertsQuery.data);
+  const pendingFiscalApprovalCount = fiscalApprovalsQuery.data?.length ?? 0;
+  const activeAlertCount = countActiveAlerts(
+    operationalAlertsQuery.data,
+    pendingFiscalApprovalCount,
+  );
 
   return (
     <div className="min-h-screen bg-zinc-100">
@@ -200,9 +262,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                   {notificationsOpen ? (
                     <NotificationsPanel
                       summary={operationalAlertsQuery.data}
+                      pendingFiscalApprovalCount={pendingFiscalApprovalCount}
                       session={session}
-                      loading={operationalAlertsQuery.isLoading}
-                      failed={operationalAlertsQuery.isError}
+                      loading={operationalAlertsQuery.isLoading || fiscalApprovalsQuery.isLoading}
+                      failed={operationalAlertsQuery.isError || fiscalApprovalsQuery.isError}
                       onClose={() => setNotificationsOpen(false)}
                     />
                   ) : null}
@@ -252,21 +315,59 @@ type PopupAlert = {
 };
 
 const alertTransitionStoragePrefix = 'rivnu:operational-alert-transitions:v1';
+const fiscalApprovalSeenStoragePrefix = 'rivnu:fiscal-approval-seen:v1';
+
+function fiscalApprovalSeenStorageKey(session: AuthSession) {
+  return `${fiscalApprovalSeenStoragePrefix}:${session.tenantId}:${session.user.id}`;
+}
+
+function readSeenFiscalApprovalIds(session: AuthSession) {
+  try {
+    const raw = window.sessionStorage.getItem(fiscalApprovalSeenStorageKey(session));
+    const parsed: unknown = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed)
+      ? parsed.filter((value): value is string => typeof value === 'string').slice(-200)
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function persistSeenFiscalApprovalIds(session: AuthSession, requestIds: Set<string>) {
+  try {
+    window.sessionStorage.setItem(
+      fiscalApprovalSeenStorageKey(session),
+      JSON.stringify([...requestIds].slice(-200)),
+    );
+  } catch {
+    // The badge remains accurate even when session storage is unavailable.
+  }
+}
 
 function NotificationsPanel({
   summary,
+  pendingFiscalApprovalCount,
   session,
   loading,
   failed,
   onClose,
 }: {
   summary: OperationalAlertsSummary | undefined;
+  pendingFiscalApprovalCount: number;
   session: AuthSession;
   loading: boolean;
   failed: boolean;
   onClose: () => void;
 }) {
   const notifications = [
+    {
+      id: 'pending-tax-identity-approvals',
+      label: 'Validaciones fiscales',
+      description: 'Solicitudes manuales pendientes de decisión administrativa.',
+      value: pendingFiscalApprovalCount,
+      href: '/tax-identity-approvals',
+      tone: 'warning',
+    },
     {
       id: 'pending-invoices',
       label: 'Facturas pendientes',
@@ -293,7 +394,7 @@ function NotificationsPanel({
     },
   ].filter((notification) => notification.value > 0);
   const fiscalSequenceAlerts = summary?.fiscalSequenceAlerts ?? [];
-  const activeAlertCount = countActiveAlerts(summary);
+  const activeAlertCount = countActiveAlerts(summary, pendingFiscalApprovalCount);
 
   return (
     <div
@@ -320,11 +421,11 @@ function NotificationsPanel({
         </button>
       </div>
 
-      {loading && !summary ? (
+      {loading && !summary && !pendingFiscalApprovalCount ? (
         <p className="rounded-lg bg-zinc-50 px-3 py-3 text-sm text-muted-foreground">
           Cargando alertas...
         </p>
-      ) : failed && !summary ? (
+      ) : failed && !summary && !pendingFiscalApprovalCount ? (
         <p className="rounded-lg border border-danger/20 bg-danger/5 px-3 py-3 text-sm text-danger">
           No se pudieron actualizar las alertas. Intentaremos nuevamente en breve.
         </p>
@@ -449,16 +550,16 @@ function FiscalSequenceAlertItem({
   );
 }
 
-function countActiveAlerts(summary: OperationalAlertsSummary | undefined) {
-  if (!summary) {
-    return 0;
-  }
-
+function countActiveAlerts(
+  summary: OperationalAlertsSummary | undefined,
+  pendingFiscalApprovalCount = 0,
+) {
   return (
-    Number(summary.pendingInvoices > 0) +
-    Number(summary.lowStockProducts > 0) +
-    Number(summary.openCashSessions > 0) +
-    summary.fiscalSequenceAlerts.length
+    Number(pendingFiscalApprovalCount > 0) +
+    Number((summary?.pendingInvoices ?? 0) > 0) +
+    Number((summary?.lowStockProducts ?? 0) > 0) +
+    Number((summary?.openCashSessions ?? 0) > 0) +
+    (summary?.fiscalSequenceAlerts.length ?? 0)
   );
 }
 

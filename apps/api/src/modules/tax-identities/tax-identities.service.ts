@@ -3,30 +3,37 @@ import {
   ConflictException,
   ForbiddenException,
   Injectable,
+  NotFoundException,
   UnprocessableEntityException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
+  CashSessionStatus,
   DgiiRegistryDatasetStatus,
   DgiiRegistrySource,
   DgiiTaxpayerStatus,
   DocumentType,
   MembershipStatus,
+  Prisma,
   Role,
+  SalesOrderStatus,
+  TaxIdentityApprovalRequestStatus,
   TaxIdentityContextType,
-  UserStatus,
 } from '@qorvex/database';
-import * as bcrypt from 'bcryptjs';
 import { createHmac } from 'node:crypto';
 import {
   normalizeDominicanDocument,
   validateDominicanDocument,
 } from '../../common/utils/dominican-documents';
 import type { AuthenticatedUser } from '../../common/types/authenticated-request';
-import { AuditService } from '../audit/audit.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { getTaxIdentityHmacSecret } from '../../common/security/tax-identity-hmac-secret';
-import { AuthorizeTaxIdentityOverrideDto } from './dto/authorize-tax-identity-override.dto';
+import { CreateTaxIdentityApprovalRequestDto } from './dto/create-tax-identity-approval-request.dto';
+import {
+  ApproveTaxIdentityApprovalRequestDto,
+  RejectTaxIdentityApprovalRequestDto,
+} from './dto/decide-tax-identity-approval-request.dto';
+import { ListTaxIdentityApprovalRequestsDto } from './dto/list-tax-identity-approval-requests.dto';
 import type { LookupTaxIdentityDto } from './dto/lookup-tax-identity.dto';
 import type {
   RequireUsableTaxIdentityInput,
@@ -35,8 +42,17 @@ import type {
   TaxIdentityVerificationSnapshot,
 } from './tax-identity.types';
 
-const supervisorRoles: Role[] = [Role.ADMIN, Role.SUPER_ADMIN, Role.QORVEX_SUPER_ADMIN];
-const dummyPasswordHash = '$2a$12$R9h/cIPz0gi.URNNX3kh2OPST9/PgBkqquzi.Ss7KIUgO2t0jWMUW';
+const administratorRoles: Role[] = [Role.ADMIN, Role.SUPER_ADMIN, Role.QORVEX_SUPER_ADMIN];
+
+const approvalRequestInclude = {
+  requestedBy: { select: { id: true, name: true } },
+  decidedBy: { select: { id: true, name: true } },
+  override: { select: { id: true, expiresAt: true, usedAt: true } },
+} satisfies Prisma.TaxIdentityApprovalRequestInclude;
+
+type TaxIdentityApprovalRequestWithRelations = Prisma.TaxIdentityApprovalRequestGetPayload<{
+  include: typeof approvalRequestInclude;
+}>;
 
 type LookupInput = LookupTaxIdentityDto & { tenantId: string };
 
@@ -45,7 +61,6 @@ export class TaxIdentitiesService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
-    private readonly audit: AuditService,
   ) {}
 
   async lookup(input: LookupInput): Promise<TaxIdentityLookupResult> {
@@ -141,7 +156,22 @@ export class TaxIdentitiesService {
     );
 
     if (!manual) {
-      throw new ForbiddenException('La autorización del supervisor no es válida o ya expiró.');
+      const alreadyUsed = await db.taxIdentityOverride.findFirst({
+        where: {
+          id: input.overrideId,
+          tenantId: input.tenantId,
+          contextType: input.contextType,
+          contextId: input.contextId,
+          documentType: identity.documentType,
+          documentHash: this.hashDocument(identity.documentType, identity.documentNumber),
+          usedAt: { not: null },
+        },
+        select: { id: true },
+      });
+      if (alreadyUsed) {
+        throw new ConflictException('La validación manual fiscal ya fue utilizada.');
+      }
+      throw new ForbiddenException('La validación manual administrativa no es válida o ya expiró.');
     }
 
     if (options.consumeOverride) {
@@ -168,14 +198,14 @@ export class TaxIdentitiesService {
     return manual;
   }
 
-  async authorizeOverride(
+  async createApprovalRequest(
     tenantId: string,
     requester: AuthenticatedUser,
-    dto: AuthorizeTaxIdentityOverrideDto,
+    dto: CreateTaxIdentityApprovalRequestDto,
   ) {
     const identity = this.normalizeAndValidate(dto.documentType, dto.documentNumber);
     const contextId = dto.contextId.trim();
-    await this.assertContextBelongsToTenant(tenantId, dto.contextType, contextId);
+    await this.assertCanCreateApprovalRequest(tenantId, requester, dto.contextType, contextId);
 
     const registryResult = await this.lookupRegistry(
       identity.documentType,
@@ -187,144 +217,612 @@ export class TaxIdentitiesService {
       );
     }
 
-    const supervisor = await this.prisma.user.findUnique({
-      where: { email: dto.supervisorEmail.trim().toLowerCase() },
-      select: {
-        id: true,
-        passwordHash: true,
-        status: true,
-        memberships: {
-          select: { tenantId: true, role: true, status: true },
-        },
+    const now = new Date();
+    const expiresAt = new Date(now.getTime() + this.approvalRequestTtlMinutes() * 60_000);
+    const documentHash = this.hashDocument(identity.documentType, identity.documentNumber);
+    const fiscalName = this.normalizeLabel(dto.fiscalName, 200);
+    const reason = dto.reason ? this.normalizeLabel(dto.reason, 500) : null;
+
+    const request: TaxIdentityApprovalRequestWithRelations = await this.prisma.$transaction(
+      async (tx) => {
+        await this.lockApprovalContext(tx, tenantId, dto.contextType, contextId);
+        if (
+          !(await this.isApprovalContextStillValid(tx, tenantId, {
+            contextType: dto.contextType,
+            contextId,
+            requestedById: requester.id,
+          }))
+        ) {
+          throw new ConflictException(
+            'La orden o el contexto cambió antes de crear la solicitud fiscal.',
+          );
+        }
+
+        const pending = await tx.taxIdentityApprovalRequest.findFirst({
+          where: {
+            tenantId,
+            contextType: dto.contextType,
+            contextId,
+            status: TaxIdentityApprovalRequestStatus.PENDING,
+          },
+          include: approvalRequestInclude,
+        });
+
+        if (pending?.expiresAt && pending.expiresAt <= now) {
+          const expired = await tx.taxIdentityApprovalRequest.updateMany({
+            where: {
+              id: pending.id,
+              tenantId,
+              status: TaxIdentityApprovalRequestStatus.PENDING,
+            },
+            data: {
+              status: TaxIdentityApprovalRequestStatus.EXPIRED,
+              decidedAt: now,
+              decisionNote: 'La solicitud expiró antes de recibir una decisión.',
+            },
+          });
+          if (expired.count === 1) {
+            await this.createApprovalAudit(tx, {
+              tenantId,
+              userId: null,
+              action: 'TAX_IDENTITY_APPROVAL_REQUEST_EXPIRED',
+              requestId: pending.id,
+              contextType: pending.contextType,
+              contextId: pending.contextId,
+              documentType: pending.documentType,
+              documentLast4: pending.documentLast4,
+            });
+          }
+        } else if (
+          pending &&
+          pending.documentType === identity.documentType &&
+          pending.documentHash === documentHash &&
+          pending.fiscalName === fiscalName &&
+          pending.requestedById === requester.id
+        ) {
+          return pending;
+        } else if (pending) {
+          const cancelled = await tx.taxIdentityApprovalRequest.updateMany({
+            where: {
+              id: pending.id,
+              tenantId,
+              status: TaxIdentityApprovalRequestStatus.PENDING,
+            },
+            data: {
+              status: TaxIdentityApprovalRequestStatus.CANCELLED,
+              decidedById: requester.id,
+              decidedAt: now,
+              decisionNote: 'Reemplazada por una solicitud fiscal más reciente para este contexto.',
+            },
+          });
+          if (cancelled.count === 1) {
+            await this.createApprovalAudit(tx, {
+              tenantId,
+              userId: requester.id,
+              action: 'TAX_IDENTITY_APPROVAL_REQUEST_CANCELLED',
+              requestId: pending.id,
+              contextType: pending.contextType,
+              contextId: pending.contextId,
+              documentType: pending.documentType,
+              documentLast4: pending.documentLast4,
+            });
+          }
+        }
+
+        const reusableApproved = await tx.taxIdentityApprovalRequest.findFirst({
+          where: {
+            tenantId,
+            contextType: dto.contextType,
+            contextId,
+            documentType: identity.documentType,
+            documentHash,
+            fiscalName,
+            requestedById: requester.id,
+            status: TaxIdentityApprovalRequestStatus.APPROVED,
+            override: {
+              usedAt: null,
+              revokedAt: null,
+              expiresAt: { gt: now },
+            },
+          },
+          include: approvalRequestInclude,
+          orderBy: { requestedAt: 'desc' },
+        });
+        if (reusableApproved) {
+          return reusableApproved;
+        }
+
+        const revokedPriorOverrides = await tx.taxIdentityOverride.updateMany({
+          where: {
+            tenantId,
+            contextType: dto.contextType,
+            contextId,
+            usedAt: null,
+            revokedAt: null,
+          },
+          data: { revokedAt: now },
+        });
+
+        const created = await tx.taxIdentityApprovalRequest.create({
+          data: {
+            tenantId,
+            contextType: dto.contextType,
+            contextId,
+            documentType: identity.documentType,
+            documentNumber: identity.documentNumber,
+            documentHash,
+            documentLast4: identity.documentNumber.slice(-4),
+            fiscalName,
+            reason,
+            registryOutcome: registryResult.outcome,
+            registrySource:
+              registryResult.source === 'DGII_OFFICIAL'
+                ? DgiiRegistrySource.DGII_OFFICIAL
+                : registryResult.source === 'TEST_FIXTURE'
+                  ? DgiiRegistrySource.TEST_FIXTURE
+                  : null,
+            registryCheckedAt: registryResult.checkedAt,
+            registrySourceUpdatedAt: registryResult.sourceUpdatedAt,
+            requestedById: requester.id,
+            expiresAt,
+          },
+          include: approvalRequestInclude,
+        });
+
+        await this.createApprovalAudit(tx, {
+          tenantId,
+          userId: requester.id,
+          action: 'TAX_IDENTITY_APPROVAL_REQUESTED',
+          requestId: created.id,
+          contextType: created.contextType,
+          contextId: created.contextId,
+          documentType: created.documentType,
+          documentLast4: created.documentLast4,
+          metadata: {
+            registryOutcome: created.registryOutcome,
+            revokedPriorOverrides: revokedPriorOverrides.count,
+          },
+        });
+
+        return created;
       },
-    });
-    const passwordMatches = await bcrypt.compare(
-      dto.supervisorPassword,
-      supervisor?.passwordHash ?? dummyPasswordHash,
-    );
-    const canApprove = Boolean(
-      supervisor &&
-      supervisor.status === UserStatus.ACTIVE &&
-      passwordMatches &&
-      supervisor.memberships.some(
-        (membership) =>
-          membership.status === MembershipStatus.ACTIVE &&
-          supervisorRoles.includes(membership.role) &&
-          (membership.tenantId === tenantId ||
-            membership.role === Role.SUPER_ADMIN ||
-            membership.role === Role.QORVEX_SUPER_ADMIN),
-      ),
     );
 
-    if (!canApprove || !supervisor) {
-      await this.auditFailedApproval(tenantId, requester.id, dto, identity.documentNumber);
-      throw new ForbiddenException('No se pudo validar la autorización del supervisor.');
+    return this.toPublicApprovalRequest(request);
+  }
+
+  async listApprovalRequests(
+    tenantId: string,
+    requester: AuthenticatedUser,
+    query: ListTaxIdentityApprovalRequestsDto,
+  ) {
+    const contextId = query.contextId?.trim();
+    const hasContextType = Boolean(query.contextType);
+    const hasContextId = Boolean(contextId);
+    if (hasContextType !== hasContextId) {
+      throw new BadRequestException('contextType y contextId deben enviarse juntos.');
     }
 
-    const now = new Date();
-    const expiresAt = new Date(now.getTime() + (dto.expiresInMinutes ?? 10) * 60_000);
-    const documentHash = this.hashDocument(identity.documentType, identity.documentNumber);
-    const fiscalName = this.normalizeLabel(registryResult.fiscalName ?? dto.fiscalName, 200);
-    const reason = this.normalizeLabel(dto.reason, 500);
+    const isAdministrator = this.hasAdministratorAccess(tenantId, requester);
+    if (!isAdministrator && (!query.contextType || !contextId)) {
+      throw new ForbiddenException(
+        'Solo un administrador puede consultar solicitudes fuera de su contexto.',
+      );
+    }
+    if (query.contextType && contextId) {
+      await this.assertContextBelongsToTenant(tenantId, query.contextType, contextId);
+    }
 
-    const override = await this.prisma.$transaction(async (tx) => {
-      const lockKey = [
-        'corestack:tax-identity-override',
+    await this.expirePendingApprovalRequests(tenantId, isAdministrator ? undefined : requester.id);
+
+    const requests = await this.prisma.taxIdentityApprovalRequest.findMany({
+      where: {
         tenantId,
-        dto.contextType,
-        contextId,
-        identity.documentType,
-        documentHash,
-      ].join(':');
-      await tx.$queryRaw`
-        SELECT 1::int AS "locked"
-        FROM (SELECT pg_advisory_xact_lock(hashtext(${lockKey}))) AS acquired
-      `;
+        ...(query.status ? { status: query.status } : {}),
+        ...(query.contextType && contextId ? { contextType: query.contextType, contextId } : {}),
+        ...(!isAdministrator ? { requestedById: requester.id } : {}),
+      },
+      include: approvalRequestInclude,
+      orderBy: { requestedAt: 'desc' },
+      take: query.limit ?? 100,
+    });
 
-      const existingApproval = await tx.taxIdentityOverride.findFirst({
+    return requests.map((request) => this.toPublicApprovalRequest(request));
+  }
+
+  async getApprovalRequest(tenantId: string, requester: AuthenticatedUser, requestId: string) {
+    let request = await this.prisma.taxIdentityApprovalRequest.findFirst({
+      where: { id: requestId, tenantId },
+      include: approvalRequestInclude,
+    });
+    if (!request) {
+      throw new NotFoundException('La solicitud de validación fiscal no existe.');
+    }
+    if (
+      request.requestedById !== requester.id &&
+      !this.hasAdministratorAccess(tenantId, requester)
+    ) {
+      throw new ForbiddenException('No puedes consultar esta solicitud de validación fiscal.');
+    }
+
+    if (
+      request.status === TaxIdentityApprovalRequestStatus.PENDING &&
+      request.expiresAt <= new Date()
+    ) {
+      await this.expireApprovalRequest(tenantId, requestId);
+      request = await this.prisma.taxIdentityApprovalRequest.findFirstOrThrow({
+        where: { id: requestId, tenantId },
+        include: approvalRequestInclude,
+      });
+    }
+
+    return this.toPublicApprovalRequest(request);
+  }
+
+  async approveApprovalRequest(
+    tenantId: string,
+    administrator: AuthenticatedUser,
+    requestId: string,
+    dto: ApproveTaxIdentityApprovalRequestDto,
+  ) {
+    this.assertAdministratorAccess(tenantId, administrator);
+    const current = await this.prisma.taxIdentityApprovalRequest.findFirst({
+      where: { id: requestId, tenantId },
+      select: { id: true },
+    });
+    if (!current) {
+      throw new NotFoundException('La solicitud de validación fiscal no existe.');
+    }
+    const outcome = await this.prisma.$transaction(async (tx) => {
+      await this.lockApprovalRequest(tx, tenantId, requestId);
+      const request = await tx.taxIdentityApprovalRequest.findFirst({
+        where: { id: requestId, tenantId },
+        include: approvalRequestInclude,
+      });
+      if (!request) {
+        throw new NotFoundException('La solicitud de validación fiscal no existe.');
+      }
+      if (request.status === TaxIdentityApprovalRequestStatus.APPROVED) {
+        return { kind: 'approved' as const, request };
+      }
+      if (request.status !== TaxIdentityApprovalRequestStatus.PENDING) {
+        throw new ConflictException('La solicitud fiscal ya recibió una decisión.');
+      }
+
+      const now = new Date();
+      if (request.expiresAt <= now) {
+        await tx.taxIdentityApprovalRequest.update({
+          where: { id: request.id },
+          data: {
+            status: TaxIdentityApprovalRequestStatus.EXPIRED,
+            decidedAt: now,
+            decisionNote: 'La solicitud expiró antes de recibir una decisión.',
+          },
+        });
+        await this.createApprovalAudit(tx, {
+          tenantId,
+          userId: null,
+          action: 'TAX_IDENTITY_APPROVAL_REQUEST_EXPIRED',
+          requestId: request.id,
+          contextType: request.contextType,
+          contextId: request.contextId,
+          documentType: request.documentType,
+          documentLast4: request.documentLast4,
+        });
+        return { kind: 'expired' as const };
+      }
+
+      if (!(await this.isApprovalContextStillValid(tx, tenantId, request))) {
+        await tx.taxIdentityApprovalRequest.update({
+          where: { id: request.id },
+          data: {
+            status: TaxIdentityApprovalRequestStatus.CANCELLED,
+            decidedById: administrator.id,
+            decidedAt: now,
+            decisionNote: 'El contexto cambió o dejó de estar disponible antes de la aprobación.',
+          },
+        });
+        await this.createApprovalAudit(tx, {
+          tenantId,
+          userId: administrator.id,
+          action: 'TAX_IDENTITY_APPROVAL_REQUEST_CANCELLED',
+          requestId: request.id,
+          contextType: request.contextType,
+          contextId: request.contextId,
+          documentType: request.documentType,
+          documentLast4: request.documentLast4,
+          metadata: { reason: 'CONTEXT_NO_LONGER_VALID' },
+        });
+        return { kind: 'invalid-context' as const };
+      }
+
+      const registryResult = await this.lookupRegistry(
+        request.documentType,
+        request.documentNumber,
+        tx,
+      );
+      if (registryResult.outcome === 'VERIFIED') {
+        await tx.taxIdentityApprovalRequest.update({
+          where: { id: request.id },
+          data: {
+            status: TaxIdentityApprovalRequestStatus.CANCELLED,
+            decidedById: administrator.id,
+            decidedAt: now,
+            decisionNote: 'La identidad ya fue verificada por el padrón DGII vigente.',
+          },
+        });
+        await this.createApprovalAudit(tx, {
+          tenantId,
+          userId: administrator.id,
+          action: 'TAX_IDENTITY_APPROVAL_REQUEST_CANCELLED',
+          requestId: request.id,
+          contextType: request.contextType,
+          contextId: request.contextId,
+          documentType: request.documentType,
+          documentLast4: request.documentLast4,
+          metadata: { registryOutcome: registryResult.outcome },
+        });
+        return { kind: 'verified-by-dgii' as const };
+      }
+
+      const fiscalName = this.normalizeLabel(dto.fiscalName ?? request.fiscalName, 200);
+      const decisionNote = dto.decisionNote ? this.normalizeLabel(dto.decisionNote, 500) : null;
+      const reason =
+        decisionNote ??
+        request.reason ??
+        'Identidad fiscal revisada y autorizada manualmente por un administrador.';
+      const overrideExpiresAt = new Date(now.getTime() + (dto.expiresInMinutes ?? 10) * 60_000);
+
+      let override = await tx.taxIdentityOverride.findFirst({
         where: {
           tenantId,
-          contextType: dto.contextType,
-          contextId,
-          documentType: identity.documentType,
-          documentHash,
+          contextType: request.contextType,
+          contextId: request.contextId,
+          documentType: request.documentType,
+          documentHash: request.documentHash,
           fiscalName,
-          reason,
-          requestedById: requester.id,
-          approvedById: supervisor.id,
           usedAt: null,
           revokedAt: null,
           expiresAt: { gt: now },
         },
-        select: { id: true, expiresAt: true, createdAt: true },
+        select: { id: true, expiresAt: true, usedAt: true },
+        orderBy: { createdAt: 'desc' },
       });
-      if (existingApproval) {
-        return existingApproval;
+
+      if (!override) {
+        await tx.taxIdentityOverride.updateMany({
+          where: {
+            tenantId,
+            contextType: request.contextType,
+            contextId: request.contextId,
+            documentHash: request.documentHash,
+            usedAt: null,
+            revokedAt: null,
+          },
+          data: { revokedAt: now },
+        });
+        override = await tx.taxIdentityOverride.create({
+          data: {
+            tenantId,
+            contextType: request.contextType,
+            contextId: request.contextId,
+            documentType: request.documentType,
+            documentHash: request.documentHash,
+            documentLast4: request.documentLast4,
+            fiscalName,
+            reason,
+            requestedById: request.requestedById,
+            approvedById: administrator.id,
+            expiresAt: overrideExpiresAt,
+          },
+          select: { id: true, expiresAt: true, usedAt: true },
+        });
       }
 
-      await tx.taxIdentityOverride.updateMany({
+      const approved = await tx.taxIdentityApprovalRequest.updateMany({
         where: {
+          id: request.id,
           tenantId,
-          contextType: dto.contextType,
-          contextId,
-          documentHash,
-          usedAt: null,
-          revokedAt: null,
+          status: TaxIdentityApprovalRequestStatus.PENDING,
         },
-        data: { revokedAt: now },
-      });
-
-      const created = await tx.taxIdentityOverride.create({
         data: {
-          tenantId,
-          contextType: dto.contextType,
-          contextId,
-          documentType: identity.documentType,
-          documentHash,
-          documentLast4: identity.documentNumber.slice(-4),
+          status: TaxIdentityApprovalRequestStatus.APPROVED,
           fiscalName,
-          reason,
-          requestedById: requester.id,
-          approvedById: supervisor.id,
-          expiresAt,
-        },
-        select: { id: true, expiresAt: true, createdAt: true },
-      });
-
-      await tx.auditLog.create({
-        data: {
-          tenantId,
-          userId: requester.id,
-          action: 'TAX_IDENTITY_OVERRIDE_APPROVED',
-          entity: 'TaxIdentityOverride',
-          entityId: created.id,
-          metadata: {
-            contextType: dto.contextType,
-            contextId,
-            documentType: identity.documentType,
-            documentLast4: identity.documentNumber.slice(-4),
-            registryOutcome: registryResult.outcome,
-            approvedById: supervisor.id,
-            expiresAt: created.expiresAt.toISOString(),
-          },
+          decidedById: administrator.id,
+          decidedAt: now,
+          decisionNote,
+          overrideId: override.id,
         },
       });
+      if (approved.count !== 1) {
+        throw new ConflictException('La solicitud fiscal cambió mientras se aprobaba.');
+      }
 
-      return created;
+      await this.createApprovalAudit(tx, {
+        tenantId,
+        userId: administrator.id,
+        action: 'TAX_IDENTITY_APPROVAL_REQUEST_APPROVED',
+        requestId: request.id,
+        contextType: request.contextType,
+        contextId: request.contextId,
+        documentType: request.documentType,
+        documentLast4: request.documentLast4,
+        metadata: {
+          overrideId: override.id,
+          overrideExpiresAt: override.expiresAt.toISOString(),
+          registryOutcome: registryResult.outcome,
+        },
+      });
+
+      const result = await tx.taxIdentityApprovalRequest.findUniqueOrThrow({
+        where: { id: request.id },
+        include: approvalRequestInclude,
+      });
+      return { kind: 'approved' as const, request: result };
     });
 
-    return {
-      overrideId: override.id,
-      outcome: 'VERIFIED' as const,
-      documentType: identity.documentType,
-      documentNumber: identity.documentNumber,
-      fiscalName,
-      registryStatus: 'AUTORIZACIÓN MANUAL DE SUPERVISOR',
-      source: 'MANUAL_OVERRIDE' as const,
-      sourceUpdatedAt: override.createdAt,
-      checkedAt: new Date(),
-      expiresAt: override.expiresAt,
-    };
+    if (outcome.kind === 'expired') {
+      throw new ConflictException('La solicitud fiscal expiró antes de ser aprobada.');
+    }
+    if (outcome.kind === 'verified-by-dgii') {
+      throw new ConflictException(
+        'La identidad ahora está verificada por DGII; no se generó autorización manual.',
+      );
+    }
+    if (outcome.kind === 'invalid-context') {
+      throw new ConflictException(
+        'La orden o el contexto cambió; se canceló la solicitud sin generar autorización.',
+      );
+    }
+    return this.toPublicApprovalRequest(outcome.request);
+  }
+
+  async rejectApprovalRequest(
+    tenantId: string,
+    administrator: AuthenticatedUser,
+    requestId: string,
+    dto: RejectTaxIdentityApprovalRequestDto,
+  ) {
+    this.assertAdministratorAccess(tenantId, administrator);
+    const decisionNote = this.normalizeLabel(dto.decisionNote, 500);
+    const outcome = await this.prisma.$transaction(async (tx) => {
+      await this.lockApprovalRequest(tx, tenantId, requestId);
+      const request = await tx.taxIdentityApprovalRequest.findFirst({
+        where: { id: requestId, tenantId },
+        include: approvalRequestInclude,
+      });
+      if (!request) {
+        throw new NotFoundException('La solicitud de validación fiscal no existe.');
+      }
+      if (request.status === TaxIdentityApprovalRequestStatus.REJECTED) {
+        return { kind: 'rejected' as const, request };
+      }
+      if (request.status !== TaxIdentityApprovalRequestStatus.PENDING) {
+        throw new ConflictException('La solicitud fiscal ya recibió una decisión.');
+      }
+
+      const now = new Date();
+      if (request.expiresAt <= now) {
+        await tx.taxIdentityApprovalRequest.update({
+          where: { id: request.id },
+          data: {
+            status: TaxIdentityApprovalRequestStatus.EXPIRED,
+            decidedAt: now,
+            decisionNote: 'La solicitud expiró antes de recibir una decisión.',
+          },
+        });
+        await this.createApprovalAudit(tx, {
+          tenantId,
+          userId: null,
+          action: 'TAX_IDENTITY_APPROVAL_REQUEST_EXPIRED',
+          requestId: request.id,
+          contextType: request.contextType,
+          contextId: request.contextId,
+          documentType: request.documentType,
+          documentLast4: request.documentLast4,
+        });
+        return { kind: 'expired' as const };
+      }
+
+      const rejected = await tx.taxIdentityApprovalRequest.updateMany({
+        where: {
+          id: request.id,
+          tenantId,
+          status: TaxIdentityApprovalRequestStatus.PENDING,
+        },
+        data: {
+          status: TaxIdentityApprovalRequestStatus.REJECTED,
+          decidedById: administrator.id,
+          decidedAt: now,
+          decisionNote,
+        },
+      });
+      if (rejected.count !== 1) {
+        throw new ConflictException('La solicitud fiscal cambió mientras se rechazaba.');
+      }
+      await this.createApprovalAudit(tx, {
+        tenantId,
+        userId: administrator.id,
+        action: 'TAX_IDENTITY_APPROVAL_REQUEST_REJECTED',
+        requestId: request.id,
+        contextType: request.contextType,
+        contextId: request.contextId,
+        documentType: request.documentType,
+        documentLast4: request.documentLast4,
+      });
+      const result = await tx.taxIdentityApprovalRequest.findUniqueOrThrow({
+        where: { id: request.id },
+        include: approvalRequestInclude,
+      });
+      return { kind: 'rejected' as const, request: result };
+    });
+
+    if (outcome.kind === 'expired') {
+      throw new ConflictException('La solicitud fiscal expiró antes de ser rechazada.');
+    }
+    return this.toPublicApprovalRequest(outcome.request);
+  }
+
+  async cancelApprovalRequest(tenantId: string, requester: AuthenticatedUser, requestId: string) {
+    const outcome = await this.prisma.$transaction(async (tx) => {
+      await this.lockApprovalRequest(tx, tenantId, requestId);
+      const request = await tx.taxIdentityApprovalRequest.findFirst({
+        where: { id: requestId, tenantId },
+        include: approvalRequestInclude,
+      });
+      if (!request) {
+        throw new NotFoundException('La solicitud de validación fiscal no existe.');
+      }
+      if (
+        request.requestedById !== requester.id &&
+        !this.hasAdministratorAccess(tenantId, requester)
+      ) {
+        throw new ForbiddenException('No puedes cancelar esta solicitud de validación fiscal.');
+      }
+      if (request.status === TaxIdentityApprovalRequestStatus.CANCELLED) {
+        return request;
+      }
+      if (request.status !== TaxIdentityApprovalRequestStatus.PENDING) {
+        throw new ConflictException('La solicitud fiscal ya recibió una decisión.');
+      }
+
+      const now = new Date();
+      const status =
+        request.expiresAt <= now
+          ? TaxIdentityApprovalRequestStatus.EXPIRED
+          : TaxIdentityApprovalRequestStatus.CANCELLED;
+      await tx.taxIdentityApprovalRequest.update({
+        where: { id: request.id },
+        data: {
+          status,
+          decidedById: status === TaxIdentityApprovalRequestStatus.CANCELLED ? requester.id : null,
+          decidedAt: now,
+          decisionNote:
+            status === TaxIdentityApprovalRequestStatus.CANCELLED
+              ? 'Cancelada por el solicitante.'
+              : 'La solicitud expiró antes de ser cancelada.',
+        },
+      });
+      await this.createApprovalAudit(tx, {
+        tenantId,
+        userId: status === TaxIdentityApprovalRequestStatus.CANCELLED ? requester.id : null,
+        action:
+          status === TaxIdentityApprovalRequestStatus.CANCELLED
+            ? 'TAX_IDENTITY_APPROVAL_REQUEST_CANCELLED'
+            : 'TAX_IDENTITY_APPROVAL_REQUEST_EXPIRED',
+        requestId: request.id,
+        contextType: request.contextType,
+        contextId: request.contextId,
+        documentType: request.documentType,
+        documentLast4: request.documentLast4,
+      });
+      return tx.taxIdentityApprovalRequest.findUniqueOrThrow({
+        where: { id: request.id },
+        include: approvalRequestInclude,
+      });
+    });
+
+    return this.toPublicApprovalRequest(outcome);
   }
 
   toVerificationSnapshot(result: TaxIdentityLookupResult): TaxIdentityVerificationSnapshot {
@@ -446,7 +944,7 @@ export class TaxIdentitiesService {
 
     return this.result('VERIFIED', documentType, documentNumber, new Date(), {
       fiscalName: override.fiscalName,
-      registryStatus: 'AUTORIZACIÓN MANUAL DE SUPERVISOR',
+      registryStatus: 'VALIDACIÓN MANUAL ADMINISTRATIVA',
       source: 'MANUAL_OVERRIDE',
       sourceUpdatedAt: override.createdAt,
       overrideId: override.id,
@@ -554,6 +1052,97 @@ export class TaxIdentitiesService {
     }
   }
 
+  private async assertCanCreateApprovalRequest(
+    tenantId: string,
+    requester: AuthenticatedUser,
+    contextType: TaxIdentityContextType,
+    rawContextId: string,
+  ) {
+    const contextId = rawContextId.trim();
+    if (!contextId) {
+      throw new BadRequestException('El contexto de la solicitud es obligatorio.');
+    }
+
+    if (contextType === TaxIdentityContextType.POS_ORDER) {
+      const order = await this.prisma.salesOrder.findFirst({
+        where: {
+          id: contextId,
+          tenantId,
+          status: SalesOrderStatus.IN_CASHIER,
+          invoiceId: null,
+          claimedById: requester.id,
+          claimExpiresAt: { gt: new Date() },
+          claimedCashSession: {
+            is: {
+              tenantId,
+              openedById: requester.id,
+              status: CashSessionStatus.OPEN,
+            },
+          },
+        },
+        select: { id: true },
+      });
+      if (!order) {
+        throw new ConflictException(
+          'La orden debe estar reclamada por este cajero en una sesión de caja abierta.',
+        );
+      }
+      return;
+    }
+
+    this.assertAdministratorAccess(tenantId, requester);
+    await this.assertContextBelongsToTenant(tenantId, contextType, contextId);
+  }
+
+  private async isApprovalContextStillValid(
+    tx: Prisma.TransactionClient,
+    tenantId: string,
+    request: Pick<
+      TaxIdentityApprovalRequestWithRelations,
+      'contextType' | 'contextId' | 'requestedById'
+    >,
+  ) {
+    if (request.contextType === TaxIdentityContextType.POS_ORDER) {
+      return Boolean(
+        await tx.salesOrder.findFirst({
+          where: {
+            id: request.contextId,
+            tenantId,
+            status: SalesOrderStatus.IN_CASHIER,
+            invoiceId: null,
+            claimedById: request.requestedById,
+            claimExpiresAt: { gt: new Date() },
+            claimedCashSession: {
+              is: {
+                tenantId,
+                openedById: request.requestedById,
+                status: CashSessionStatus.OPEN,
+              },
+            },
+          },
+          select: { id: true },
+        }),
+      );
+    }
+    if (request.contextType === TaxIdentityContextType.CUSTOMER) {
+      return Boolean(
+        await tx.customer.findFirst({
+          where: { id: request.contextId, tenantId },
+          select: { id: true },
+        }),
+      );
+    }
+    if (request.contextType === TaxIdentityContextType.SUPPLIER) {
+      return Boolean(
+        await tx.supplier.findFirst({
+          where: { id: request.contextId, tenantId },
+          select: { id: true },
+        }),
+      );
+    }
+    return /^[A-Za-z0-9_-]{8,80}$/.test(request.contextId);
+  }
+
   private async assertContextBelongsToTenant(
     tenantId: string,
     contextType: TaxIdentityContextType,
@@ -636,15 +1225,15 @@ export class TaxIdentitiesService {
 
   private failureMessage(outcome: TaxIdentityLookupResult['outcome']) {
     if (outcome === 'NOT_FOUND') {
-      return 'El documento no aparece en el padrón DGII. Requiere autorización de supervisor.';
+      return 'El documento no aparece en el padrón DGII. Requiere validación manual administrativa.';
     }
     if (outcome === 'NON_ACTIVE') {
-      return 'El contribuyente no figura activo en DGII. Requiere autorización de supervisor.';
+      return 'El contribuyente no figura activo en DGII. Requiere validación manual administrativa.';
     }
     if (outcome === 'REGISTRY_STALE') {
-      return 'El padrón DGII local está desactualizado. Requiere sincronización o autorización de supervisor.';
+      return 'El padrón DGII local está desactualizado. Requiere sincronización o validación manual administrativa.';
     }
-    return 'El padrón DGII no está disponible. Requiere autorización de supervisor.';
+    return 'El padrón DGII no está disponible. Requiere validación manual administrativa.';
   }
 
   private normalizeLabel(value: string, maxLength: number) {
@@ -658,27 +1247,219 @@ export class TaxIdentitiesService {
     return normalized.slice(0, maxLength);
   }
 
-  private async auditFailedApproval(
+  private approvalRequestTtlMinutes() {
+    const configured = Number(
+      this.config.get<string>('TAX_IDENTITY_APPROVAL_REQUEST_TTL_MINUTES') ?? '30',
+    );
+    return Number.isInteger(configured) && configured >= 5 && configured <= 240 ? configured : 30;
+  }
+
+  private hasAdministratorAccess(tenantId: string, user: AuthenticatedUser) {
+    return user.memberships.some(
+      (membership) =>
+        membership.status === MembershipStatus.ACTIVE &&
+        administratorRoles.includes(membership.role) &&
+        (membership.tenantId === tenantId ||
+          membership.role === Role.SUPER_ADMIN ||
+          membership.role === Role.QORVEX_SUPER_ADMIN),
+    );
+  }
+
+  private assertAdministratorAccess(tenantId: string, user: AuthenticatedUser) {
+    if (!this.hasAdministratorAccess(tenantId, user)) {
+      throw new ForbiddenException('Solo un administrador puede decidir esta solicitud fiscal.');
+    }
+  }
+
+  private async lockApprovalContext(
+    tx: Prisma.TransactionClient,
     tenantId: string,
-    requesterId: string,
-    dto: AuthorizeTaxIdentityOverrideDto,
-    documentNumber: string,
+    contextType: TaxIdentityContextType,
+    contextId: string,
   ) {
-    try {
-      await this.audit.log({
-        tenantId,
-        userId: requesterId,
-        action: 'TAX_IDENTITY_OVERRIDE_DENIED',
-        entity: 'TaxIdentityOverride',
-        metadata: {
-          contextType: dto.contextType,
-          contextId: dto.contextId.trim(),
-          documentType: dto.documentType,
-          documentLast4: documentNumber.slice(-4),
+    const lockKey = [
+      'corestack:tax-identity-approval-context',
+      tenantId,
+      contextType,
+      contextId,
+    ].join(':');
+    await tx.$queryRaw`
+      SELECT 1::int AS "locked"
+      FROM (SELECT pg_advisory_xact_lock(hashtext(${lockKey}))) AS acquired
+    `;
+  }
+
+  private async lockApprovalRequest(
+    tx: Prisma.TransactionClient,
+    tenantId: string,
+    requestId: string,
+  ) {
+    const lockKey = ['corestack:tax-identity-approval-request', tenantId, requestId].join(':');
+    await tx.$queryRaw`
+      SELECT 1::int AS "locked"
+      FROM (SELECT pg_advisory_xact_lock(hashtext(${lockKey}))) AS acquired
+    `;
+  }
+
+  private async expirePendingApprovalRequests(tenantId: string, requestedById?: string) {
+    const now = new Date();
+    await this.prisma.$transaction(async (tx) => {
+      const expiredRequests = await tx.taxIdentityApprovalRequest.findMany({
+        where: {
+          tenantId,
+          status: TaxIdentityApprovalRequestStatus.PENDING,
+          expiresAt: { lte: now },
+          ...(requestedById ? { requestedById } : {}),
+        },
+        select: {
+          id: true,
+          contextType: true,
+          contextId: true,
+          documentType: true,
+          documentLast4: true,
+        },
+        take: 500,
+      });
+
+      for (const request of expiredRequests) {
+        const expired = await tx.taxIdentityApprovalRequest.updateMany({
+          where: {
+            id: request.id,
+            tenantId,
+            status: TaxIdentityApprovalRequestStatus.PENDING,
+            expiresAt: { lte: now },
+          },
+          data: {
+            status: TaxIdentityApprovalRequestStatus.EXPIRED,
+            decidedAt: now,
+            decisionNote: 'La solicitud expiró antes de recibir una decisión.',
+          },
+        });
+        if (expired.count === 1) {
+          await this.createApprovalAudit(tx, {
+            tenantId,
+            userId: null,
+            action: 'TAX_IDENTITY_APPROVAL_REQUEST_EXPIRED',
+            requestId: request.id,
+            contextType: request.contextType,
+            contextId: request.contextId,
+            documentType: request.documentType,
+            documentLast4: request.documentLast4,
+          });
+        }
+      }
+    });
+  }
+
+  private async expireApprovalRequest(tenantId: string, requestId: string) {
+    const now = new Date();
+    await this.prisma.$transaction(async (tx) => {
+      const request = await tx.taxIdentityApprovalRequest.findFirst({
+        where: {
+          id: requestId,
+          tenantId,
+          status: TaxIdentityApprovalRequestStatus.PENDING,
+          expiresAt: { lte: now },
+        },
+        select: {
+          id: true,
+          contextType: true,
+          contextId: true,
+          documentType: true,
+          documentLast4: true,
         },
       });
-    } catch {
-      // Authentication must still fail closed if the audit store is temporarily unavailable.
-    }
+      if (!request) {
+        return;
+      }
+      const expired = await tx.taxIdentityApprovalRequest.updateMany({
+        where: {
+          id: request.id,
+          tenantId,
+          status: TaxIdentityApprovalRequestStatus.PENDING,
+          expiresAt: { lte: now },
+        },
+        data: {
+          status: TaxIdentityApprovalRequestStatus.EXPIRED,
+          decidedAt: now,
+          decisionNote: 'La solicitud expiró antes de recibir una decisión.',
+        },
+      });
+      if (expired.count === 1) {
+        await this.createApprovalAudit(tx, {
+          tenantId,
+          userId: null,
+          action: 'TAX_IDENTITY_APPROVAL_REQUEST_EXPIRED',
+          requestId: request.id,
+          contextType: request.contextType,
+          contextId: request.contextId,
+          documentType: request.documentType,
+          documentLast4: request.documentLast4,
+        });
+      }
+    });
+  }
+
+  private async createApprovalAudit(
+    tx: Prisma.TransactionClient,
+    input: {
+      tenantId: string;
+      userId: string | null;
+      action: string;
+      requestId: string;
+      contextType: TaxIdentityContextType;
+      contextId: string;
+      documentType: DocumentType;
+      documentLast4: string;
+      metadata?: Prisma.InputJsonObject;
+    },
+  ) {
+    await tx.auditLog.create({
+      data: {
+        tenantId: input.tenantId,
+        userId: input.userId,
+        action: input.action,
+        entity: 'TaxIdentityApprovalRequest',
+        entityId: input.requestId,
+        metadata: {
+          contextType: input.contextType,
+          contextId: input.contextId,
+          documentType: input.documentType,
+          documentLast4: input.documentLast4,
+          ...(input.metadata ?? {}),
+        },
+      },
+    });
+  }
+
+  private toPublicApprovalRequest(request: TaxIdentityApprovalRequestWithRelations) {
+    return {
+      id: request.id,
+      status: request.status,
+      contextType: request.contextType,
+      contextId: request.contextId,
+      documentType: request.documentType,
+      documentNumber: request.documentNumber,
+      documentLast4: request.documentLast4,
+      fiscalName: request.fiscalName,
+      reason: request.reason,
+      registryOutcome: request.registryOutcome,
+      registrySource: request.registrySource,
+      registryCheckedAt: request.registryCheckedAt,
+      registrySourceUpdatedAt: request.registrySourceUpdatedAt,
+      requestedAt: request.requestedAt,
+      expiresAt: request.expiresAt,
+      decidedAt: request.decidedAt,
+      decisionNote: request.decisionNote,
+      requestedBy: request.requestedBy,
+      decidedBy: request.decidedBy,
+      override: request.override
+        ? {
+            overrideId: request.override.id,
+            expiresAt: request.override.expiresAt,
+            usedAt: request.override.usedAt,
+          }
+        : null,
+    };
   }
 }

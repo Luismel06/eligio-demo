@@ -46,7 +46,7 @@ type TaxIdentityVerificationProps = {
   documentType: TaxIdentityDocumentType;
   documentNumber: string;
   onChange?: (state: TaxIdentityVerificationState) => void;
-  overrideAction?: React.ReactNode;
+  manualReviewAction?: React.ReactNode;
   manualOverride?: TaxIdentityOverrideResult | null;
   storedVerification?: TaxIdentityVerificationEvidence | null;
   className?: string;
@@ -58,7 +58,7 @@ export function TaxIdentityVerification({
   documentType,
   documentNumber,
   onChange,
-  overrideAction,
+  manualReviewAction,
   manualOverride,
   storedVerification,
   className,
@@ -193,10 +193,10 @@ export function TaxIdentityVerification({
       <StatusPanel
         tone="warning"
         title="No fue posible consultar DGII"
-        description="El documento no ha sido verificado. Intenta nuevamente; si el servicio continúa indisponible, solicita autorización de un supervisor."
+        description="El documento no ha sido verificado. Intenta nuevamente; si el servicio continúa indisponible, envía una solicitud de validación al administrador."
         onRetry={() => void query.refetch()}
         refreshing={query.isFetching}
-        overrideAction={overrideAction}
+        manualReviewAction={manualReviewAction}
         storedVerification={storedVerification}
         className={className}
       />
@@ -234,7 +234,7 @@ export function TaxIdentityVerification({
           <div className="min-w-0 space-y-1">
             <p className="font-semibold">
               {manual
-                ? 'Identidad autorizada manualmente por un supervisor'
+                ? 'Identidad autorizada manualmente por un administrador'
                 : 'Razón social verificada por DGII'}
             </p>
             <p className="break-words text-base font-medium">{currentResult.fiscalName}</p>
@@ -250,7 +250,9 @@ export function TaxIdentityVerification({
                 ? 'Autorización manual'
                 : (currentResult.source ?? 'DGII')}
               {currentResult.sourceUpdatedAt
-                ? ` · Padrón actualizado ${formatVerificationDate(currentResult.sourceUpdatedAt)}`
+                ? manual
+                  ? ` · Aprobada ${formatVerificationDate(currentResult.sourceUpdatedAt)}`
+                  : ` · Padrón actualizado ${formatVerificationDate(currentResult.sourceUpdatedAt)}`
                 : ''}
             </p>
             {manualExpiresAt ? (
@@ -278,7 +280,7 @@ export function TaxIdentityVerification({
       }
       onRetry={() => void query.refetch()}
       refreshing={query.isFetching}
-      overrideAction={overrideAction}
+      manualReviewAction={manualReviewAction}
       storedVerification={
         currentResult.outcome === 'UNAVAILABLE' || currentResult.outcome === 'REGISTRY_STALE'
           ? storedVerification
@@ -296,7 +298,7 @@ function StatusPanel({
   detail,
   onRetry,
   refreshing,
-  overrideAction,
+  manualReviewAction,
   storedVerification,
   className,
 }: {
@@ -306,7 +308,7 @@ function StatusPanel({
   detail?: string;
   onRetry: () => void;
   refreshing: boolean;
-  overrideAction?: React.ReactNode;
+  manualReviewAction?: React.ReactNode;
   storedVerification?: TaxIdentityVerificationEvidence | null;
   className?: string;
 }) {
@@ -342,9 +344,9 @@ function StatusPanel({
           ) : (
             <>
               <p className="text-xs font-medium">
-                Para continuar se requiere verificación manual y autorización de un supervisor.
+                Para continuar, digita el nombre fiscal y envía una solicitud al administrador.
               </p>
-              {overrideAction ? <div className="pt-1">{overrideAction}</div> : null}
+              {manualReviewAction ? <div className="pt-1">{manualReviewAction}</div> : null}
             </>
           )}
         </div>
@@ -400,7 +402,7 @@ export function TaxIdentityVerificationBadge({
   return (
     <div className={cn('space-y-1', className)}>
       <Badge variant={manual ? 'warning' : 'success'}>
-        {manual ? 'Autorizado por supervisor' : 'Verificado por DGII'}
+        {manual ? 'Autorizado por administrador' : 'Verificado por DGII'}
       </Badge>
       <p className="text-xs text-muted-foreground">
         {translateVerificationSource(verification.source)}
@@ -450,6 +452,7 @@ function translateRegistryStatus(status: string) {
   const normalized = status.trim().toUpperCase();
   if (normalized === 'ACTIVE' || normalized === 'ACTIVO') return 'Activo';
   if (normalized === 'INACTIVE' || normalized === 'INACTIVO') return 'Inactivo';
+  if (normalized === 'MANUAL_OVERRIDE') return 'Validación manual';
   return status;
 }
 

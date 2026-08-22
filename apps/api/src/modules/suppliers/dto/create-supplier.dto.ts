@@ -92,7 +92,7 @@ export class CreateSupplierDto {
   @MaxLength(64)
   taxIdentityOverrideId?: string;
 
-  /** Client-generated identifier that binds a supervisor override to this form. */
+  /** Client-generated identifier that binds an administrative override to this form. */
   @IsOptional()
   @IsString()
   @MaxLength(80)

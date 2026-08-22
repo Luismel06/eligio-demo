@@ -524,7 +524,7 @@ export class PosService {
           !hasVerifiedFiscalIdentity)
       ) {
         throw new BadRequestException(
-          'B01 requiere confirmar un RNC o cédula verificado por DGII o autorizado por un supervisor.',
+          'B01 requiere confirmar un RNC o cédula verificado por DGII o validado manualmente por un administrador.',
         );
       }
       if (requiresConsumerIdentity && (!fiscalCustomerSnapshot || !hasVerifiedFiscalIdentity)) {

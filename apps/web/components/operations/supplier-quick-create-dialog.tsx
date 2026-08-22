@@ -20,7 +20,7 @@ import {
   validateDominicanDocument,
 } from '@/lib/dominican-documents';
 import { FormField, selectClassName } from './procurement-ui';
-import { TaxIdentityOverrideDialog } from './tax-identity-override-dialog';
+import { TaxIdentityApprovalRequestPanel } from './tax-identity-approval-request';
 import {
   hasVerifiedTaxIdentity,
   TaxIdentityVerification,
@@ -79,13 +79,11 @@ export function SupplierQuickCreateDialog({
   const [taxIdentity, setTaxIdentity] = useState<TaxIdentityVerificationState | null>(null);
   const [taxIdentityContextId, setTaxIdentityContextId] = useState('');
   const [manualOverride, setManualOverride] = useState<TaxIdentityOverrideResult | null>(null);
-  const [overrideDialogOpen, setOverrideDialogOpen] = useState(false);
 
   useEffect(() => {
     if (!open) {
       setTaxIdentityContextId('');
       setManualOverride(null);
-      setOverrideDialogOpen(false);
       setTaxIdentity(null);
       return;
     }
@@ -96,7 +94,6 @@ export function SupplierQuickCreateDialog({
     setConfirmedSameName(false);
     setTaxIdentity(null);
     setManualOverride(null);
-    setOverrideDialogOpen(false);
     setTaxIdentityContextId((current) => current || createTaxIdentityDraftId('supplier-create'));
   }, [
     open,
@@ -197,7 +194,9 @@ export function SupplierQuickCreateDialog({
       return;
     }
     if (!hasVerifiedTaxIdentity(taxIdentity, form.documentType, normalizedDocument)) {
-      setFormError('Verifica el RNC o la cédula en DGII antes de registrar el suplidor.');
+      setFormError(
+        'Verifica el RNC o la cédula con DGII o consigue autorización administrativa antes de registrar el suplidor.',
+      );
       return;
     }
     if (duplicateByDocument) {
@@ -276,11 +275,11 @@ export function SupplierQuickCreateDialog({
   return (
     <>
       <ActionDialog
-        open={open && !overrideDialogOpen}
+        open={open}
         onClose={close}
         onConfirm={submit}
         title="Registrar suplidor para esta factura"
-        description="Completa los datos básicos. El documento y la razón social se verifican en DGII antes de guardar."
+        description="Completa los datos básicos. El documento y la razón social se verifican con DGII o mediante autorización administrativa."
         tone="default"
         icon={<UserRoundPlus className="h-5 w-5" aria-hidden="true" />}
         confirmLabel="Registrar y usar suplidor"
@@ -371,7 +370,7 @@ export function SupplierQuickCreateDialog({
               id="quick-supplier-legal"
               value={form.legalName}
               readOnly
-              placeholder="Se completará al verificar en DGII"
+              placeholder="Se completará al verificar o recibir aprobación"
             />
           </FormField>
           <TaxIdentityVerification
@@ -381,14 +380,24 @@ export function SupplierQuickCreateDialog({
             documentNumber={form.documentNumber}
             onChange={handleTaxIdentityChange}
             manualOverride={manualOverride}
-            overrideAction={
-              <button
-                type="button"
-                className="font-medium text-primary underline-offset-4 hover:underline"
-                onClick={() => setOverrideDialogOpen(true)}
-              >
-                Autorizar con supervisor
-              </button>
+            manualReviewAction={
+              session && taxIdentityContextId ? (
+                <TaxIdentityApprovalRequestPanel
+                  tenantId={session.tenantId}
+                  accessToken={session.accessToken}
+                  contextType="SUPPLIER_CREATE"
+                  contextId={taxIdentityContextId}
+                  documentType={form.documentType}
+                  documentNumber={form.documentNumber}
+                  suggestedFiscalName={
+                    taxIdentity?.result?.fiscalName || form.legalName || form.commercialName
+                  }
+                  registryOutcome={taxIdentity?.result?.outcome}
+                  disabled={isBusy}
+                  compact
+                  onApproved={handleManualOverride}
+                />
+              ) : null
             }
             className="sm:col-span-2"
           />
@@ -557,22 +566,6 @@ export function SupplierQuickCreateDialog({
           </div>
         ) : null}
       </ActionDialog>
-      {session && taxIdentityContextId ? (
-        <TaxIdentityOverrideDialog
-          open={open && overrideDialogOpen}
-          onClose={() => setOverrideDialogOpen(false)}
-          session={session}
-          contextType="SUPPLIER_CREATE"
-          contextId={taxIdentityContextId}
-          documentType={form.documentType}
-          documentNumber={form.documentNumber}
-          suggestedFiscalName={
-            taxIdentity?.result?.fiscalName || form.legalName || form.commercialName
-          }
-          registryOutcome={taxIdentity?.result?.outcome}
-          onAuthorized={handleManualOverride}
-        />
-      ) : null}
     </>
   );
 }

@@ -48,6 +48,10 @@ export function canAccessPath(session: AuthSession | null | undefined, pathname:
     return false;
   }
 
+  if (pathname === '/tax-identity-approvals' || pathname.startsWith('/tax-identity-approvals/')) {
+    return isAdminSession(session);
+  }
+
   if (isAccountantSession(session)) {
     return (
       accountantExactPaths.has(pathname) ||

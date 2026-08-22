@@ -245,20 +245,57 @@ export type TaxIdentityContextType =
   | 'SUPPLIER'
   | 'CUSTOMER_CREATE'
   | 'SUPPLIER_CREATE';
-export type TaxIdentityOverridePayload = {
+export type TaxIdentityOverrideResult = TaxIdentityLookup & {
+  overrideId: string;
+  expiresAt: string;
+};
+export type TaxIdentityApprovalRequestStatus =
+  | 'PENDING'
+  | 'APPROVED'
+  | 'REJECTED'
+  | 'EXPIRED'
+  | 'CANCELLED';
+export type TaxIdentityApprovalRequest = {
+  id: string;
+  status: TaxIdentityApprovalRequestStatus;
+  contextType: TaxIdentityContextType;
+  contextId: string;
+  documentType: TaxIdentityDocumentType;
+  documentNumber: string;
+  documentLast4: string;
+  fiscalName: string;
+  reason: string | null;
+  registryOutcome: Exclude<TaxIdentityLookupOutcome, 'VERIFIED'>;
+  registrySource: string | null;
+  registryCheckedAt: string;
+  registrySourceUpdatedAt: string | null;
+  requestedAt: string;
+  expiresAt: string;
+  decidedAt: string | null;
+  decisionNote: string | null;
+  requestedBy: {
+    id: string;
+    name: string;
+    email?: string;
+  };
+  decidedBy: {
+    id: string;
+    name: string;
+    email?: string;
+  } | null;
+  override: {
+    overrideId: string;
+    expiresAt: string;
+    usedAt: string | null;
+  } | null;
+};
+export type CreateTaxIdentityApprovalRequestPayload = {
   contextType: TaxIdentityContextType;
   contextId: string;
   documentType: TaxIdentityDocumentType;
   documentNumber: string;
   fiscalName: string;
-  reason: string;
-  supervisorEmail: string;
-  supervisorPassword: string;
-  expiresInMinutes?: number;
-};
-export type TaxIdentityOverrideResult = TaxIdentityLookup & {
-  overrideId: string;
-  expiresAt: string;
+  reason?: string;
 };
 export type FiscalCustomerSnapshot = {
   id: string | null;
@@ -2103,16 +2140,96 @@ export function lookupTaxIdentity(
   });
 }
 
-export function authorizeTaxIdentityOverride(
+export function createTaxIdentityApprovalRequest(
   tenantId: string,
   accessToken: string,
-  payload: TaxIdentityOverridePayload,
+  payload: CreateTaxIdentityApprovalRequestPayload,
 ) {
-  return fetchJson<TaxIdentityOverrideResult>('/tax-identities/overrides', {
+  return fetchJson<TaxIdentityApprovalRequest>('/tax-identities/approval-requests', {
     method: 'POST',
     headers: tenantHeaders(tenantId, accessToken),
     body: JSON.stringify(payload),
   });
+}
+
+export function getTaxIdentityApprovalRequests(
+  tenantId: string,
+  accessToken: string,
+  query: {
+    status?: TaxIdentityApprovalRequestStatus;
+    contextType?: TaxIdentityContextType;
+    contextId?: string;
+  } = {},
+) {
+  const searchParams = new URLSearchParams();
+  if (query.status) searchParams.set('status', query.status);
+  if (query.contextType) searchParams.set('contextType', query.contextType);
+  if (query.contextId) searchParams.set('contextId', query.contextId);
+  const suffix = searchParams.size ? `?${searchParams.toString()}` : '';
+
+  return fetchJson<TaxIdentityApprovalRequest[]>(`/tax-identities/approval-requests${suffix}`, {
+    headers: tenantHeaders(tenantId, accessToken),
+  });
+}
+
+export function getTaxIdentityApprovalRequest(
+  tenantId: string,
+  accessToken: string,
+  requestId: string,
+) {
+  return fetchJson<TaxIdentityApprovalRequest>(`/tax-identities/approval-requests/${requestId}`, {
+    headers: tenantHeaders(tenantId, accessToken),
+  });
+}
+
+export function approveTaxIdentityApprovalRequest(
+  tenantId: string,
+  accessToken: string,
+  requestId: string,
+  payload: {
+    fiscalName?: string;
+    decisionNote?: string;
+    expiresInMinutes?: number;
+  },
+) {
+  return fetchJson<TaxIdentityApprovalRequest>(
+    `/tax-identities/approval-requests/${requestId}/approve`,
+    {
+      method: 'POST',
+      headers: tenantHeaders(tenantId, accessToken),
+      body: JSON.stringify(payload),
+    },
+  );
+}
+
+export function rejectTaxIdentityApprovalRequest(
+  tenantId: string,
+  accessToken: string,
+  requestId: string,
+  decisionNote: string,
+) {
+  return fetchJson<TaxIdentityApprovalRequest>(
+    `/tax-identities/approval-requests/${requestId}/reject`,
+    {
+      method: 'POST',
+      headers: tenantHeaders(tenantId, accessToken),
+      body: JSON.stringify({ decisionNote }),
+    },
+  );
+}
+
+export function cancelTaxIdentityApprovalRequest(
+  tenantId: string,
+  accessToken: string,
+  requestId: string,
+) {
+  return fetchJson<TaxIdentityApprovalRequest>(
+    `/tax-identities/approval-requests/${requestId}/cancel`,
+    {
+      method: 'POST',
+      headers: tenantHeaders(tenantId, accessToken),
+    },
+  );
 }
 
 export function createCustomer(

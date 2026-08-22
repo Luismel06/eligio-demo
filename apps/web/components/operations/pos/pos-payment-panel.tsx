@@ -28,8 +28,8 @@ import {
   sanitizeCurrencyInput,
 } from './currency-input';
 import { PaymentCalculator } from './payment-calculator';
-import { TaxIdentityOverrideDialog } from '../tax-identity-override-dialog';
 import type { PosTotals } from './types';
+import { TaxIdentityApprovalRequestPanel } from '../tax-identity-approval-request';
 
 type PosPaymentPanelProps = {
   tenantId: string;
@@ -85,7 +85,6 @@ export function PosPaymentPanel({
   const [draftPurpose, setDraftPurpose] = useState<FiscalDocumentPurpose>(fiscalPurpose);
   const [draftDocumentType, setDraftDocumentType] = useState<FiscalIdentityDocumentType>('RNC');
   const [draftDocumentNumber, setDraftDocumentNumber] = useState('');
-  const [overrideDialogOpen, setOverrideDialogOpen] = useState(false);
   const [overrideClockMs, setOverrideClockMs] = useState(() => Date.now());
   const activeOrderIdRef = useRef(order?.id);
   const lastAutomaticLookupKeyRef = useRef<string | null>(null);
@@ -103,7 +102,6 @@ export function PosPaymentPanel({
     setDraftPurpose(fiscalPurpose);
     setDraftDocumentType(persistedIdentity?.documentType ?? 'RNC');
     setDraftDocumentNumber(persistedIdentity?.documentNumber ?? '');
-    setOverrideDialogOpen(false);
   }, [
     fiscalPurpose,
     order?.fiscalCustomerSnapshot?.documentNumber,
@@ -249,7 +247,9 @@ export function PosPaymentPanel({
       }
 
       if (!fiscalIdentityVerified) {
-        throw new Error('Verifica el RNC o la cédula con DGII antes de confirmar.');
+        throw new Error(
+          'Verifica el RNC o la cédula con DGII o consigue autorización administrativa antes de confirmar.',
+        );
       }
 
       return updatePosOrderFiscalDetails(tenantId, accessToken, order.id, {
@@ -287,7 +287,6 @@ export function PosPaymentPanel({
 
   useEffect(() => {
     setTaxIdentityLookup(null);
-    setOverrideDialogOpen(false);
     setOverrideClockMs(Date.now());
     lastAutomaticLookupKeyRef.current = null;
     verifyTaxIdentityMutation.reset();
@@ -352,7 +351,6 @@ export function PosPaymentPanel({
 
   function invalidateFiscalIdentityVerification() {
     setTaxIdentityLookup(null);
-    setOverrideDialogOpen(false);
     setOverrideClockMs(Date.now());
     lastAutomaticLookupKeyRef.current = null;
     verifyTaxIdentityMutation.reset();
@@ -402,7 +400,7 @@ export function PosPaymentPanel({
       : lookupAttemptedForCurrentDocument
         ? 'Reintentar'
         : 'Verificar ahora';
-  const canRequestManualOverride = Boolean(
+  const canRequestManualApproval = Boolean(
     order &&
     !fiscalDocumentInvalid &&
     !fiscalIdentityVerified &&
@@ -675,8 +673,8 @@ export function PosPaymentPanel({
 
               {localOverrideExpired ? (
                 <p className="rounded-md bg-danger/10 px-3 py-2 text-sm text-danger" role="alert">
-                  La autorización temporal del supervisor venció. Solicita una nueva autorización
-                  antes de confirmar los datos fiscales.
+                  La validación manual venció. Envía una nueva solicitud al administrador antes de
+                  confirmar los datos fiscales.
                 </p>
               ) : null}
 
@@ -688,23 +686,29 @@ export function PosPaymentPanel({
                 </p>
               ) : null}
 
-              {canRequestManualOverride ? (
-                <div className="flex flex-col gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-3 text-sm text-amber-950 sm:flex-row sm:items-center sm:justify-between">
-                  <p>
-                    Para continuar sin una coincidencia activa en DGII, un supervisor debe revisar
-                    el documento y autorizar este caso excepcional.
-                  </p>
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="outline"
-                    className="shrink-0 border-amber-300 bg-white"
-                    onClick={() => setOverrideDialogOpen(true)}
-                  >
-                    <ShieldCheck className="h-4 w-4" aria-hidden="true" />
-                    Solicitar autorización
-                  </Button>
-                </div>
+              {canRequestManualApproval && order ? (
+                <TaxIdentityApprovalRequestPanel
+                  tenantId={tenantId}
+                  accessToken={accessToken}
+                  contextType="POS_ORDER"
+                  contextId={order.id}
+                  documentType={draftDocumentType}
+                  documentNumber={normalizedDraftDocumentNumber}
+                  suggestedFiscalName={operationalCustomerName}
+                  registryOutcome={currentTaxIdentityLookup?.outcome ?? null}
+                  disabled={fiscalDetailsSaving || isCompleting}
+                  onApproved={(result) => {
+                    setOverrideClockMs(Date.now());
+                    verifyTaxIdentityMutation.reset();
+                    saveFiscalDetailsMutation.reset();
+                    setTaxIdentityLookup({
+                      orderId: order.id,
+                      documentType: draftDocumentType,
+                      documentNumber: normalizedDraftDocumentNumber,
+                      result,
+                    });
+                  }}
+                />
               ) : null}
 
               {operationalNameMissing ? (
@@ -718,7 +722,7 @@ export function PosPaymentPanel({
               ) : currentTaxIdentityLookup && !fiscalIdentityVerified ? (
                 <p className="rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-950" role="alert">
                   No se puede confirmar este comprobante con el resultado actual. Verifica los datos
-                  o solicita la revisión y autorización de un supervisor.
+                  o envía una solicitud de validación al administrador.
                 </p>
               ) : null}
 
@@ -854,7 +858,8 @@ export function PosPaymentPanel({
             </p>
           ) : fiscalIdentityVerificationMissing && !fiscalDocumentInvalid ? (
             <p className="rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-900" role="status">
-              Verifica el RNC o la cédula con DGII para habilitar la facturación.
+              Verifica el RNC o la cédula con DGII o consigue autorización administrativa para
+              habilitar la facturación.
             </p>
           ) : fiscalDetailsDirty ? (
             <p className="rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-900" role="status">
@@ -938,35 +943,6 @@ export function PosPaymentPanel({
 
         {message ? <p className="mt-3 text-sm text-muted-foreground">{message}</p> : null}
       </div>
-
-      {order ? (
-        <TaxIdentityOverrideDialog
-          open={overrideDialogOpen}
-          onClose={() => setOverrideDialogOpen(false)}
-          session={{ tenantId, accessToken }}
-          contextType="POS_ORDER"
-          contextId={order.id}
-          documentType={draftDocumentType}
-          documentNumber={normalizedDraftDocumentNumber}
-          suggestedFiscalName={
-            currentTaxIdentityLookup?.fiscalName?.trim() ||
-            localTaxIdentityLookup?.fiscalName?.trim() ||
-            operationalCustomerName
-          }
-          registryOutcome={currentTaxIdentityLookup?.outcome ?? null}
-          onAuthorized={(result) => {
-            setOverrideClockMs(Date.now());
-            verifyTaxIdentityMutation.reset();
-            saveFiscalDetailsMutation.reset();
-            setTaxIdentityLookup({
-              orderId: order.id,
-              documentType: draftDocumentType,
-              documentNumber: normalizedDraftDocumentNumber,
-              result,
-            });
-          }}
-        />
-      ) : null}
     </div>
   );
 }
@@ -994,7 +970,7 @@ function getTaxIdentityHeading(lookup: UsableTaxIdentityLookup | null, checking:
   }
 
   if (lookup?.source === 'MANUAL_OVERRIDE') {
-    return 'Nombre fiscal autorizado por supervisor';
+    return 'Nombre fiscal autorizado por administrador';
   }
 
   if (lookup?.outcome === 'VERIFIED') {
@@ -1013,7 +989,7 @@ function formatTaxIdentitySource(value: string | null | undefined) {
     case 'TEST_FIXTURE':
       return 'Padrón de prueba';
     case 'MANUAL_OVERRIDE':
-      return 'Autorización de supervisor';
+      return 'Autorización administrativa';
     case null:
     case undefined:
     case '':
@@ -1071,6 +1047,10 @@ function formatLookupDate(value: string | null | undefined) {
 function formatRegistryStatus(value: string | null | undefined) {
   if (!value) {
     return 'No informado';
+  }
+
+  if (value === 'MANUAL_OVERRIDE') {
+    return 'Validación manual';
   }
 
   return value

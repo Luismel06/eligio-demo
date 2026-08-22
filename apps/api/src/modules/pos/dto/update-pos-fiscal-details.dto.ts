@@ -28,7 +28,7 @@ export class UpdatePosFiscalDetailsDto {
   documentNumber?: string;
 
   /**
-   * Short-lived, context-bound supervisor authorization used only when a
+   * Short-lived, context-bound administrative authorization used only when a
    * fresh DGII registry cannot verify the document. The browser never sends a
    * fiscal name: the backend resolves it from DGII or this authorization.
    */

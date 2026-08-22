@@ -48,7 +48,7 @@ import {
   textareaClassName,
 } from './procurement-ui';
 import { SessionRequired, useCurrentSession } from './session-required';
-import { TaxIdentityOverrideDialog } from './tax-identity-override-dialog';
+import { TaxIdentityApprovalRequestPanel } from './tax-identity-approval-request';
 import {
   hasStoredTaxIdentityVerification,
   hasVerifiedTaxIdentity,
@@ -122,7 +122,6 @@ export function SuppliersView() {
   const [taxIdentity, setTaxIdentity] = useState<TaxIdentityVerificationState | null>(null);
   const [taxIdentityContextId, setTaxIdentityContextId] = useState('');
   const [manualOverride, setManualOverride] = useState<TaxIdentityOverrideResult | null>(null);
-  const [overrideDialogOpen, setOverrideDialogOpen] = useState(false);
   const [productId, setProductId] = useState('');
   const [supplierSku, setSupplierSku] = useState('');
   const [lastCostNet, setLastCostNet] = useState('');
@@ -199,7 +198,6 @@ export function SuppliersView() {
       setTaxIdentity(null);
       setManualOverride(null);
       setTaxIdentityContextId('');
-      setOverrideDialogOpen(false);
       setShowForm(false);
       toast.success('Suplidor guardado correctamente.');
     },
@@ -327,7 +325,9 @@ export function SuppliersView() {
       return;
     }
     if (!supplierIdentityReady) {
-      toast.error('Verifica el RNC o la cédula en DGII antes de guardar el suplidor.');
+      toast.error(
+        'Verifica el RNC o la cédula con DGII o consigue autorización administrativa antes de guardar el suplidor.',
+      );
       return;
     }
     saveMutation.mutate({
@@ -379,7 +379,6 @@ export function SuppliersView() {
     setTaxIdentity(null);
     setManualOverride(null);
     setTaxIdentityContextId(supplier.id);
-    setOverrideDialogOpen(false);
     setShowForm(true);
   }
 
@@ -430,7 +429,6 @@ export function SuppliersView() {
               setForm(emptySupplierForm);
               setTaxIdentity(null);
               setManualOverride(null);
-              setOverrideDialogOpen(false);
               setTaxIdentityContextId(showForm ? '' : createTaxIdentityDraftId('supplier-create'));
               setShowForm((value) => !value);
             }}
@@ -447,7 +445,8 @@ export function SuppliersView() {
           <CardHeader>
             <CardTitle>{editingId ? 'Editar suplidor' : 'Registrar suplidor'}</CardTitle>
             <CardDescription>
-              El RNC o la cédula y la razón social se verificarán en el padrón fiscal de DGII.
+              El RNC o la cédula y la razón social se verificarán con DGII o mediante autorización
+              administrativa.
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -473,7 +472,7 @@ export function SuppliersView() {
                     maxLength={200}
                     value={form.legalName}
                     readOnly
-                    placeholder="Se completará al verificar en DGII"
+                    placeholder="Se completará al verificar o recibir aprobación"
                   />
                 </FormField>
                 <FormField label="Tipo de documento" htmlFor="supplier-document-type">
@@ -530,15 +529,24 @@ export function SuppliersView() {
                   documentNumber={form.documentNumber}
                   onChange={handleTaxIdentityChange}
                   manualOverride={manualOverride}
-                  overrideAction={
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="outline"
-                      onClick={() => setOverrideDialogOpen(true)}
-                    >
-                      Autorizar con supervisor
-                    </Button>
+                  manualReviewAction={
+                    taxIdentityContextId ? (
+                      <TaxIdentityApprovalRequestPanel
+                        tenantId={session.tenantId}
+                        accessToken={session.accessToken}
+                        contextType={editingSupplier ? 'SUPPLIER' : 'SUPPLIER_CREATE'}
+                        contextId={editingSupplier?.id ?? taxIdentityContextId}
+                        documentType={form.documentType}
+                        documentNumber={form.documentNumber}
+                        suggestedFiscalName={
+                          taxIdentity?.result?.fiscalName || form.legalName || form.commercialName
+                        }
+                        registryOutcome={taxIdentity?.result?.outcome}
+                        disabled={saveMutation.isPending}
+                        compact
+                        onApproved={handleManualOverride}
+                      />
+                    ) : null
                   }
                   storedVerification={
                     unchangedStoredFiscalIdentity ? editingSupplier?.taxIdentityVerification : null
@@ -675,7 +683,6 @@ export function SuppliersView() {
                     setTaxIdentity(null);
                     setManualOverride(null);
                     setTaxIdentityContextId('');
-                    setOverrideDialogOpen(false);
                   }}
                 >
                   Cerrar
@@ -687,22 +694,6 @@ export function SuppliersView() {
             </form>
           </CardContent>
         </Card>
-      ) : null}
-      {showForm && taxIdentityContextId ? (
-        <TaxIdentityOverrideDialog
-          open={overrideDialogOpen}
-          onClose={() => setOverrideDialogOpen(false)}
-          session={session}
-          contextType={editingSupplier ? 'SUPPLIER' : 'SUPPLIER_CREATE'}
-          contextId={editingSupplier?.id ?? taxIdentityContextId}
-          documentType={form.documentType}
-          documentNumber={form.documentNumber}
-          suggestedFiscalName={
-            taxIdentity?.result?.fiscalName || form.legalName || form.commercialName
-          }
-          registryOutcome={taxIdentity?.result?.outcome}
-          onAuthorized={handleManualOverride}
-        />
       ) : null}
       <Card>
         <CardContent className="grid gap-3 p-4 md:grid-cols-[1fr_220px]">

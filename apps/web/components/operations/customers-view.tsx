@@ -31,7 +31,7 @@ import { normalizeDominicanDocument, validateDominicanDocument } from '@/lib/dom
 import { formatDate } from '@/lib/utils';
 import { ModuleHeader } from './module-header';
 import { SessionRequired, useCurrentSession } from './session-required';
-import { TaxIdentityOverrideDialog } from './tax-identity-override-dialog';
+import { TaxIdentityApprovalRequestPanel } from './tax-identity-approval-request';
 import {
   hasStoredTaxIdentityVerification,
   hasVerifiedTaxIdentity,
@@ -76,7 +76,6 @@ export function CustomersView() {
   const [taxIdentity, setTaxIdentity] = useState<TaxIdentityVerificationState | null>(null);
   const [taxIdentityContextId, setTaxIdentityContextId] = useState('');
   const [manualOverride, setManualOverride] = useState<TaxIdentityOverrideResult | null>(null);
-  const [overrideDialogOpen, setOverrideDialogOpen] = useState(false);
   const [creditForm, setCreditForm] = useState<CreditFormState>({
     creditEnabled: false,
     creditStatus: 'BLOCKED',
@@ -136,7 +135,9 @@ export function CustomersView() {
         documentNumber = normalizeDominicanDocument(documentNumber);
 
         if (!fiscalIdentityReady) {
-          throw new Error('Verifica el RNC o la cédula en DGII antes de guardar el cliente.');
+          throw new Error(
+            'Verifica el RNC o la cédula con DGII o consigue autorización administrativa antes de guardar el cliente.',
+          );
         }
       }
 
@@ -249,7 +250,6 @@ export function CustomersView() {
     setTaxIdentity(null);
     setManualOverride(null);
     setTaxIdentityContextId(createTaxIdentityDraftId('customer-create'));
-    setOverrideDialogOpen(false);
     setFormOpen(true);
   }
 
@@ -266,7 +266,6 @@ export function CustomersView() {
     setTaxIdentity(null);
     setManualOverride(null);
     setTaxIdentityContextId(customer.id);
-    setOverrideDialogOpen(false);
     setFormOpen(true);
   }
 
@@ -276,7 +275,6 @@ export function CustomersView() {
     setTaxIdentity(null);
     setManualOverride(null);
     setTaxIdentityContextId('');
-    setOverrideDialogOpen(false);
     setFormOpen(false);
   }
 
@@ -388,7 +386,7 @@ export function CustomersView() {
                   readOnly={form.documentType === 'RNC' || form.documentType === 'CEDULA'}
                   placeholder={
                     form.documentType === 'RNC' || form.documentType === 'CEDULA'
-                      ? 'Se completará al verificar en DGII'
+                      ? 'Se completará al verificar con DGII o recibir aprobación administrativa'
                       : undefined
                   }
                   onChange={(event) =>
@@ -469,15 +467,22 @@ export function CustomersView() {
                   documentNumber={form.documentNumber}
                   onChange={handleTaxIdentityChange}
                   manualOverride={manualOverride}
-                  overrideAction={
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="outline"
-                      onClick={() => setOverrideDialogOpen(true)}
-                    >
-                      Autorizar con supervisor
-                    </Button>
+                  manualReviewAction={
+                    taxIdentityContextId ? (
+                      <TaxIdentityApprovalRequestPanel
+                        tenantId={session.tenantId}
+                        accessToken={session.accessToken}
+                        contextType={editingCustomer ? 'CUSTOMER' : 'CUSTOMER_CREATE'}
+                        contextId={editingCustomer?.id ?? taxIdentityContextId}
+                        documentType={form.documentType}
+                        documentNumber={form.documentNumber}
+                        suggestedFiscalName={taxIdentity?.result?.fiscalName ?? form.name}
+                        registryOutcome={taxIdentity?.result?.outcome}
+                        disabled={saveMutation.isPending}
+                        compact
+                        onApproved={handleManualOverride}
+                      />
+                    ) : null
                   }
                   storedVerification={
                     unchangedStoredFiscalIdentity ? editingCustomer?.taxIdentityVerification : null
@@ -536,21 +541,6 @@ export function CustomersView() {
             </form>
           </CardContent>
         </Card>
-      ) : null}
-
-      {formOpen && fiscalDocumentType && taxIdentityContextId ? (
-        <TaxIdentityOverrideDialog
-          open={overrideDialogOpen}
-          onClose={() => setOverrideDialogOpen(false)}
-          session={session}
-          contextType={editingCustomer ? 'CUSTOMER' : 'CUSTOMER_CREATE'}
-          contextId={editingCustomer?.id ?? taxIdentityContextId}
-          documentType={fiscalDocumentType}
-          documentNumber={form.documentNumber}
-          suggestedFiscalName={taxIdentity?.result?.fiscalName ?? form.name}
-          registryOutcome={taxIdentity?.result?.outcome}
-          onAuthorized={handleManualOverride}
-        />
       ) : null}
 
       {creditCustomer && !readOnly ? (

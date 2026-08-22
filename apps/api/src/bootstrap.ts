@@ -90,7 +90,10 @@ export async function createQorvexApiApp() {
       limit: getNumberConfig(config, 'API_RATE_LIMIT_MAX', 600),
       standardHeaders: 'draft-8',
       legacyHeaders: false,
-      skip: (request) => request.path === '/' || request.path === '/health',
+      skip: (request) =>
+        request.path === '/' ||
+        request.path === '/health' ||
+        isTaxIdentityApprovalRequestRead(request),
       message: {
         statusCode: 429,
         message: 'Demasiadas solicitudes. Intenta de nuevo en unos minutos.',
@@ -114,22 +117,47 @@ export async function createQorvexApiApp() {
   );
 
   app.use(
-    '/tax-identities/overrides',
+    '/tax-identities/approval-requests',
     rateLimit({
       windowMs: getNumberConfig(
         config,
-        'TAX_IDENTITY_OVERRIDE_RATE_LIMIT_WINDOW_MS',
+        'TAX_IDENTITY_APPROVAL_REQUEST_READ_RATE_LIMIT_WINDOW_MS',
         15 * 60 * 1000,
       ),
-      limit: getNumberConfig(config, 'TAX_IDENTITY_OVERRIDE_RATE_LIMIT_MAX', 5),
+      limit: getNumberConfig(config, 'TAX_IDENTITY_APPROVAL_REQUEST_READ_RATE_LIMIT_MAX', 300),
       standardHeaders: 'draft-8',
       legacyHeaders: false,
-      skip: (request) => request.method === 'OPTIONS',
-      skipSuccessfulRequests: true,
+      skip: (request) =>
+        request.method === 'OPTIONS' || (request.method !== 'GET' && request.method !== 'HEAD'),
       keyGenerator: createAuthenticatedPrincipalRateLimitKey(config, jwt),
       message: {
         statusCode: 429,
-        message: 'Demasiados intentos de autorización. Espera unos minutos.',
+        message: 'Demasiadas consultas de validación fiscal. Espera unos minutos.',
+      },
+    }),
+  );
+
+  app.use(
+    '/tax-identities/approval-requests',
+    rateLimit({
+      windowMs: getNumberConfig(
+        config,
+        'TAX_IDENTITY_APPROVAL_REQUEST_RATE_LIMIT_WINDOW_MS',
+        getNumberConfig(config, 'TAX_IDENTITY_OVERRIDE_RATE_LIMIT_WINDOW_MS', 15 * 60 * 1000),
+      ),
+      limit: getNumberConfig(
+        config,
+        'TAX_IDENTITY_APPROVAL_REQUEST_RATE_LIMIT_MAX',
+        getNumberConfig(config, 'TAX_IDENTITY_OVERRIDE_RATE_LIMIT_MAX', 20),
+      ),
+      standardHeaders: 'draft-8',
+      legacyHeaders: false,
+      skip: (request) =>
+        request.method === 'OPTIONS' || request.method === 'GET' || request.method === 'HEAD',
+      keyGenerator: createAuthenticatedPrincipalRateLimitKey(config, jwt),
+      message: {
+        statusCode: 429,
+        message: 'Demasiadas solicitudes de validación fiscal. Espera unos minutos.',
       },
     }),
   );
@@ -156,6 +184,14 @@ export async function createQorvexApiApp() {
   app.useGlobalFilters(new HttpExceptionFilter());
 
   return app;
+}
+
+function isTaxIdentityApprovalRequestRead(request: Request) {
+  return (
+    (request.method === 'GET' || request.method === 'HEAD') &&
+    (request.path === '/tax-identities/approval-requests' ||
+      request.path.startsWith('/tax-identities/approval-requests/'))
+  );
 }
 
 function assertSecurityConfiguration(config: ConfigService) {

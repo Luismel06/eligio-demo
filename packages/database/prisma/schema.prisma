@@ -182,6 +182,14 @@ enum TaxIdentityContextType {
   SUPPLIER_CREATE
 }
 
+enum TaxIdentityApprovalRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  EXPIRED
+  CANCELLED
+}
+
 enum InvoiceFiscalStatus {
   NOT_APPLICABLE
   PENDING_SEQUENCE
@@ -436,52 +444,53 @@ enum Currency {
 }
 
 model Tenant {
-  id                         String                      @id @default(cuid())
-  name                       String
-  commercialName             String?
-  legalName                  String?
-  slug                       String                      @unique
-  rnc                        String?
-  email                      String?
-  phone                      String?
-  address                    String?
-  fiscalIssuanceMode         FiscalIssuanceMode          @default(LOCAL_NCF)
-  status                     TenantStatus                @default(ACTIVE)
-  createdAt                  DateTime                    @default(now())
-  updatedAt                  DateTime                    @updatedAt
-  branding                   CompanyBranding?
-  memberships                Membership[]
-  customers                  Customer[]
-  categories                 ProductCategory[]
-  products                   Product[]
-  inventoryMovements         InventoryMovement[]
-  invoices                   Invoice[]
-  payments                   Payment[]
-  electronicDocuments        ElectronicDocument[]
-  auditLogs                  AuditLog[]
-  employeeProfiles           EmployeeProfile[]
-  cashRegisters              CashRegister[]
-  cashSessions               CashSession[]
-  cashMovements              CashMovement[]
-  employeeActivityLogs       EmployeeActivityLog[]
-  salesOrders                SalesOrder[]
-  returnRequests             ReturnRequest[]
-  fiscalSequences            FiscalSequence[]
-  importBatches              ImportBatch[]
-  suppliers                  Supplier[]
-  supplierProducts           SupplierProduct[]
-  purchaseOrders             PurchaseOrder[]
-  purchaseOrderItems         PurchaseOrderItem[]
-  purchaseOrderEvents        PurchaseOrderEvent[]
-  supplierInvoices           SupplierInvoice[]
-  supplierInvoiceItems       SupplierInvoiceItem[]
-  supplierInvoiceAttachments SupplierInvoiceAttachment[]
-  supplierPayments           SupplierPayment[]
-  goodsReceipts              GoodsReceipt[]
-  goodsReceiptItems          GoodsReceiptItem[]
-  creditSaleApprovals        CreditSaleApproval[]
-  mobileOcrCaptureSessions   MobileOcrCaptureSession[]
-  taxIdentityOverrides       TaxIdentityOverride[]
+  id                          String                       @id @default(cuid())
+  name                        String
+  commercialName              String?
+  legalName                   String?
+  slug                        String                       @unique
+  rnc                         String?
+  email                       String?
+  phone                       String?
+  address                     String?
+  fiscalIssuanceMode          FiscalIssuanceMode           @default(LOCAL_NCF)
+  status                      TenantStatus                 @default(ACTIVE)
+  createdAt                   DateTime                     @default(now())
+  updatedAt                   DateTime                     @updatedAt
+  branding                    CompanyBranding?
+  memberships                 Membership[]
+  customers                   Customer[]
+  categories                  ProductCategory[]
+  products                    Product[]
+  inventoryMovements          InventoryMovement[]
+  invoices                    Invoice[]
+  payments                    Payment[]
+  electronicDocuments         ElectronicDocument[]
+  auditLogs                   AuditLog[]
+  employeeProfiles            EmployeeProfile[]
+  cashRegisters               CashRegister[]
+  cashSessions                CashSession[]
+  cashMovements               CashMovement[]
+  employeeActivityLogs        EmployeeActivityLog[]
+  salesOrders                 SalesOrder[]
+  returnRequests              ReturnRequest[]
+  fiscalSequences             FiscalSequence[]
+  importBatches               ImportBatch[]
+  suppliers                   Supplier[]
+  supplierProducts            SupplierProduct[]
+  purchaseOrders              PurchaseOrder[]
+  purchaseOrderItems          PurchaseOrderItem[]
+  purchaseOrderEvents         PurchaseOrderEvent[]
+  supplierInvoices            SupplierInvoice[]
+  supplierInvoiceItems        SupplierInvoiceItem[]
+  supplierInvoiceAttachments  SupplierInvoiceAttachment[]
+  supplierPayments            SupplierPayment[]
+  goodsReceipts               GoodsReceipt[]
+  goodsReceiptItems           GoodsReceiptItem[]
+  creditSaleApprovals         CreditSaleApproval[]
+  mobileOcrCaptureSessions    MobileOcrCaptureSession[]
+  taxIdentityOverrides        TaxIdentityOverride[]
+  taxIdentityApprovalRequests TaxIdentityApprovalRequest[]
 
   @@index([status])
   @@index([createdAt])
@@ -501,64 +510,66 @@ model CompanyBranding {
 }
 
 model User {
-  id                                  String                      @id @default(cuid())
-  email                               String                      @unique
+  id                                  String                       @id @default(cuid())
+  email                               String                       @unique
   name                                String
   phone                               String?
   passwordHash                        String?
-  status                              UserStatus                  @default(ACTIVE)
-  createdAt                           DateTime                    @default(now())
-  updatedAt                           DateTime                    @updatedAt
+  status                              UserStatus                   @default(ACTIVE)
+  createdAt                           DateTime                     @default(now())
+  updatedAt                           DateTime                     @updatedAt
   memberships                         Membership[]
   auditLogs                           AuditLog[]
   employeeProfiles                    EmployeeProfile[]
-  invoicesIssued                      Invoice[]                   @relation("InvoiceIssuedBy")
-  inventoryMovementsCreated           InventoryMovement[]         @relation("InventoryMovementCreatedBy")
+  invoicesIssued                      Invoice[]                    @relation("InvoiceIssuedBy")
+  inventoryMovementsCreated           InventoryMovement[]          @relation("InventoryMovementCreatedBy")
   payments                            Payment[]
-  salesOrdersCreated                  SalesOrder[]                @relation("SalesOrderCreatedBy")
-  salesOrdersCompleted                SalesOrder[]                @relation("SalesOrderCompletedBy")
-  salesOrdersClaimed                  SalesOrder[]                @relation("SalesOrderClaimedBy")
-  cashSessionsOpened                  CashSession[]               @relation("CashSessionOpenedBy")
-  cashSessionsClosed                  CashSession[]               @relation("CashSessionClosedBy")
+  salesOrdersCreated                  SalesOrder[]                 @relation("SalesOrderCreatedBy")
+  salesOrdersCompleted                SalesOrder[]                 @relation("SalesOrderCompletedBy")
+  salesOrdersClaimed                  SalesOrder[]                 @relation("SalesOrderClaimedBy")
+  cashSessionsOpened                  CashSession[]                @relation("CashSessionOpenedBy")
+  cashSessionsClosed                  CashSession[]                @relation("CashSessionClosedBy")
   cashMovements                       CashMovement[]
   employeeActivityLogs                EmployeeActivityLog[]
   importBatches                       ImportBatch[]
-  returnRequestsRequested             ReturnRequest[]             @relation("ReturnRequestRequestedBy")
-  returnRequestsApproved              ReturnRequest[]             @relation("ReturnRequestApprovedBy")
-  returnRequestsRejected              ReturnRequest[]             @relation("ReturnRequestRejectedBy")
-  customersCreditEnabled              Customer[]                  @relation("CustomerCreditEnabledBy")
-  suppliersCreated                    Supplier[]                  @relation("SupplierCreatedBy")
-  suppliersUpdated                    Supplier[]                  @relation("SupplierUpdatedBy")
-  suppliersDeactivated                Supplier[]                  @relation("SupplierDeactivatedBy")
-  supplierProductsCreated             SupplierProduct[]           @relation("SupplierProductCreatedBy")
-  supplierProductsUpdated             SupplierProduct[]           @relation("SupplierProductUpdatedBy")
-  purchaseOrdersCreated               PurchaseOrder[]             @relation("PurchaseOrderCreatedBy")
-  purchaseOrdersRequested             PurchaseOrder[]             @relation("PurchaseOrderRequestedBy")
-  purchaseOrdersReviewed              PurchaseOrder[]             @relation("PurchaseOrderReviewedBy")
-  purchaseOrdersApproved              PurchaseOrder[]             @relation("PurchaseOrderApprovedBy")
-  purchaseOrdersIssued                PurchaseOrder[]             @relation("PurchaseOrderIssuedBy")
-  purchaseOrdersPaused                PurchaseOrder[]             @relation("PurchaseOrderPausedBy")
-  purchaseOrdersCancelled             PurchaseOrder[]             @relation("PurchaseOrderCancelledBy")
+  returnRequestsRequested             ReturnRequest[]              @relation("ReturnRequestRequestedBy")
+  returnRequestsApproved              ReturnRequest[]              @relation("ReturnRequestApprovedBy")
+  returnRequestsRejected              ReturnRequest[]              @relation("ReturnRequestRejectedBy")
+  customersCreditEnabled              Customer[]                   @relation("CustomerCreditEnabledBy")
+  suppliersCreated                    Supplier[]                   @relation("SupplierCreatedBy")
+  suppliersUpdated                    Supplier[]                   @relation("SupplierUpdatedBy")
+  suppliersDeactivated                Supplier[]                   @relation("SupplierDeactivatedBy")
+  supplierProductsCreated             SupplierProduct[]            @relation("SupplierProductCreatedBy")
+  supplierProductsUpdated             SupplierProduct[]            @relation("SupplierProductUpdatedBy")
+  purchaseOrdersCreated               PurchaseOrder[]              @relation("PurchaseOrderCreatedBy")
+  purchaseOrdersRequested             PurchaseOrder[]              @relation("PurchaseOrderRequestedBy")
+  purchaseOrdersReviewed              PurchaseOrder[]              @relation("PurchaseOrderReviewedBy")
+  purchaseOrdersApproved              PurchaseOrder[]              @relation("PurchaseOrderApprovedBy")
+  purchaseOrdersIssued                PurchaseOrder[]              @relation("PurchaseOrderIssuedBy")
+  purchaseOrdersPaused                PurchaseOrder[]              @relation("PurchaseOrderPausedBy")
+  purchaseOrdersCancelled             PurchaseOrder[]              @relation("PurchaseOrderCancelledBy")
   purchaseOrderEvents                 PurchaseOrderEvent[]
-  supplierInvoicesCreated             SupplierInvoice[]           @relation("SupplierInvoiceCreatedBy")
-  supplierInvoicesUpdated             SupplierInvoice[]           @relation("SupplierInvoiceUpdatedBy")
-  supplierInvoicesCancelled           SupplierInvoice[]           @relation("SupplierInvoiceCancelledBy")
-  supplierInvoiceAttachmentsUploaded  SupplierInvoiceAttachment[] @relation("SupplierInvoiceAttachmentUploadedBy")
-  supplierInvoiceAttachmentsConfirmed SupplierInvoiceAttachment[] @relation("SupplierInvoiceAttachmentConfirmedBy")
-  supplierPaymentsCreated             SupplierPayment[]           @relation("SupplierPaymentCreatedBy")
-  supplierPaymentsCancelled           SupplierPayment[]           @relation("SupplierPaymentCancelledBy")
-  goodsReceiptsCreated                GoodsReceipt[]              @relation("GoodsReceiptCreatedBy")
-  goodsReceiptsConfirmed              GoodsReceipt[]              @relation("GoodsReceiptConfirmedBy")
-  goodsReceiptsReversed               GoodsReceipt[]              @relation("GoodsReceiptReversedBy")
-  goodsReceiptsCancelled              GoodsReceipt[]              @relation("GoodsReceiptCancelledBy")
-  creditSaleApprovalsRequested        CreditSaleApproval[]        @relation("CreditSaleApprovalRequestedBy")
-  creditSaleApprovalsApproved         CreditSaleApproval[]        @relation("CreditSaleApprovalApprovedBy")
-  creditSaleApprovalsRejected         CreditSaleApproval[]        @relation("CreditSaleApprovalRejectedBy")
-  creditSaleApprovalsCancelled        CreditSaleApproval[]        @relation("CreditSaleApprovalCancelledBy")
-  paymentsCancelled                   Payment[]                   @relation("PaymentCancelledBy")
-  mobileOcrCaptureSessionsCreated     MobileOcrCaptureSession[]   @relation("MobileOcrCaptureCreatedBy")
-  taxIdentityOverridesRequested       TaxIdentityOverride[]       @relation("TaxIdentityOverrideRequestedBy")
-  taxIdentityOverridesApproved        TaxIdentityOverride[]       @relation("TaxIdentityOverrideApprovedBy")
+  supplierInvoicesCreated             SupplierInvoice[]            @relation("SupplierInvoiceCreatedBy")
+  supplierInvoicesUpdated             SupplierInvoice[]            @relation("SupplierInvoiceUpdatedBy")
+  supplierInvoicesCancelled           SupplierInvoice[]            @relation("SupplierInvoiceCancelledBy")
+  supplierInvoiceAttachmentsUploaded  SupplierInvoiceAttachment[]  @relation("SupplierInvoiceAttachmentUploadedBy")
+  supplierInvoiceAttachmentsConfirmed SupplierInvoiceAttachment[]  @relation("SupplierInvoiceAttachmentConfirmedBy")
+  supplierPaymentsCreated             SupplierPayment[]            @relation("SupplierPaymentCreatedBy")
+  supplierPaymentsCancelled           SupplierPayment[]            @relation("SupplierPaymentCancelledBy")
+  goodsReceiptsCreated                GoodsReceipt[]               @relation("GoodsReceiptCreatedBy")
+  goodsReceiptsConfirmed              GoodsReceipt[]               @relation("GoodsReceiptConfirmedBy")
+  goodsReceiptsReversed               GoodsReceipt[]               @relation("GoodsReceiptReversedBy")
+  goodsReceiptsCancelled              GoodsReceipt[]               @relation("GoodsReceiptCancelledBy")
+  creditSaleApprovalsRequested        CreditSaleApproval[]         @relation("CreditSaleApprovalRequestedBy")
+  creditSaleApprovalsApproved         CreditSaleApproval[]         @relation("CreditSaleApprovalApprovedBy")
+  creditSaleApprovalsRejected         CreditSaleApproval[]         @relation("CreditSaleApprovalRejectedBy")
+  creditSaleApprovalsCancelled        CreditSaleApproval[]         @relation("CreditSaleApprovalCancelledBy")
+  paymentsCancelled                   Payment[]                    @relation("PaymentCancelledBy")
+  mobileOcrCaptureSessionsCreated     MobileOcrCaptureSession[]    @relation("MobileOcrCaptureCreatedBy")
+  taxIdentityOverridesRequested       TaxIdentityOverride[]        @relation("TaxIdentityOverrideRequestedBy")
+  taxIdentityOverridesApproved        TaxIdentityOverride[]        @relation("TaxIdentityOverrideApprovedBy")
+  taxIdentityApprovalRequestsCreated  TaxIdentityApprovalRequest[] @relation("TaxIdentityApprovalRequestCreatedBy")
+  taxIdentityApprovalRequestsDecided  TaxIdentityApprovalRequest[] @relation("TaxIdentityApprovalRequestDecidedBy")
 
   @@index([status])
   @@index([createdAt])
@@ -1780,33 +1791,75 @@ model DgiiTaxpayerRecord {
   @@index([datasetId, status])
 }
 
-/// A short-lived supervisor authorization for an identity that cannot be
+/// A short-lived administrative authorization for an identity that cannot be
 /// verified against a fresh DGII dataset. The document is bound by HMAC; only
 /// its last four digits are retained for support/audit display.
 model TaxIdentityOverride {
-  id            String                 @id @default(cuid())
-  tenantId      String
-  contextType   TaxIdentityContextType
-  contextId     String
-  documentType  DocumentType
-  documentHash  String                 @db.VarChar(64)
-  documentLast4 String                 @db.VarChar(4)
-  fiscalName    String
-  reason        String
-  requestedById String
-  approvedById  String
-  expiresAt     DateTime
-  revokedAt     DateTime?
-  usedAt        DateTime?
-  createdAt     DateTime               @default(now())
-  updatedAt     DateTime               @updatedAt
-  tenant        Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  requestedBy   User                   @relation("TaxIdentityOverrideRequestedBy", fields: [requestedById], references: [id], onDelete: Restrict)
-  approvedBy    User                   @relation("TaxIdentityOverrideApprovedBy", fields: [approvedById], references: [id], onDelete: Restrict)
+  id               String                       @id @default(cuid())
+  tenantId         String
+  contextType      TaxIdentityContextType
+  contextId        String
+  documentType     DocumentType
+  documentHash     String                       @db.VarChar(64)
+  documentLast4    String                       @db.VarChar(4)
+  fiscalName       String
+  reason           String
+  requestedById    String
+  approvedById     String
+  expiresAt        DateTime
+  revokedAt        DateTime?
+  usedAt           DateTime?
+  createdAt        DateTime                     @default(now())
+  updatedAt        DateTime                     @updatedAt
+  tenant           Tenant                       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  requestedBy      User                         @relation("TaxIdentityOverrideRequestedBy", fields: [requestedById], references: [id], onDelete: Restrict)
+  approvedBy       User                         @relation("TaxIdentityOverrideApprovedBy", fields: [approvedById], references: [id], onDelete: Restrict)
+  approvalRequests TaxIdentityApprovalRequest[]
 
   @@index([tenantId, contextType, contextId, documentHash, expiresAt])
   @@index([requestedById])
   @@index([approvedById])
   @@index([expiresAt])
   @@index([usedAt])
+}
+
+/// A cashier/user request for an administrator to authorize a fiscal identity
+/// that could not be verified against the current DGII registry. Only the
+/// normalized fields needed for the decision are stored; no raw DGII response
+/// is persisted.
+model TaxIdentityApprovalRequest {
+  id                      String                           @id @default(cuid())
+  tenantId                String
+  contextType             TaxIdentityContextType
+  contextId               String
+  documentType            DocumentType
+  documentNumber          String                           @db.VarChar(11)
+  documentHash            String                           @db.VarChar(64)
+  documentLast4           String                           @db.VarChar(4)
+  fiscalName              String
+  reason                  String?
+  registryOutcome         String                           @db.VarChar(32)
+  registrySource          DgiiRegistrySource?
+  registryCheckedAt       DateTime
+  registrySourceUpdatedAt DateTime?
+  status                  TaxIdentityApprovalRequestStatus @default(PENDING)
+  requestedById           String
+  decidedById             String?
+  overrideId              String?
+  requestedAt             DateTime                         @default(now())
+  expiresAt               DateTime
+  decidedAt               DateTime?
+  decisionNote            String?
+  updatedAt               DateTime                         @updatedAt
+  tenant                  Tenant                           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  requestedBy             User                             @relation("TaxIdentityApprovalRequestCreatedBy", fields: [requestedById], references: [id], onDelete: Restrict)
+  decidedBy               User?                            @relation("TaxIdentityApprovalRequestDecidedBy", fields: [decidedById], references: [id], onDelete: Restrict)
+  override                TaxIdentityOverride?             @relation(fields: [overrideId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId, status, requestedAt])
+  @@index([tenantId, contextType, contextId, documentHash], map: "TaxIdentityApprovalRequest_context_document_idx")
+  @@index([requestedById, status])
+  @@index([decidedById])
+  @@index([overrideId])
+  @@index([expiresAt])
 }

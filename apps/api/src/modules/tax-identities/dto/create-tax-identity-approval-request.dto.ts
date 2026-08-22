@@ -1,20 +1,15 @@
 import { DocumentType, TaxIdentityContextType } from '@qorvex/database';
-import { Type } from 'class-transformer';
 import {
-  IsEmail,
   IsEnum,
   IsIn,
-  IsInt,
   IsNotEmpty,
   IsOptional,
   IsString,
-  Max,
   MaxLength,
-  Min,
   MinLength,
 } from 'class-validator';
 
-export class AuthorizeTaxIdentityOverrideDto {
+export class CreateTaxIdentityApprovalRequestDto {
   @IsEnum(TaxIdentityContextType)
   contextType: TaxIdentityContextType;
 
@@ -36,24 +31,9 @@ export class AuthorizeTaxIdentityOverrideDto {
   @MaxLength(200)
   fiscalName: string;
 
-  @IsString()
-  @MinLength(10)
-  @MaxLength(500)
-  reason: string;
-
-  @IsEmail()
-  @MaxLength(254)
-  supervisorEmail: string;
-
-  @IsString()
-  @MinLength(8)
-  @MaxLength(200)
-  supervisorPassword: string;
-
   @IsOptional()
-  @Type(() => Number)
-  @IsInt()
-  @Min(1)
-  @Max(30)
-  expiresInMinutes?: number;
+  @IsString()
+  @MinLength(3)
+  @MaxLength(500)
+  reason?: string;
 }

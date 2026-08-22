@@ -23,11 +23,29 @@ Ejecuta todo desde la raíz del repositorio en VM2. No copies `.env`, `api.env` 
 
 Credenciales demo creadas por el seed; todos usan `DemoPassword123!`:
 
-- Supervisor/administración: `admin@rivnu.local`
+- Administración: `admin@rivnu.local`
 - Caja: `cajero@rivnu.local`
 - Toma de órdenes: `ordenanza@rivnu.local`
 
 No se utiliza ni se copia información de clientes, ventas o usuarios de producción.
+
+## Flujo de validación manual
+
+Cuando un RNC o una cédula tiene un formato válido pero no puede verificarse con el padrón activo,
+RIVNU no lo presenta como verificado por DGII. En Caja, Clientes o Suplidores, el usuario debe:
+
+1. Digitar la razón social o el nombre fiscal manual.
+2. Enviar una solicitud de validación al administrador.
+3. Esperar la decisión, que se actualiza automáticamente en la misma pantalla.
+
+Los administradores reciben una alerta en la campana y revisan las solicitudes en
+`/tax-identity-approvals`. Allí pueden corregir el nombre fiscal, aprobarlo o rechazarlo con una
+nota. La aprobación crea una autorización de uso único, vinculada al documento y al contexto que
+la originó, y con vencimiento corto. No se solicita ni se comparte la contraseña del administrador.
+
+Una aprobación se guarda y se muestra como **autorización manual por administrador**; nunca como
+una verificación de DGII. En Caja, el nombre operativo recibido desde Toma de órdenes se conserva
+como referencia independiente y no se crea automáticamente un registro en el módulo Clientes.
 
 ## Acceso desde otra computadora
 
