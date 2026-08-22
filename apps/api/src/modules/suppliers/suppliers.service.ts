@@ -4,7 +4,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { DocumentType, Prisma, SupplierStatus, TaxIdentityContextType } from '@qorvex/database';
+import { DocumentType, Prisma, SupplierStatus } from '@qorvex/database';
 import {
   normalizeDominicanDocument,
   validateDominicanDocument,
@@ -82,7 +82,7 @@ export class SuppliersService {
   }
 
   async create(tenantId: string, userId: string, dto: CreateSupplierDto) {
-    const { taxIdentityOverrideId, taxIdentityContextId } = dto;
+    const { manualTaxIdentityConfirmed = false } = dto;
     const commercialName = this.normalizeRequiredName(dto.commercialName);
     const documentNumber = this.normalizeAndValidateDocument(dto.documentType, dto.documentNumber);
 
@@ -96,9 +96,8 @@ export class SuppliersService {
           tenantId,
           documentType: dto.documentType,
           documentNumber,
-          overrideId: taxIdentityOverrideId,
-          contextType: TaxIdentityContextType.SUPPLIER_CREATE,
-          contextId: taxIdentityContextId?.trim() || `supplier-create-${userId}`,
+          manualFiscalName: dto.legalName ?? '',
+          manualEntryConfirmed: manualTaxIdentityConfirmed,
         });
 
         return tx.supplier.create({
@@ -178,10 +177,12 @@ export class SuppliersService {
     const documentValue =
       dto.documentNumber === undefined ? current.documentNumber : dto.documentNumber;
     const documentNumber = normalizeDominicanDocument(documentValue);
+    const documentChanged =
+      documentType !== current.documentType || documentNumber !== current.documentNumber;
 
     this.validateDocument(documentType, documentValue);
 
-    if (documentType !== current.documentType || documentNumber !== current.documentNumber) {
+    if (documentChanged) {
       await this.ensureUniqueDocument(tenantId, documentType, documentNumber, id);
     }
 
@@ -195,13 +196,10 @@ export class SuppliersService {
           tenantId,
           documentType,
           documentNumber,
-          overrideId: dto.taxIdentityOverrideId,
-          contextType: TaxIdentityContextType.SUPPLIER,
-          contextId: id,
+          manualFiscalName: dto.legalName ?? (documentChanged ? '' : (current.legalName ?? '')),
+          manualEntryConfirmed: dto.manualTaxIdentityConfirmed ?? false,
           fallbackVerification:
-            documentType === current.documentType && documentNumber === current.documentNumber
-              ? current.taxIdentityVerification
-              : undefined,
+            documentChanged ? undefined : current.taxIdentityVerification,
         });
         const updated = await tx.supplier.update({
           where: { id },
@@ -280,7 +278,7 @@ export class SuppliersService {
         entityId: id,
         metadata: {
           fields: Object.keys(dto).filter(
-            (field) => field !== 'taxIdentityOverrideId' && field !== 'taxIdentityContextId',
+            (field) => field !== 'manualTaxIdentityConfirmed',
           ),
           documentLast4: supplier.documentNumber.slice(-4),
           taxIdentitySource: readVerificationSource(supplier.taxIdentityVerification),
@@ -648,25 +646,23 @@ export class SuppliersService {
       tenantId: string;
       documentType: DocumentType;
       documentNumber: string;
-      overrideId?: string;
-      contextType: TaxIdentityContextType;
-      contextId: string;
+      manualFiscalName: string;
+      manualEntryConfirmed: boolean;
       fallbackVerification?: unknown;
     },
   ) {
-    const identity = await this.taxIdentities.requireUsableIdentity(
+    return this.taxIdentities.resolveManagedRecordIdentity(
       {
-        ...input,
-        overrideId: input.overrideId,
+        documentType: input.documentType,
+        documentNumber: input.documentNumber,
+        manualFiscalName: input.manualFiscalName,
+        manualEntryConfirmed: input.manualEntryConfirmed,
       },
       {
         db: tx,
-        consumeOverride: Boolean(input.overrideId),
         fallbackVerification: input.fallbackVerification,
       },
     );
-
-    return this.taxIdentities.toVerificationSnapshot(identity);
   }
 
   private validateDocument(type: DocumentType, documentNumber: string) {

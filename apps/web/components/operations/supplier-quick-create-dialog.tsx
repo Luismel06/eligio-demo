@@ -11,17 +11,17 @@ import {
   updateSupplier,
   type Supplier,
   type SupplierPayload,
-  type TaxIdentityOverrideResult,
 } from '@/lib/api';
 import type { AuthSession } from '@/lib/auth-session';
+import { isAdminSession } from '@/lib/authorization';
 import {
   formatDominicanDocument,
   normalizeDominicanDocument,
   validateDominicanDocument,
 } from '@/lib/dominican-documents';
 import { FormField, selectClassName } from './procurement-ui';
-import { TaxIdentityApprovalRequestPanel } from './tax-identity-approval-request';
 import {
+  canRegisterTaxIdentityManually,
   hasVerifiedTaxIdentity,
   TaxIdentityVerification,
   type TaxIdentityVerificationState,
@@ -77,13 +77,9 @@ export function SupplierQuickCreateDialog({
   const [formError, setFormError] = useState<string | null>(null);
   const [confirmedSameName, setConfirmedSameName] = useState(false);
   const [taxIdentity, setTaxIdentity] = useState<TaxIdentityVerificationState | null>(null);
-  const [taxIdentityContextId, setTaxIdentityContextId] = useState('');
-  const [manualOverride, setManualOverride] = useState<TaxIdentityOverrideResult | null>(null);
 
   useEffect(() => {
     if (!open) {
-      setTaxIdentityContextId('');
-      setManualOverride(null);
       setTaxIdentity(null);
       return;
     }
@@ -93,8 +89,6 @@ export function SupplierQuickCreateDialog({
     setFormError(null);
     setConfirmedSameName(false);
     setTaxIdentity(null);
-    setManualOverride(null);
-    setTaxIdentityContextId((current) => current || createTaxIdentityDraftId('supplier-create'));
   }, [
     open,
     prefill?.commercialName,
@@ -107,6 +101,7 @@ export function SupplierQuickCreateDialog({
   ]);
 
   const normalizedDocument = normalizeDominicanDocument(form.documentNumber);
+  const canReactivateSupplier = isAdminSession(session);
   const duplicateByDocument = useMemo(
     () =>
       existingSuppliers.find(
@@ -193,9 +188,19 @@ export function SupplierQuickCreateDialog({
       );
       return;
     }
-    if (!hasVerifiedTaxIdentity(taxIdentity, form.documentType, normalizedDocument)) {
+    const verifiedIdentity = hasVerifiedTaxIdentity(
+      taxIdentity,
+      form.documentType,
+      normalizedDocument,
+    );
+    const manualEntry = canRegisterTaxIdentityManually(
+      taxIdentity,
+      form.documentType,
+      normalizedDocument,
+    );
+    if (!verifiedIdentity && (!manualEntry || !form.legalName.trim())) {
       setFormError(
-        'Verifica el RNC o la cédula con DGII o consigue autorización administrativa antes de registrar el suplidor.',
+        'Verifica el RNC o la cédula con DGII. Si no aparece, digita la razón social manualmente.',
       );
       return;
     }
@@ -223,12 +228,7 @@ export function SupplierQuickCreateDialog({
       contactName: optional(form.contactName),
       paymentTerms: optional(form.paymentTerms),
       creditDays: toCreditDays(form.creditDays),
-      taxIdentityOverrideId:
-        taxIdentity?.result?.source === 'MANUAL_OVERRIDE'
-          ? taxIdentity.result.overrideId
-          : undefined,
-      taxIdentityContextId:
-        taxIdentity?.result?.source === 'MANUAL_OVERRIDE' ? taxIdentityContextId : undefined,
+      manualTaxIdentityConfirmed: manualEntry || undefined,
     });
   }
 
@@ -238,7 +238,11 @@ export function SupplierQuickCreateDialog({
     isBusy ||
     Boolean(duplicateByDocument) ||
     (duplicateNameNeedsConfirmation && !confirmedSameName) ||
-    !hasVerifiedTaxIdentity(taxIdentity, form.documentType, normalizedDocument);
+    !(
+      hasVerifiedTaxIdentity(taxIdentity, form.documentType, normalizedDocument) ||
+      (canRegisterTaxIdentityManually(taxIdentity, form.documentType, normalizedDocument) &&
+        Boolean(form.legalName.trim()))
+    );
 
   function handleTaxIdentityChange(state: TaxIdentityVerificationState) {
     setTaxIdentity(state);
@@ -257,21 +261,6 @@ export function SupplierQuickCreateDialog({
     });
   }
 
-  function handleManualOverride(result: TaxIdentityOverrideResult) {
-    setManualOverride(result);
-    setTaxIdentity({
-      result,
-      documentType: result.documentType,
-      documentNumber: normalizeDominicanDocument(result.documentNumber),
-      checksumValid: true,
-      pending: false,
-    });
-    setForm((current) => ({
-      ...current,
-      legalName: result.fiscalName ?? current.legalName,
-    }));
-  }
-
   return (
     <>
       <ActionDialog
@@ -279,7 +268,7 @@ export function SupplierQuickCreateDialog({
         onClose={close}
         onConfirm={submit}
         title="Registrar suplidor para esta factura"
-        description="Completa los datos básicos. El documento y la razón social se verifican con DGII o mediante autorización administrativa."
+        description="Completa los datos básicos. DGII completa la razón social cuando encuentra el documento; de lo contrario podrás registrarla manualmente."
         tone="default"
         icon={<UserRoundPlus className="h-5 w-5" aria-hidden="true" />}
         confirmLabel="Registrar y usar suplidor"
@@ -318,7 +307,6 @@ export function SupplierQuickCreateDialog({
               onChange={(event) => {
                 setConfirmedSameName(false);
                 setTaxIdentity(null);
-                setManualOverride(null);
                 setForm((current) => ({
                   ...current,
                   documentType: event.target.value as SupplierDocumentType,
@@ -351,7 +339,6 @@ export function SupplierQuickCreateDialog({
               onChange={(event) => {
                 setConfirmedSameName(false);
                 setTaxIdentity(null);
-                setManualOverride(null);
                 setForm((current) => ({
                   ...current,
                   documentNumber: event.target.value,
@@ -362,15 +349,23 @@ export function SupplierQuickCreateDialog({
             />
           </FormField>
           <FormField
-            label="Razón social verificada"
+            label="Razón social / nombre fiscal"
             htmlFor="quick-supplier-legal"
             className="sm:col-span-2"
           >
             <Input
               id="quick-supplier-legal"
+              required
               value={form.legalName}
-              readOnly
-              placeholder="Se completará al verificar o recibir aprobación"
+              readOnly={hasVerifiedTaxIdentity(
+                taxIdentity,
+                form.documentType,
+                normalizedDocument,
+              )}
+              placeholder="DGII la completará; si no aparece, digítala manualmente"
+              onChange={(event) =>
+                setForm((current) => ({ ...current, legalName: event.target.value }))
+              }
             />
           </FormField>
           <TaxIdentityVerification
@@ -379,26 +374,7 @@ export function SupplierQuickCreateDialog({
             documentType={form.documentType}
             documentNumber={form.documentNumber}
             onChange={handleTaxIdentityChange}
-            manualOverride={manualOverride}
-            manualReviewAction={
-              session && taxIdentityContextId ? (
-                <TaxIdentityApprovalRequestPanel
-                  tenantId={session.tenantId}
-                  accessToken={session.accessToken}
-                  contextType="SUPPLIER_CREATE"
-                  contextId={taxIdentityContextId}
-                  documentType={form.documentType}
-                  documentNumber={form.documentNumber}
-                  suggestedFiscalName={
-                    taxIdentity?.result?.fiscalName || form.legalName || form.commercialName
-                  }
-                  registryOutcome={taxIdentity?.result?.outcome}
-                  disabled={isBusy}
-                  compact
-                  onApproved={handleManualOverride}
-                />
-              ) : null
-            }
+            allowManualEntry
             className="sm:col-span-2"
           />
         </div>
@@ -435,7 +411,7 @@ export function SupplierQuickCreateDialog({
                     Confirmo que es un suplidor distinto y que su RNC/cédula fue verificado.
                   </label>
                 )}
-                {onExistingSupplier && duplicateIsInactive ? (
+                {onExistingSupplier && duplicateIsInactive && canReactivateSupplier ? (
                   <button
                     type="button"
                     className="mt-1 inline-flex items-center gap-1 font-medium text-primary underline-offset-4 hover:underline"
@@ -445,6 +421,10 @@ export function SupplierQuickCreateDialog({
                     <Building2 className="h-3.5 w-3.5" aria-hidden="true" />
                     Reactivar y usar suplidor
                   </button>
+                ) : onExistingSupplier && duplicateIsInactive ? (
+                  <p className="mt-1 text-xs font-medium text-muted-foreground">
+                    Un administrador debe reactivar este suplidor antes de utilizarlo.
+                  </p>
                 ) : onExistingSupplier && !duplicateIsInactive ? (
                   <button
                     type="button"
@@ -623,8 +603,4 @@ function isDuplicateSupplierError(message: string) {
     normalized.includes('ya existe un proveedor con este rnc') ||
     normalized.includes('already exists')
   );
-}
-
-function createTaxIdentityDraftId(prefix: string) {
-  return `${prefix}-${crypto.randomUUID()}`;
 }

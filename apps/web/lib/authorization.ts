@@ -39,6 +39,10 @@ export function isAccountantSession(session: AuthSession | null | undefined) {
   return session?.role === 'ACCOUNTANT';
 }
 
+export function canCreateSuppliers(session: AuthSession | null | undefined) {
+  return isAdminSession(session) || isAccountantSession(session);
+}
+
 export function canTakeOrders(session: AuthSession | null | undefined) {
   return Boolean(isAdminSession(session) || session?.role === 'ORDER_TAKER');
 }

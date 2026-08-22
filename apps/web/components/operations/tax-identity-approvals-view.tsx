@@ -157,7 +157,7 @@ export function TaxIdentityApprovalsView() {
     <div className="space-y-6">
       <ModuleHeader
         title="Validaciones fiscales"
-        description="Solicitudes manuales de Caja, Clientes y Suplidores que no pudieron verificarse automáticamente con DGII."
+        description="Solicitudes enviadas por Caja cuando un RNC o una cédula no pudo verificarse automáticamente con DGII."
       />
 
       <div className="flex flex-col gap-3">
@@ -421,13 +421,7 @@ function registrySourceLabel(source: string | null) {
 }
 
 function contextLabel(context: TaxIdentityApprovalRequest['contextType']) {
-  return {
-    POS_ORDER: 'Caja',
-    CUSTOMER: 'Cliente',
-    CUSTOMER_CREATE: 'Nuevo cliente',
-    SUPPLIER: 'Suplidor',
-    SUPPLIER_CREATE: 'Nuevo suplidor',
-  }[context];
+  return context === 'POS_ORDER' ? 'Caja' : 'Contexto retirado';
 }
 
 function contextReference(request: TaxIdentityApprovalRequest) {

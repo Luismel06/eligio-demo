@@ -30,9 +30,8 @@ import {
   type Supplier,
   type SupplierPayload,
   type SupplierStatus,
-  type TaxIdentityOverrideResult,
 } from '@/lib/api';
-import { isAdminSession } from '@/lib/authorization';
+import { canCreateSuppliers, isAdminSession } from '@/lib/authorization';
 import {
   formatDominicanDocument,
   normalizeDominicanDocument,
@@ -48,8 +47,8 @@ import {
   textareaClassName,
 } from './procurement-ui';
 import { SessionRequired, useCurrentSession } from './session-required';
-import { TaxIdentityApprovalRequestPanel } from './tax-identity-approval-request';
 import {
+  canRegisterTaxIdentityManually,
   hasStoredTaxIdentityVerification,
   hasVerifiedTaxIdentity,
   TaxIdentityVerification,
@@ -112,6 +111,7 @@ export function SuppliersView() {
   const session = useCurrentSession();
   const queryClient = useQueryClient();
   const admin = isAdminSession(session);
+  const canCreateSupplier = canCreateSuppliers(session);
   const [search, setSearch] = useState('');
   const [status, setStatus] = useState<'ALL' | SupplierStatus>('ALL');
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -120,8 +120,6 @@ export function SuppliersView() {
   const [editingSupplier, setEditingSupplier] = useState<Supplier | null>(null);
   const [form, setForm] = useState<SupplierForm>(emptySupplierForm);
   const [taxIdentity, setTaxIdentity] = useState<TaxIdentityVerificationState | null>(null);
-  const [taxIdentityContextId, setTaxIdentityContextId] = useState('');
-  const [manualOverride, setManualOverride] = useState<TaxIdentityOverrideResult | null>(null);
   const [productId, setProductId] = useState('');
   const [supplierSku, setSupplierSku] = useState('');
   const [lastCostNet, setLastCostNet] = useState('');
@@ -149,9 +147,20 @@ export function SuppliersView() {
       taxIdentity.result.outcome === 'UNAVAILABLE' ||
       taxIdentity.result.outcome === 'REGISTRY_STALE'),
   );
+  const verifiedSupplierIdentity = hasVerifiedTaxIdentity(
+    taxIdentity,
+    form.documentType,
+    form.documentNumber,
+  );
+  const manualSupplierEntry = canRegisterTaxIdentityManually(
+    taxIdentity,
+    form.documentType,
+    form.documentNumber,
+  );
   const supplierIdentityReady =
-    hasVerifiedTaxIdentity(taxIdentity, form.documentType, form.documentNumber) ||
-    storedFiscalIdentityFallback;
+    verifiedSupplierIdentity ||
+    storedFiscalIdentityFallback ||
+    (manualSupplierEntry && Boolean(form.legalName.trim()));
 
   useEffect(() => {
     const query = new URLSearchParams(window.location.search).get('q');
@@ -196,8 +205,6 @@ export function SuppliersView() {
       setEditingSupplier(null);
       setForm(emptySupplierForm);
       setTaxIdentity(null);
-      setManualOverride(null);
-      setTaxIdentityContextId('');
       setShowForm(false);
       toast.success('Suplidor guardado correctamente.');
     },
@@ -326,7 +333,7 @@ export function SuppliersView() {
     }
     if (!supplierIdentityReady) {
       toast.error(
-        'Verifica el RNC o la cédula con DGII o consigue autorización administrativa antes de guardar el suplidor.',
+        'Verifica el RNC o la cédula con DGII. Si no aparece, digita la razón social manualmente.',
       );
       return;
     }
@@ -349,12 +356,7 @@ export function SuppliersView() {
       paymentTerms: optional(form.paymentTerms),
       creditDays: Number(form.creditDays || 0),
       notes: optional(form.notes),
-      taxIdentityOverrideId:
-        taxIdentity?.result?.source === 'MANUAL_OVERRIDE'
-          ? taxIdentity.result.overrideId
-          : undefined,
-      taxIdentityContextId:
-        taxIdentity?.result?.source === 'MANUAL_OVERRIDE' ? taxIdentityContextId : undefined,
+      manualTaxIdentityConfirmed: manualSupplierEntry || undefined,
     });
   }
 
@@ -377,8 +379,6 @@ export function SuppliersView() {
       notes: supplier.notes ?? '',
     });
     setTaxIdentity(null);
-    setManualOverride(null);
-    setTaxIdentityContextId(supplier.id);
     setShowForm(true);
   }
 
@@ -399,21 +399,6 @@ export function SuppliersView() {
     });
   }
 
-  function handleManualOverride(result: TaxIdentityOverrideResult) {
-    setManualOverride(result);
-    setTaxIdentity({
-      result,
-      documentType: result.documentType,
-      documentNumber: normalizeDominicanDocument(result.documentNumber),
-      checksumValid: true,
-      pending: false,
-    });
-    setForm((current) => ({
-      ...current,
-      legalName: result.fiscalName ?? current.legalName,
-    }));
-  }
-
   return (
     <div className="space-y-6">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
@@ -421,15 +406,13 @@ export function SuppliersView() {
           title="Suplidores"
           description="Directorio, condiciones de compra y productos vinculados a cada suplidor."
         />
-        {admin ? (
+        {canCreateSupplier ? (
           <Button
             onClick={() => {
               setEditingId(null);
               setEditingSupplier(null);
               setForm(emptySupplierForm);
               setTaxIdentity(null);
-              setManualOverride(null);
-              setTaxIdentityContextId(showForm ? '' : createTaxIdentityDraftId('supplier-create'));
               setShowForm((value) => !value);
             }}
           >
@@ -440,13 +423,13 @@ export function SuppliersView() {
           <Badge variant="outline">Consulta contable</Badge>
         )}
       </div>
-      {showForm && admin ? (
+      {showForm && canCreateSupplier ? (
         <Card>
           <CardHeader>
             <CardTitle>{editingId ? 'Editar suplidor' : 'Registrar suplidor'}</CardTitle>
             <CardDescription>
-              El RNC o la cédula y la razón social se verificarán con DGII o mediante autorización
-              administrativa.
+              El RNC o la cédula se consulta en DGII. Si no aparece, registra la razón social
+              manualmente; quedará señalada como no verificada.
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -469,10 +452,14 @@ export function SuppliersView() {
                 <FormField label="Razón social" htmlFor="supplier-legal">
                   <Input
                     id="supplier-legal"
+                    required
                     maxLength={200}
                     value={form.legalName}
-                    readOnly
-                    placeholder="Se completará al verificar o recibir aprobación"
+                    readOnly={verifiedSupplierIdentity || storedFiscalIdentityFallback}
+                    placeholder="DGII la completará; si no aparece, digítala manualmente"
+                    onChange={(event) =>
+                      setForm((current) => ({ ...current, legalName: event.target.value }))
+                    }
                   />
                 </FormField>
                 <FormField label="Tipo de documento" htmlFor="supplier-document-type">
@@ -482,7 +469,6 @@ export function SuppliersView() {
                     value={form.documentType}
                     onChange={(event) => {
                       setTaxIdentity(null);
-                      setManualOverride(null);
                       setForm((current) => ({
                         ...current,
                         documentType: event.target.value as 'RNC' | 'CEDULA',
@@ -507,7 +493,6 @@ export function SuppliersView() {
                     onChange={(event) => {
                       const documentNumber = event.target.value;
                       setTaxIdentity(null);
-                      setManualOverride(null);
                       setForm((current) => ({
                         ...current,
                         documentNumber,
@@ -528,26 +513,7 @@ export function SuppliersView() {
                   documentType={form.documentType}
                   documentNumber={form.documentNumber}
                   onChange={handleTaxIdentityChange}
-                  manualOverride={manualOverride}
-                  manualReviewAction={
-                    taxIdentityContextId ? (
-                      <TaxIdentityApprovalRequestPanel
-                        tenantId={session.tenantId}
-                        accessToken={session.accessToken}
-                        contextType={editingSupplier ? 'SUPPLIER' : 'SUPPLIER_CREATE'}
-                        contextId={editingSupplier?.id ?? taxIdentityContextId}
-                        documentType={form.documentType}
-                        documentNumber={form.documentNumber}
-                        suggestedFiscalName={
-                          taxIdentity?.result?.fiscalName || form.legalName || form.commercialName
-                        }
-                        registryOutcome={taxIdentity?.result?.outcome}
-                        disabled={saveMutation.isPending}
-                        compact
-                        onApproved={handleManualOverride}
-                      />
-                    ) : null
-                  }
+                  allowManualEntry
                   storedVerification={
                     unchangedStoredFiscalIdentity ? editingSupplier?.taxIdentityVerification : null
                   }
@@ -681,8 +647,6 @@ export function SuppliersView() {
                     setShowForm(false);
                     setEditingSupplier(null);
                     setTaxIdentity(null);
-                    setManualOverride(null);
-                    setTaxIdentityContextId('');
                   }}
                 >
                   Cerrar
@@ -1382,8 +1346,4 @@ function isOptionalNonNegativeInteger(value: string) {
 }
 function showError(error: unknown) {
   toast.error(error instanceof Error ? error.message : 'No se pudo completar la operación.');
-}
-
-function createTaxIdentityDraftId(prefix: string) {
-  return `${prefix}-${crypto.randomUUID()}`;
 }

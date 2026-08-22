@@ -1,7 +1,12 @@
 import 'reflect-metadata';
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { BadRequestException, ConflictException, ForbiddenException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  ForbiddenException,
+  UnprocessableEntityException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
   CashSessionStatus,
@@ -13,6 +18,9 @@ import {
   TaxIdentityContextType,
 } from '@qorvex/database';
 import type { AuthenticatedUser } from '../src/common/types/authenticated-request';
+import { AuditService } from '../src/modules/audit/audit.service';
+import { CustomersService } from '../src/modules/customers/customers.service';
+import { SuppliersService } from '../src/modules/suppliers/suppliers.service';
 import { PrismaService } from '../src/prisma/prisma.service';
 import { TaxIdentitiesService } from '../src/modules/tax-identities/tax-identities.service';
 
@@ -39,7 +47,7 @@ function assertIsolatedIntegrationDatabase(rawUrl: string) {
 }
 
 test(
-  'manual identity requests are idempotent and produce one single-use override',
+  'POS approvals stay isolated while managed NOT_FOUND identities persist without overrides',
   { skip: !databaseUrl },
   async () => {
     assert.ok(databaseUrl);
@@ -54,6 +62,9 @@ test(
       TAX_IDENTITY_APPROVAL_REQUEST_TTL_MINUTES: '30',
     });
     const service = new TaxIdentitiesService(prisma, config);
+    const audit = new AuditService(prisma);
+    const customers = new CustomersService(prisma, audit, service);
+    const suppliers = new SuppliersService(prisma, audit, service);
     let tenantId: string | undefined;
     let cashierId: string | undefined;
     let administratorId: string | undefined;
@@ -138,6 +149,59 @@ test(
         status: administrator.status,
         memberships: [administratorMembership],
       } as AuthenticatedUser;
+
+      for (const contextType of [
+        TaxIdentityContextType.CUSTOMER,
+        TaxIdentityContextType.SUPPLIER,
+        TaxIdentityContextType.CUSTOMER_CREATE,
+        TaxIdentityContextType.SUPPLIER_CREATE,
+      ]) {
+        await assert.rejects(
+          () =>
+            service.createApprovalRequest(tenant.id, administratorUser, {
+              contextType,
+              contextId: 'managed-record-integration',
+              documentType: DocumentType.RNC,
+              documentNumber: '101850043',
+              fiscalName: 'Identidad gestionada directamente',
+            }),
+          ForbiddenException,
+        );
+      }
+      assert.equal(
+        await prisma.taxIdentityApprovalRequest.count({ where: { tenantId: tenant.id } }),
+        0,
+      );
+
+      await assert.rejects(
+        () =>
+          prisma.taxIdentityApprovalRequest.create({
+            data: {
+              tenantId: tenant.id,
+              contextType: TaxIdentityContextType.CUSTOMER_CREATE,
+              contextId: 'managed-record-integration',
+              documentType: DocumentType.RNC,
+              documentNumber: '101850043',
+              documentHash: '0'.repeat(64),
+              documentLast4: '0043',
+              fiscalName: 'Identidad gestionada directamente',
+              registryOutcome: 'NOT_FOUND',
+              registrySource: DgiiRegistrySource.TEST_FIXTURE,
+              registryCheckedAt: new Date(),
+              registrySourceUpdatedAt: new Date(),
+              requestedById: administrator.id,
+              expiresAt: new Date(Date.now() + 30 * 60_000),
+            },
+          }),
+        (error: unknown) => {
+          assert.match(
+            error instanceof Error ? error.message : String(error),
+            /pos_order_only_check|check constraint/i,
+          );
+          return true;
+        },
+      );
+
       const createInput = {
         contextType: TaxIdentityContextType.POS_ORDER,
         contextId: order.id,
@@ -207,6 +271,66 @@ test(
             ),
           ),
         ConflictException,
+      );
+
+      const approvalCountBeforeManagedRecords = await prisma.taxIdentityApprovalRequest.count({
+        where: { tenantId: tenant.id },
+      });
+      const overrideCountBeforeManagedRecords = await prisma.taxIdentityOverride.count({
+        where: { tenantId: tenant.id },
+      });
+
+      const customer = await customers.create(tenant.id, administrator.id, {
+        name: 'Cliente registrado manualmente',
+        documentType: DocumentType.CEDULA,
+        documentNumber: '402-2042912-6',
+        manualTaxIdentityConfirmed: true,
+      });
+      const supplier = await suppliers.create(tenant.id, administrator.id, {
+        commercialName: 'Suplidor manual',
+        legalName: 'Suplidor registrado manualmente SRL',
+        documentType: DocumentType.RNC,
+        documentNumber: '131-88068-1',
+        manualTaxIdentityConfirmed: true,
+      });
+
+      const customerEvidence = customer.taxIdentityVerification as Record<string, unknown>;
+      const supplierEvidence = supplier.taxIdentityVerification as Record<string, unknown>;
+      assert.equal(customerEvidence.outcome, 'UNVERIFIED_MANUAL');
+      assert.equal(customerEvidence.source, 'MANUAL_ENTRY');
+      assert.equal(customerEvidence.documentNumber, '40220429126');
+      assert.equal('overrideId' in customerEvidence, false);
+      assert.equal(supplierEvidence.outcome, 'UNVERIFIED_MANUAL');
+      assert.equal(supplierEvidence.source, 'MANUAL_ENTRY');
+      assert.equal(supplier.legalName, 'Suplidor registrado manualmente SRL');
+      assert.equal('overrideId' in supplierEvidence, false);
+      assert.equal(
+        await prisma.taxIdentityApprovalRequest.count({ where: { tenantId: tenant.id } }),
+        approvalCountBeforeManagedRecords,
+      );
+      assert.equal(
+        await prisma.taxIdentityOverride.count({ where: { tenantId: tenant.id } }),
+        overrideCountBeforeManagedRecords,
+      );
+
+      await assert.rejects(
+        () =>
+          prisma.$transaction((tx) =>
+            service.requireUsableIdentity(
+              {
+                tenantId: tenant.id,
+                contextType: TaxIdentityContextType.POS_ORDER,
+                contextId: order.id,
+                documentType: DocumentType.CEDULA,
+                documentNumber: customer.documentNumber!,
+              },
+              {
+                db: tx,
+                fallbackVerification: customer.taxIdentityVerification,
+              },
+            ),
+          ),
+        UnprocessableEntityException,
       );
 
       await assert.rejects(

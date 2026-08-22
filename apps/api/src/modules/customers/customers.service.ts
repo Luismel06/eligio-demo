@@ -4,7 +4,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { CustomerStatus, DocumentType, Prisma, TaxIdentityContextType } from '@qorvex/database';
+import { CustomerStatus, DocumentType, Prisma } from '@qorvex/database';
 import {
   normalizeDominicanDocument,
   validateDominicanDocument,
@@ -32,7 +32,7 @@ export class CustomersService {
   }
 
   async create(tenantId: string, userId: string, dto: CreateCustomerDto) {
-    const { taxIdentityOverrideId, taxIdentityContextId, ...customerInput } = dto;
+    const { manualTaxIdentityConfirmed = false, ...customerInput } = dto;
     const documentNumber = this.normalizeAndValidateDocument(dto.documentType, dto.documentNumber);
 
     await this.ensureUniqueDocument(tenantId, dto.documentType, documentNumber);
@@ -43,9 +43,8 @@ export class CustomersService {
           tenantId,
           documentType: dto.documentType,
           documentNumber,
-          overrideId: taxIdentityOverrideId,
-          contextType: TaxIdentityContextType.CUSTOMER_CREATE,
-          contextId: taxIdentityContextId?.trim() || `customer-create-${userId}`,
+          manualFiscalName: customerInput.name,
+          manualEntryConfirmed: manualTaxIdentityConfirmed,
         });
 
         return tx.customer.create({
@@ -94,11 +93,7 @@ export class CustomersService {
   }
 
   async update(tenantId: string, userId: string, id: string, dto: UpdateCustomerDto) {
-    const {
-      taxIdentityOverrideId,
-      taxIdentityContextId: _taxIdentityContextId,
-      ...customerInput
-    } = dto;
+    const { manualTaxIdentityConfirmed = false, ...customerInput } = dto;
     const current = await this.findOne(tenantId, id);
     const nextDocumentType = dto.documentType ?? current.documentType;
     const nextDocumentValue =
@@ -123,9 +118,8 @@ export class CustomersService {
           tenantId,
           documentType: nextDocumentType,
           documentNumber: documentChanged ? documentNumber : current.documentNumber,
-          overrideId: taxIdentityOverrideId,
-          contextType: TaxIdentityContextType.CUSTOMER,
-          contextId: id,
+          manualFiscalName: customerInput.name ?? (documentChanged ? '' : current.name),
+          manualEntryConfirmed: manualTaxIdentityConfirmed,
           fallbackVerification: documentChanged ? undefined : current.taxIdentityVerification,
         });
 
@@ -200,38 +194,27 @@ export class CustomersService {
       tenantId: string;
       documentType: DocumentType;
       documentNumber: string | null | undefined;
-      overrideId?: string;
-      contextType: TaxIdentityContextType;
-      contextId: string;
+      manualFiscalName: string;
+      manualEntryConfirmed: boolean;
       fallbackVerification?: unknown;
     },
   ) {
     if (input.documentType !== DocumentType.RNC && input.documentType !== DocumentType.CEDULA) {
-      if (input.overrideId) {
-        throw new BadRequestException(
-          'Una autorización fiscal solo puede utilizarse con RNC o cédula.',
-        );
-      }
       return null;
     }
 
-    const identity = await this.taxIdentities.requireUsableIdentity(
+    return this.taxIdentities.resolveManagedRecordIdentity(
       {
-        tenantId: input.tenantId,
         documentType: input.documentType,
         documentNumber: input.documentNumber ?? '',
-        contextType: input.contextType,
-        contextId: input.contextId,
-        overrideId: input.overrideId,
+        manualFiscalName: input.manualFiscalName,
+        manualEntryConfirmed: input.manualEntryConfirmed,
       },
       {
         db: tx,
-        consumeOverride: Boolean(input.overrideId),
         fallbackVerification: input.fallbackVerification,
       },
     );
-
-    return this.taxIdentities.toVerificationSnapshot(identity);
   }
 
   private async ensureUniqueDocument(

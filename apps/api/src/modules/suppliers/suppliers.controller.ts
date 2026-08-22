@@ -30,6 +30,7 @@ const supplierReadRoles: Role[] = [
   Role.QORVEX_SUPER_ADMIN,
 ];
 const supplierWriteRoles: Role[] = [Role.ADMIN, Role.SUPER_ADMIN, Role.QORVEX_SUPER_ADMIN];
+const supplierCreateRoles: Role[] = [Role.ACCOUNTANT, ...supplierWriteRoles];
 
 @Controller('suppliers')
 @UseGuards(JwtAuthGuard, TenantMembershipGuard, RolesGuard)
@@ -43,7 +44,7 @@ export class SuppliersController {
   }
 
   @Post()
-  @Roles(...supplierWriteRoles)
+  @Roles(...supplierCreateRoles)
   create(
     @TenantId() tenantId: string,
     @CurrentUser() user: AuthenticatedUser,

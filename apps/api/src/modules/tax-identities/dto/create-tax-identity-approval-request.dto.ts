@@ -11,6 +11,7 @@ import {
 
 export class CreateTaxIdentityApprovalRequestDto {
   @IsEnum(TaxIdentityContextType)
+  @IsIn([TaxIdentityContextType.POS_ORDER])
   contextType: TaxIdentityContextType;
 
   @IsString()

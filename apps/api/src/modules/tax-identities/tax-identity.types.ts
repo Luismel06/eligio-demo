@@ -7,7 +7,12 @@ export type TaxIdentityOutcome =
   | 'REGISTRY_STALE'
   | 'UNAVAILABLE';
 
-export type TaxIdentitySource = 'DGII_OFFICIAL' | 'TEST_FIXTURE' | 'MANUAL_OVERRIDE' | null;
+export type TaxIdentitySource =
+  | 'DGII_OFFICIAL'
+  | 'TEST_FIXTURE'
+  | 'MANUAL_OVERRIDE'
+  | 'MANUAL_ENTRY'
+  | null;
 
 export type TaxIdentityLookupResult = {
   outcome: TaxIdentityOutcome;
@@ -41,8 +46,21 @@ export type TaxIdentityVerificationSnapshot = {
   documentNumber: string;
   fiscalName: string;
   registryStatus: string;
-  source: Exclude<TaxIdentitySource, null>;
+  source: 'DGII_OFFICIAL' | 'TEST_FIXTURE' | 'MANUAL_OVERRIDE';
   sourceUpdatedAt: string;
   verifiedAt: string;
   overrideId?: string;
+};
+
+export type ManagedTaxIdentityEvidence = {
+  outcome: 'UNVERIFIED_MANUAL';
+  documentType: 'RNC' | 'CEDULA';
+  documentNumber: string;
+  fiscalName: string;
+  registryOutcome: 'NOT_FOUND';
+  registryStatus: string;
+  source: 'MANUAL_ENTRY';
+  sourceUpdatedAt: string | null;
+  registryCheckedAt: string;
+  recordedAt: string;
 };

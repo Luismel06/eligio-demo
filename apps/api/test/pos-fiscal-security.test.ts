@@ -16,11 +16,32 @@ import {
   SalesOrderStatus,
 } from '@qorvex/database';
 import type { AuthenticatedUser } from '../src/common/types/authenticated-request';
+import {
+  normalizeDominicanDocument,
+  validateDominicanDocument,
+} from '../src/common/utils/dominican-documents';
 import { PosService } from '../src/modules/pos/pos.service';
 
 const tenantId = 'tenant-rivnu';
 const cashierId = 'cashier-1';
 const cashSessionId = 'cash-session-1';
+
+function verifiedInlineFiscalSnapshot() {
+  return {
+    id: null,
+    name: 'Razón Social Verificada DGII',
+    operationalName: 'Cliente Ocasional',
+    documentType: DocumentType.RNC,
+    documentNumber: '101850043',
+    verification: {
+      outcome: 'VERIFIED',
+      source: 'DGII_OFFICIAL',
+      sourceUpdatedAt: '2026-08-20T12:00:00.000Z',
+      verifiedAt: '2026-08-21T12:00:00.000Z',
+      registryStatus: 'ACTIVO',
+    },
+  };
+}
 
 function cashierUser(): AuthenticatedUser {
   return {
@@ -183,9 +204,49 @@ function createHarness(options: HarnessOptions = {}) {
       throw new Error('reserve must not run while confirming fiscal details');
     },
   };
+  const taxIdentities = {
+    requireUsableIdentity: async (input: {
+      documentType: 'RNC' | 'CEDULA';
+      documentNumber: string;
+      overrideId?: string | null;
+    }) => {
+      if (!validateDominicanDocument(input.documentType, input.documentNumber)) {
+        throw new BadRequestException('La identidad fiscal indicada no es válida.');
+      }
+      const checkedAt = new Date('2026-08-21T12:00:00.000Z');
+      return {
+        outcome: 'VERIFIED' as const,
+        documentType: input.documentType,
+        documentNumber: normalizeDominicanDocument(input.documentNumber),
+        fiscalName: 'Razón Social Verificada DGII',
+        registryStatus: 'ACTIVO',
+        source: 'DGII_OFFICIAL' as const,
+        sourceUpdatedAt: new Date('2026-08-20T12:00:00.000Z'),
+        checkedAt,
+      };
+    },
+    toVerificationSnapshot: (identity: {
+      documentType: 'RNC' | 'CEDULA';
+      documentNumber: string;
+      fiscalName: string;
+      registryStatus: string;
+      source: 'DGII_OFFICIAL';
+      sourceUpdatedAt: Date;
+      checkedAt: Date;
+    }) => ({
+      outcome: 'VERIFIED' as const,
+      documentType: identity.documentType,
+      documentNumber: identity.documentNumber,
+      fiscalName: identity.fiscalName,
+      registryStatus: identity.registryStatus,
+      source: identity.source,
+      sourceUpdatedAt: identity.sourceUpdatedAt.toISOString(),
+      verifiedAt: identity.checkedAt.toISOString(),
+    }),
+  };
 
   return {
-    service: new PosService(prisma as never, fiscalSequences as never),
+    service: new PosService(prisma as never, fiscalSequences as never, taxIdentities as never),
     calls: {
       rawValues,
       customerQueries,
@@ -300,7 +361,7 @@ test('POS fiscal update looks up the persisted order customer inside the active 
   assert.equal(harness.calls.updates.length, 0);
 });
 
-test('POS fiscal update does not derive B01 identity from a registered Customer', async () => {
+test('POS fiscal update does not derive B01 identity from a Customer MANUAL_ENTRY', async () => {
   const customer = {
     id: 'fiscal-customer',
     tenantId,
@@ -308,6 +369,18 @@ test('POS fiscal update does not derive B01 identity from a registered Customer'
     documentType: DocumentType.RNC,
     documentNumber: '101850043',
     status: CustomerStatus.ACTIVE,
+    taxIdentityVerification: {
+      outcome: 'UNVERIFIED_MANUAL',
+      documentType: DocumentType.RNC,
+      documentNumber: '101850043',
+      fiscalName: 'Cliente Fiscal Introducido Manualmente',
+      registryOutcome: 'NOT_FOUND',
+      registryStatus: 'NO ENCONTRADO EN EL PADRÓN DGII',
+      source: 'MANUAL_ENTRY',
+      sourceUpdatedAt: '2026-08-20T12:00:00.000Z',
+      registryCheckedAt: '2026-08-21T12:00:00.000Z',
+      recordedAt: '2026-08-21T12:00:00.000Z',
+    },
   };
   const harness = createHarness({ customer, order: { customerId: customer.id } });
 
@@ -348,18 +421,14 @@ test('POS fiscal update captures one-time B01 identity from the order without cr
   assert.equal(updated.fiscalDocumentTypeSnapshot, InvoiceDocumentType.FISCAL_CREDIT_01);
   assert.equal(harness.calls.customerQueries.length, 0);
   assert.equal(harness.calls.reserveCalls(), 0);
-  assert.deepEqual(harness.calls.updates[0].fiscalCustomerSnapshot, {
-    id: null,
-    name: 'Cliente Ocasional',
-    documentType: DocumentType.RNC,
-    documentNumber: '101850043',
-  });
+  assert.deepEqual(harness.calls.updates[0].fiscalCustomerSnapshot, verifiedInlineFiscalSnapshot());
   assert.deepEqual(harness.calls.availabilityChecks, [
     { tenantId, documentType: InvoiceDocumentType.FISCAL_CREDIT_01 },
   ]);
-  assert.equal(harness.calls.audits[0].metadata.fiscalIdentitySource, 'ORDER_INLINE');
-  assert.equal(harness.calls.audits[0].metadata.customerNameSource, 'SALES_ORDER_CLIENT_NAME');
-  assert.equal(harness.calls.audits[0].metadata.customerDocumentLast4, '0043');
+  const fiscalAuditMetadata = harness.calls.audits[0].metadata as Record<string, unknown>;
+  assert.equal(fiscalAuditMetadata.fiscalIdentitySource, 'DGII_OFFICIAL');
+  assert.equal(fiscalAuditMetadata.customerNameSource, 'VERIFIED_FISCAL_IDENTITY');
+  assert.equal(fiscalAuditMetadata.customerDocumentLast4, '0043');
   assert.equal(JSON.stringify(harness.calls.audits[0]).includes('101850043'), false);
 });
 
@@ -387,12 +456,7 @@ test('POS fiscal update preserves a recurrent cash customer while using independ
 
   assert.equal(updated.customerId, customer.id);
   assert.equal(Object.hasOwn(harness.calls.updates[0], 'customerId'), false);
-  assert.deepEqual(harness.calls.updates[0].fiscalCustomerSnapshot, {
-    id: null,
-    name: 'Cliente Ocasional',
-    documentType: DocumentType.RNC,
-    documentNumber: '101850043',
-  });
+  assert.deepEqual(harness.calls.updates[0].fiscalCustomerSnapshot, verifiedInlineFiscalSnapshot());
 });
 
 test('POS permits anonymous B02 immediately below the RD$250,000 pre-ITBIS threshold', async () => {
@@ -494,14 +558,10 @@ test('POS fiscal update keeps the approved credit debtor while using inline B01 
 
   assert.equal(updated.customerId, approvedCustomer.id);
   assert.equal(Object.hasOwn(harness.calls.updates[0], 'customerId'), false);
-  assert.deepEqual(harness.calls.updates[0].fiscalCustomerSnapshot, {
-    id: null,
-    name: 'Cliente Ocasional',
-    documentType: DocumentType.RNC,
-    documentNumber: '101850043',
-  });
-  assert.equal(harness.calls.audits[0].metadata.fiscalIdentitySource, 'ORDER_INLINE');
-  assert.equal(harness.calls.audits[0].metadata.customerNameSource, 'SALES_ORDER_CLIENT_NAME');
+  assert.deepEqual(harness.calls.updates[0].fiscalCustomerSnapshot, verifiedInlineFiscalSnapshot());
+  const creditAuditMetadata = harness.calls.audits[0].metadata as Record<string, unknown>;
+  assert.equal(creditAuditMetadata.fiscalIdentitySource, 'DGII_OFFICIAL');
+  assert.equal(creditAuditMetadata.customerNameSource, 'VERIFIED_FISCAL_IDENTITY');
   assert.equal(harness.calls.reserveCalls(), 0);
 });
 
@@ -565,12 +625,7 @@ test('POS checkout accepts an inline B01 snapshot and reaches atomic sequence re
     order: {
       fiscalPurpose: FiscalDocumentPurpose.FISCAL_CREDIT,
       fiscalDocumentTypeSnapshot: InvoiceDocumentType.FISCAL_CREDIT_01,
-      fiscalCustomerSnapshot: {
-        id: null,
-        name: 'Cliente Ocasional',
-        documentType: DocumentType.RNC,
-        documentNumber: '101850043',
-      },
+      fiscalCustomerSnapshot: verifiedInlineFiscalSnapshot(),
     },
   });
 

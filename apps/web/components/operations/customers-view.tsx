@@ -23,7 +23,6 @@ import {
   deleteCustomer,
   getCustomers,
   type Customer,
-  type TaxIdentityOverrideResult,
   updateCustomer,
 } from '@/lib/api';
 import { getStatusVariant, translateDocumentType, translateStatus } from '@/lib/display-labels';
@@ -31,8 +30,8 @@ import { normalizeDominicanDocument, validateDominicanDocument } from '@/lib/dom
 import { formatDate } from '@/lib/utils';
 import { ModuleHeader } from './module-header';
 import { SessionRequired, useCurrentSession } from './session-required';
-import { TaxIdentityApprovalRequestPanel } from './tax-identity-approval-request';
 import {
+  canRegisterTaxIdentityManually,
   hasStoredTaxIdentityVerification,
   hasVerifiedTaxIdentity,
   TaxIdentityVerification,
@@ -74,8 +73,6 @@ export function CustomersView() {
   const [formOpen, setFormOpen] = useState(false);
   const [form, setForm] = useState<CustomerFormState>(emptyCustomerForm);
   const [taxIdentity, setTaxIdentity] = useState<TaxIdentityVerificationState | null>(null);
-  const [taxIdentityContextId, setTaxIdentityContextId] = useState('');
-  const [manualOverride, setManualOverride] = useState<TaxIdentityOverrideResult | null>(null);
   const [creditForm, setCreditForm] = useState<CreditFormState>({
     creditEnabled: false,
     creditStatus: 'BLOCKED',
@@ -99,10 +96,19 @@ export function CustomersView() {
       taxIdentity.result.outcome === 'UNAVAILABLE' ||
       taxIdentity.result.outcome === 'REGISTRY_STALE'),
   );
+  const verifiedFiscalIdentity = Boolean(
+    fiscalDocumentType &&
+    hasVerifiedTaxIdentity(taxIdentity, fiscalDocumentType, form.documentNumber),
+  );
+  const manualFiscalEntry = Boolean(
+    fiscalDocumentType &&
+    canRegisterTaxIdentityManually(taxIdentity, fiscalDocumentType, form.documentNumber),
+  );
   const fiscalIdentityReady = Boolean(
     fiscalDocumentType &&
-    (hasVerifiedTaxIdentity(taxIdentity, fiscalDocumentType, form.documentNumber) ||
-      storedFiscalIdentityFallback),
+    (verifiedFiscalIdentity ||
+      storedFiscalIdentityFallback ||
+      (manualFiscalEntry && form.name.trim())),
   );
 
   useEffect(() => {
@@ -136,7 +142,7 @@ export function CustomersView() {
 
         if (!fiscalIdentityReady) {
           throw new Error(
-            'Verifica el RNC o la cédula con DGII o consigue autorización administrativa antes de guardar el cliente.',
+            'Verifica el RNC o la cédula con DGII. Si no aparece, digita el nombre fiscal manualmente.',
           );
         }
       }
@@ -148,12 +154,7 @@ export function CustomersView() {
         email: form.email || undefined,
         phone: form.phone || undefined,
         address: form.address || undefined,
-        taxIdentityOverrideId:
-          taxIdentity?.result?.source === 'MANUAL_OVERRIDE'
-            ? taxIdentity.result.overrideId
-            : undefined,
-        taxIdentityContextId:
-          taxIdentity?.result?.source === 'MANUAL_OVERRIDE' ? taxIdentityContextId : undefined,
+        manualTaxIdentityConfirmed: manualFiscalEntry || undefined,
       };
 
       if (editingCustomer) {
@@ -248,8 +249,6 @@ export function CustomersView() {
     setEditingCustomer(null);
     setForm(emptyCustomerForm);
     setTaxIdentity(null);
-    setManualOverride(null);
-    setTaxIdentityContextId(createTaxIdentityDraftId('customer-create'));
     setFormOpen(true);
   }
 
@@ -264,8 +263,6 @@ export function CustomersView() {
       address: customer.address ?? '',
     });
     setTaxIdentity(null);
-    setManualOverride(null);
-    setTaxIdentityContextId(customer.id);
     setFormOpen(true);
   }
 
@@ -273,8 +270,6 @@ export function CustomersView() {
     setEditingCustomer(null);
     setForm(emptyCustomerForm);
     setTaxIdentity(null);
-    setManualOverride(null);
-    setTaxIdentityContextId('');
     setFormOpen(false);
   }
 
@@ -293,18 +288,6 @@ export function CustomersView() {
       }
       return { ...current, name: fiscalName };
     });
-  }
-
-  function handleManualOverride(result: TaxIdentityOverrideResult) {
-    setManualOverride(result);
-    setTaxIdentity({
-      result,
-      documentType: result.documentType,
-      documentNumber: normalizeDominicanDocument(result.documentNumber),
-      checksumValid: true,
-      pending: false,
-    });
-    setForm((current) => ({ ...current, name: result.fiscalName ?? current.name }));
   }
 
   function openCreditForm(customer: Customer) {
@@ -375,7 +358,7 @@ export function CustomersView() {
               <Field
                 htmlFor="customer-name"
                 label={
-                  form.documentType === 'RNC' || form.documentType === 'CEDULA'
+                  verifiedFiscalIdentity
                     ? 'Razón social verificada'
                     : 'Razón social / nombre legal'
                 }
@@ -383,10 +366,13 @@ export function CustomersView() {
                 <Input
                   id="customer-name"
                   value={form.name}
-                  readOnly={form.documentType === 'RNC' || form.documentType === 'CEDULA'}
+                  readOnly={
+                    Boolean(fiscalDocumentType) &&
+                    (verifiedFiscalIdentity || storedFiscalIdentityFallback)
+                  }
                   placeholder={
                     form.documentType === 'RNC' || form.documentType === 'CEDULA'
-                      ? 'Se completará al verificar con DGII o recibir aprobación administrativa'
+                      ? 'DGII lo completará; si no aparece, digítalo manualmente'
                       : undefined
                   }
                   onChange={(event) =>
@@ -404,7 +390,6 @@ export function CustomersView() {
                   value={form.documentType}
                   onChange={(event) => {
                     setTaxIdentity(null);
-                    setManualOverride(null);
                     setForm((current) => {
                       const documentType = event.target.value;
                       return {
@@ -445,7 +430,6 @@ export function CustomersView() {
                   onChange={(event) => {
                     const documentNumber = event.target.value;
                     setTaxIdentity(null);
-                    setManualOverride(null);
                     setForm((current) => ({
                       ...current,
                       documentNumber,
@@ -466,24 +450,7 @@ export function CustomersView() {
                   documentType={form.documentType}
                   documentNumber={form.documentNumber}
                   onChange={handleTaxIdentityChange}
-                  manualOverride={manualOverride}
-                  manualReviewAction={
-                    taxIdentityContextId ? (
-                      <TaxIdentityApprovalRequestPanel
-                        tenantId={session.tenantId}
-                        accessToken={session.accessToken}
-                        contextType={editingCustomer ? 'CUSTOMER' : 'CUSTOMER_CREATE'}
-                        contextId={editingCustomer?.id ?? taxIdentityContextId}
-                        documentType={form.documentType}
-                        documentNumber={form.documentNumber}
-                        suggestedFiscalName={taxIdentity?.result?.fiscalName ?? form.name}
-                        registryOutcome={taxIdentity?.result?.outcome}
-                        disabled={saveMutation.isPending}
-                        compact
-                        onApproved={handleManualOverride}
-                      />
-                    ) : null
-                  }
+                  allowManualEntry
                   storedVerification={
                     unchangedStoredFiscalIdentity ? editingCustomer?.taxIdentityVerification : null
                   }
@@ -861,8 +828,4 @@ function Field({
       {children}
     </div>
   );
-}
-
-function createTaxIdentityDraftId(prefix: string) {
-  return `${prefix}-${crypto.randomUUID()}`;
 }

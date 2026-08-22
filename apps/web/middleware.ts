@@ -33,6 +33,7 @@ const protectedPrefixes = [
   '/settings',
   '/supplier-invoices',
   '/suppliers',
+  '/tax-identity-approvals',
 ];
 
 export function middleware(request: NextRequest) {

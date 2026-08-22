@@ -311,7 +311,7 @@ preview_validate_compose() {
     service("rivnu-dgii-preview-web").tmpfs == ["/tmp:size=64m,mode=1777"] and
     service("rivnu-dgii-preview-web").security_opt == ["no-new-privileges:true"] and
     service("rivnu-dgii-preview-db").security_opt == ["no-new-privileges:true"] and
-    exact_limits("rivnu-dgii-preview-db"; 0.25; 268435456; 134217728) and
+    exact_limits("rivnu-dgii-preview-db"; 0.25; 402653184; 167772160) and
     exact_limits("rivnu-dgii-preview-api"; 0.45; 402653184; 167772160) and
     exact_limits("rivnu-dgii-preview-web"; 0.30; 402653184; 134217728) and
     exact_limits("rivnu-dgii-preview-migrate"; 0.35; 402653184; 0) and
@@ -407,9 +407,9 @@ preview_init_secrets() {
     "NEXT_PUBLIC_APP_URL=${PREVIEW_APP_URL}" \
     "NEXT_PUBLIC_API_URL=${PREVIEW_API_URL}" \
     'RIVNU_DGII_PREVIEW_DB_CPUS=0.25' \
-    'RIVNU_DGII_PREVIEW_DB_MEMORY_LIMIT=256m' \
-    'RIVNU_DGII_PREVIEW_DB_MEMORY_SWAP_LIMIT=256m' \
-    'RIVNU_DGII_PREVIEW_DB_MEMORY_RESERVATION=128m' \
+    'RIVNU_DGII_PREVIEW_DB_MEMORY_LIMIT=384m' \
+    'RIVNU_DGII_PREVIEW_DB_MEMORY_SWAP_LIMIT=384m' \
+    'RIVNU_DGII_PREVIEW_DB_MEMORY_RESERVATION=160m' \
     'RIVNU_DGII_PREVIEW_DB_PIDS_LIMIT=96' \
     'RIVNU_DGII_PREVIEW_API_CPUS=0.45' \
     'RIVNU_DGII_PREVIEW_API_MEMORY_LIMIT=384m' \

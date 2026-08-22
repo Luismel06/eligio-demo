@@ -224,7 +224,7 @@ export type TaxIdentityLookup = {
   checkedAt: string;
   overrideId?: string;
 };
-export type TaxIdentityVerificationEvidence = {
+export type VerifiedTaxIdentityEvidence = {
   outcome: 'VERIFIED' | 'MANUAL_OVERRIDE';
   documentType: TaxIdentityDocumentType;
   documentNumber: string;
@@ -235,16 +235,26 @@ export type TaxIdentityVerificationEvidence = {
   registryStatus: string;
   overrideId?: string;
 };
+export type ManualTaxIdentityEntryEvidence = {
+  outcome: 'UNVERIFIED_MANUAL';
+  documentType: TaxIdentityDocumentType;
+  documentNumber: string;
+  fiscalName: string;
+  source: 'MANUAL_ENTRY';
+  sourceUpdatedAt: string | null;
+  registryStatus: string;
+  registryOutcome: 'NOT_FOUND';
+  registryCheckedAt: string;
+  recordedAt: string;
+};
+export type TaxIdentityVerificationEvidence =
+  | VerifiedTaxIdentityEvidence
+  | ManualTaxIdentityEntryEvidence;
 export type FiscalCustomerVerificationEvidence = Pick<
-  TaxIdentityVerificationEvidence,
+  VerifiedTaxIdentityEvidence,
   'outcome' | 'source' | 'sourceUpdatedAt' | 'verifiedAt' | 'registryStatus' | 'overrideId'
 >;
-export type TaxIdentityContextType =
-  | 'POS_ORDER'
-  | 'CUSTOMER'
-  | 'SUPPLIER'
-  | 'CUSTOMER_CREATE'
-  | 'SUPPLIER_CREATE';
+export type TaxIdentityContextType = 'POS_ORDER';
 export type TaxIdentityOverrideResult = TaxIdentityLookup & {
   overrideId: string;
   expiresAt: string;
@@ -290,7 +300,7 @@ export type TaxIdentityApprovalRequest = {
   } | null;
 };
 export type CreateTaxIdentityApprovalRequestPayload = {
-  contextType: TaxIdentityContextType;
+  contextType: 'POS_ORDER';
   contextId: string;
   documentType: TaxIdentityDocumentType;
   documentNumber: string;
@@ -1239,8 +1249,7 @@ export type SupplierPayload = {
   creditDays?: number;
   notes?: string;
   status?: SupplierStatus;
-  taxIdentityOverrideId?: string;
-  taxIdentityContextId?: string;
+  manualTaxIdentityConfirmed?: boolean;
 };
 
 export type PurchaseOrderStatus =
@@ -2235,7 +2244,7 @@ export function cancelTaxIdentityApprovalRequest(
 export function createCustomer(
   tenantId: string,
   accessToken: string,
-  payload: Record<string, string | undefined>,
+  payload: Record<string, string | boolean | undefined>,
 ) {
   return fetchJson<Customer>('/customers', {
     method: 'POST',
@@ -2248,7 +2257,7 @@ export function updateCustomer(
   tenantId: string,
   accessToken: string,
   customerId: string,
-  payload: Record<string, string | undefined>,
+  payload: Record<string, string | boolean | undefined>,
 ) {
   return fetchJson<Customer>(`/customers/${customerId}`, {
     method: 'PATCH',

@@ -2,6 +2,7 @@ import { DocumentType, SupplierStatus } from '@qorvex/database';
 import { Type } from 'class-transformer';
 import {
   IsEmail,
+  IsBoolean,
   IsEnum,
   IsIn,
   IsInt,
@@ -88,13 +89,6 @@ export class CreateSupplierDto {
   status?: SupplierStatus;
 
   @IsOptional()
-  @IsString()
-  @MaxLength(64)
-  taxIdentityOverrideId?: string;
-
-  /** Client-generated identifier that binds an administrative override to this form. */
-  @IsOptional()
-  @IsString()
-  @MaxLength(80)
-  taxIdentityContextId?: string;
+  @IsBoolean()
+  manualTaxIdentityConfirmed?: boolean;
 }

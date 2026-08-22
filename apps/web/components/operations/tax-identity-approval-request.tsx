@@ -12,7 +12,6 @@ import {
   createTaxIdentityApprovalRequest,
   getTaxIdentityApprovalRequests,
   type TaxIdentityApprovalRequest,
-  type TaxIdentityContextType,
   type TaxIdentityDocumentType,
   type TaxIdentityLookupOutcome,
   type TaxIdentityOverrideResult,
@@ -23,7 +22,7 @@ import { cn, formatDateTime } from '@/lib/utils';
 type TaxIdentityApprovalRequestProps = {
   tenantId: string;
   accessToken: string;
-  contextType: TaxIdentityContextType;
+  contextType: 'POS_ORDER';
   contextId: string;
   documentType: TaxIdentityDocumentType;
   documentNumber: string;
@@ -404,7 +403,7 @@ function getApprovalRequestReason(outcome?: TaxIdentityLookupOutcome | null) {
 
 function findRequestForIdentity(
   requests: TaxIdentityApprovalRequest[],
-  contextType: TaxIdentityContextType,
+  contextType: 'POS_ORDER',
   contextId: string,
   documentType: TaxIdentityDocumentType,
   normalizedDocument: string,

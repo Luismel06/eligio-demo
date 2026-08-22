@@ -1,5 +1,5 @@
 import { DocumentType } from '@qorvex/database';
-import { IsEmail, IsEnum, IsOptional, IsString, MaxLength } from 'class-validator';
+import { IsBoolean, IsEmail, IsEnum, IsOptional, IsString, MaxLength } from 'class-validator';
 
 export class CreateCustomerDto {
   @IsString()
@@ -29,13 +29,6 @@ export class CreateCustomerDto {
   address?: string;
 
   @IsOptional()
-  @IsString()
-  @MaxLength(64)
-  taxIdentityOverrideId?: string;
-
-  /** Client-generated identifier that binds an administrative override to this form. */
-  @IsOptional()
-  @IsString()
-  @MaxLength(80)
-  taxIdentityContextId?: string;
+  @IsBoolean()
+  manualTaxIdentityConfirmed?: boolean;
 }

@@ -36,6 +36,7 @@ import {
 import { ListTaxIdentityApprovalRequestsDto } from './dto/list-tax-identity-approval-requests.dto';
 import type { LookupTaxIdentityDto } from './dto/lookup-tax-identity.dto';
 import type {
+  ManagedTaxIdentityEvidence,
   RequireUsableTaxIdentityInput,
   TaxIdentityLookupResult,
   TaxIdentityTransactionClient,
@@ -86,7 +87,7 @@ export class TaxIdentitiesService {
   }
 
   /**
-   * Server-side enforcement used by POS, Customers and Suppliers. An override
+   * Server-side enforcement used by POS. An override
    * is never trusted from its id alone: tenant, context and document HMAC must
    * all match. Pass consumeOverride=true and the caller's Prisma transaction
    * to make a manual approval single-use atomically with the business write.
@@ -198,11 +199,102 @@ export class TaxIdentitiesService {
     return manual;
   }
 
+  /**
+   * Resolves identities for Customer and Supplier records maintained by an
+   * already-authorized back-office role. A DGII match always wins. When the
+   * document is specifically NOT_FOUND, the supplied fiscal name may be
+   * stored as a clearly-labelled manual entry;
+   * this never creates a POS override or masquerades as DGII verification.
+   */
+  async resolveManagedRecordIdentity(
+    input: {
+      documentType: DocumentType;
+      documentNumber: string;
+      manualFiscalName: string;
+      manualEntryConfirmed: boolean;
+    },
+    options: {
+      db?: TaxIdentityTransactionClient;
+      fallbackVerification?: unknown;
+    } = {},
+  ): Promise<TaxIdentityVerificationSnapshot | ManagedTaxIdentityEvidence> {
+    const identity = this.normalizeAndValidate(input.documentType, input.documentNumber);
+    const official = await this.lookupRegistry(
+      identity.documentType,
+      identity.documentNumber,
+      options.db,
+    );
+
+    if (official.outcome === 'VERIFIED') {
+      return this.toVerificationSnapshot(official);
+    }
+
+    if (official.outcome === 'REGISTRY_STALE' || official.outcome === 'UNAVAILABLE') {
+      const fallback = this.readStoredVerification(
+        options.fallbackVerification,
+        identity.documentType,
+        identity.documentNumber,
+      );
+      if (fallback) {
+        return fallback;
+      }
+
+      const manualFallback = this.readStoredManualEntry(
+        options.fallbackVerification,
+        identity.documentType,
+        identity.documentNumber,
+      );
+      if (manualFallback) {
+        return manualFallback;
+      }
+
+      throw new UnprocessableEntityException({
+        message: this.failureMessage(official.outcome),
+        taxIdentity: official,
+      });
+    }
+
+    if (official.outcome !== 'NOT_FOUND') {
+      throw new UnprocessableEntityException({
+        message: this.failureMessage(official.outcome),
+        taxIdentity: official,
+      });
+    }
+
+    if (!input.manualEntryConfirmed) {
+      throw new UnprocessableEntityException({
+        message:
+          'Confirma explícitamente que registrarás manualmente una identidad no encontrada en DGII.',
+        taxIdentity: official,
+      });
+    }
+
+    const fiscalName = this.normalizeFiscalName(input.manualFiscalName);
+    const recordedAt = new Date();
+    return {
+      outcome: 'UNVERIFIED_MANUAL',
+      documentType: identity.documentType as ManagedTaxIdentityEvidence['documentType'],
+      documentNumber: identity.documentNumber,
+      fiscalName,
+      registryOutcome: 'NOT_FOUND',
+      registryStatus: 'NO ENCONTRADO EN EL PADRÓN DGII',
+      source: 'MANUAL_ENTRY',
+      sourceUpdatedAt: official.sourceUpdatedAt?.toISOString() ?? null,
+      registryCheckedAt: official.checkedAt.toISOString(),
+      recordedAt: recordedAt.toISOString(),
+    };
+  }
+
   async createApprovalRequest(
     tenantId: string,
     requester: AuthenticatedUser,
     dto: CreateTaxIdentityApprovalRequestDto,
   ) {
+    if (dto.contextType !== TaxIdentityContextType.POS_ORDER) {
+      throw new ForbiddenException(
+        'Las solicitudes de validación fiscal solo pueden originarse en Caja.',
+      );
+    }
     const identity = this.normalizeAndValidate(dto.documentType, dto.documentNumber);
     const contextId = dto.contextId.trim();
     await this.assertCanCreateApprovalRequest(tenantId, requester, dto.contextType, contextId);
@@ -397,6 +489,9 @@ export class TaxIdentitiesService {
     query: ListTaxIdentityApprovalRequestsDto,
   ) {
     const contextId = query.contextId?.trim();
+    if (query.contextType && query.contextType !== TaxIdentityContextType.POS_ORDER) {
+      throw new BadRequestException('Las solicitudes fiscales consultables pertenecen a Caja.');
+    }
     const hasContextType = Boolean(query.contextType);
     const hasContextId = Boolean(contextId);
     if (hasContextType !== hasContextId) {
@@ -418,6 +513,7 @@ export class TaxIdentitiesService {
     const requests = await this.prisma.taxIdentityApprovalRequest.findMany({
       where: {
         tenantId,
+        contextType: TaxIdentityContextType.POS_ORDER,
         ...(query.status ? { status: query.status } : {}),
         ...(query.contextType && contextId ? { contextType: query.contextType, contextId } : {}),
         ...(!isAdministrator ? { requestedById: requester.id } : {}),
@@ -432,7 +528,7 @@ export class TaxIdentitiesService {
 
   async getApprovalRequest(tenantId: string, requester: AuthenticatedUser, requestId: string) {
     let request = await this.prisma.taxIdentityApprovalRequest.findFirst({
-      where: { id: requestId, tenantId },
+      where: { id: requestId, tenantId, contextType: TaxIdentityContextType.POS_ORDER },
       include: approvalRequestInclude,
     });
     if (!request) {
@@ -451,7 +547,7 @@ export class TaxIdentitiesService {
     ) {
       await this.expireApprovalRequest(tenantId, requestId);
       request = await this.prisma.taxIdentityApprovalRequest.findFirstOrThrow({
-        where: { id: requestId, tenantId },
+        where: { id: requestId, tenantId, contextType: TaxIdentityContextType.POS_ORDER },
         include: approvalRequestInclude,
       });
     }
@@ -467,7 +563,7 @@ export class TaxIdentitiesService {
   ) {
     this.assertAdministratorAccess(tenantId, administrator);
     const current = await this.prisma.taxIdentityApprovalRequest.findFirst({
-      where: { id: requestId, tenantId },
+      where: { id: requestId, tenantId, contextType: TaxIdentityContextType.POS_ORDER },
       select: { id: true },
     });
     if (!current) {
@@ -476,7 +572,7 @@ export class TaxIdentitiesService {
     const outcome = await this.prisma.$transaction(async (tx) => {
       await this.lockApprovalRequest(tx, tenantId, requestId);
       const request = await tx.taxIdentityApprovalRequest.findFirst({
-        where: { id: requestId, tenantId },
+        where: { id: requestId, tenantId, contextType: TaxIdentityContextType.POS_ORDER },
         include: approvalRequestInclude,
       });
       if (!request) {
@@ -688,7 +784,7 @@ export class TaxIdentitiesService {
     const outcome = await this.prisma.$transaction(async (tx) => {
       await this.lockApprovalRequest(tx, tenantId, requestId);
       const request = await tx.taxIdentityApprovalRequest.findFirst({
-        where: { id: requestId, tenantId },
+        where: { id: requestId, tenantId, contextType: TaxIdentityContextType.POS_ORDER },
         include: approvalRequestInclude,
       });
       if (!request) {
@@ -767,7 +863,7 @@ export class TaxIdentitiesService {
     const outcome = await this.prisma.$transaction(async (tx) => {
       await this.lockApprovalRequest(tx, tenantId, requestId);
       const request = await tx.taxIdentityApprovalRequest.findFirst({
-        where: { id: requestId, tenantId },
+        where: { id: requestId, tenantId, contextType: TaxIdentityContextType.POS_ORDER },
         include: approvalRequestInclude,
       });
       if (!request) {
@@ -831,6 +927,9 @@ export class TaxIdentitiesService {
       !result.fiscalName ||
       !result.registryStatus ||
       !result.source ||
+      (result.source !== 'DGII_OFFICIAL' &&
+        result.source !== 'TEST_FIXTURE' &&
+        result.source !== 'MANUAL_OVERRIDE') ||
       !result.sourceUpdatedAt ||
       (result.documentType !== DocumentType.RNC && result.documentType !== DocumentType.CEDULA)
     ) {
@@ -1039,6 +1138,60 @@ export class TaxIdentitiesService {
     };
   }
 
+  private readStoredManualEntry(
+    value: unknown,
+    documentType: DocumentType,
+    documentNumber: string,
+  ): ManagedTaxIdentityEvidence | null {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      return null;
+    }
+
+    const evidence = value as Record<string, unknown>;
+    const storedDocumentNumber =
+      typeof evidence.documentNumber === 'string'
+        ? normalizeDominicanDocument(evidence.documentNumber)
+        : '';
+    const fiscalName = typeof evidence.fiscalName === 'string' ? evidence.fiscalName.trim() : '';
+    const registryStatus =
+      typeof evidence.registryStatus === 'string' ? evidence.registryStatus.trim() : '';
+    const registryCheckedAt =
+      typeof evidence.registryCheckedAt === 'string' ? new Date(evidence.registryCheckedAt) : null;
+    const recordedAt = typeof evidence.recordedAt === 'string' ? new Date(evidence.recordedAt) : null;
+    const sourceUpdatedAt =
+      typeof evidence.sourceUpdatedAt === 'string' ? new Date(evidence.sourceUpdatedAt) : null;
+
+    if (
+      evidence.outcome !== 'UNVERIFIED_MANUAL' ||
+      evidence.source !== 'MANUAL_ENTRY' ||
+      evidence.registryOutcome !== 'NOT_FOUND' ||
+      evidence.documentType !== documentType ||
+      storedDocumentNumber !== documentNumber ||
+      !fiscalName ||
+      !registryStatus ||
+      !registryCheckedAt ||
+      Number.isNaN(registryCheckedAt.getTime()) ||
+      !recordedAt ||
+      Number.isNaN(recordedAt.getTime()) ||
+      (sourceUpdatedAt && Number.isNaN(sourceUpdatedAt.getTime()))
+    ) {
+      return null;
+    }
+
+    return {
+      outcome: 'UNVERIFIED_MANUAL',
+      documentType: documentType as ManagedTaxIdentityEvidence['documentType'],
+      documentNumber,
+      fiscalName,
+      registryOutcome: 'NOT_FOUND',
+      registryStatus,
+      source: 'MANUAL_ENTRY',
+      sourceUpdatedAt: sourceUpdatedAt?.toISOString() ?? null,
+      registryCheckedAt: registryCheckedAt.toISOString(),
+      recordedAt: recordedAt.toISOString(),
+    };
+  }
+
   private assertOverrideLookupShape(input: LookupInput) {
     const hasContextType = Boolean(input.contextType);
     const hasContextId = Boolean(input.contextId?.trim());
@@ -1063,35 +1216,45 @@ export class TaxIdentitiesService {
       throw new BadRequestException('El contexto de la solicitud es obligatorio.');
     }
 
-    if (contextType === TaxIdentityContextType.POS_ORDER) {
-      const order = await this.prisma.salesOrder.findFirst({
-        where: {
-          id: contextId,
-          tenantId,
-          status: SalesOrderStatus.IN_CASHIER,
-          invoiceId: null,
-          claimedById: requester.id,
-          claimExpiresAt: { gt: new Date() },
-          claimedCashSession: {
-            is: {
-              tenantId,
-              openedById: requester.id,
-              status: CashSessionStatus.OPEN,
-            },
-          },
-        },
-        select: { id: true },
-      });
-      if (!order) {
-        throw new ConflictException(
-          'La orden debe estar reclamada por este cajero en una sesión de caja abierta.',
-        );
-      }
-      return;
+    if (contextType !== TaxIdentityContextType.POS_ORDER) {
+      throw new ForbiddenException(
+        'Las solicitudes de validación fiscal solo pueden originarse en Caja.',
+      );
     }
 
-    this.assertAdministratorAccess(tenantId, requester);
-    await this.assertContextBelongsToTenant(tenantId, contextType, contextId);
+    const membership = requester.memberships.find(
+      (candidate) =>
+        candidate.tenantId === tenantId && candidate.status === MembershipStatus.ACTIVE,
+    );
+    if (!membership?.canUsePos || membership.role !== Role.CASHIER) {
+      throw new ForbiddenException(
+        'Solo el cajero asignado puede solicitar validación fiscal para una orden.',
+      );
+    }
+
+    const order = await this.prisma.salesOrder.findFirst({
+      where: {
+        id: contextId,
+        tenantId,
+        status: SalesOrderStatus.IN_CASHIER,
+        invoiceId: null,
+        claimedById: requester.id,
+        claimExpiresAt: { gt: new Date() },
+        claimedCashSession: {
+          is: {
+            tenantId,
+            openedById: requester.id,
+            status: CashSessionStatus.OPEN,
+          },
+        },
+      },
+      select: { id: true },
+    });
+    if (!order) {
+      throw new ConflictException(
+        'La orden debe estar reclamada por este cajero en una sesión de caja abierta.',
+      );
+    }
   }
 
   private async isApprovalContextStillValid(
@@ -1102,45 +1265,29 @@ export class TaxIdentitiesService {
       'contextType' | 'contextId' | 'requestedById'
     >,
   ) {
-    if (request.contextType === TaxIdentityContextType.POS_ORDER) {
-      return Boolean(
-        await tx.salesOrder.findFirst({
-          where: {
-            id: request.contextId,
-            tenantId,
-            status: SalesOrderStatus.IN_CASHIER,
-            invoiceId: null,
-            claimedById: request.requestedById,
-            claimExpiresAt: { gt: new Date() },
-            claimedCashSession: {
-              is: {
-                tenantId,
-                openedById: request.requestedById,
-                status: CashSessionStatus.OPEN,
-              },
+    if (request.contextType !== TaxIdentityContextType.POS_ORDER) {
+      return false;
+    }
+    return Boolean(
+      await tx.salesOrder.findFirst({
+        where: {
+          id: request.contextId,
+          tenantId,
+          status: SalesOrderStatus.IN_CASHIER,
+          invoiceId: null,
+          claimedById: request.requestedById,
+          claimExpiresAt: { gt: new Date() },
+          claimedCashSession: {
+            is: {
+              tenantId,
+              openedById: request.requestedById,
+              status: CashSessionStatus.OPEN,
             },
           },
-          select: { id: true },
-        }),
-      );
-    }
-    if (request.contextType === TaxIdentityContextType.CUSTOMER) {
-      return Boolean(
-        await tx.customer.findFirst({
-          where: { id: request.contextId, tenantId },
-          select: { id: true },
-        }),
-      );
-    }
-    if (request.contextType === TaxIdentityContextType.SUPPLIER) {
-      return Boolean(
-        await tx.supplier.findFirst({
-          where: { id: request.contextId, tenantId },
-          select: { id: true },
-        }),
-      );
-    }
-    return /^[A-Za-z0-9_-]{8,80}$/.test(request.contextId);
+        },
+        select: { id: true },
+      }),
+    );
   }
 
   private async assertContextBelongsToTenant(
@@ -1247,6 +1394,19 @@ export class TaxIdentitiesService {
     return normalized.slice(0, maxLength);
   }
 
+  private normalizeFiscalName(value: string) {
+    const normalized = value
+      .replace(/[\u0000-\u001f\u007f]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (!normalized) {
+      throw new BadRequestException(
+        'Digita el nombre o la razón social para registrar esta identidad manualmente.',
+      );
+    }
+    return normalized.slice(0, 200);
+  }
+
   private approvalRequestTtlMinutes() {
     const configured = Number(
       this.config.get<string>('TAX_IDENTITY_APPROVAL_REQUEST_TTL_MINUTES') ?? '30',
@@ -1307,6 +1467,7 @@ export class TaxIdentitiesService {
       const expiredRequests = await tx.taxIdentityApprovalRequest.findMany({
         where: {
           tenantId,
+          contextType: TaxIdentityContextType.POS_ORDER,
           status: TaxIdentityApprovalRequestStatus.PENDING,
           expiresAt: { lte: now },
           ...(requestedById ? { requestedById } : {}),
@@ -1358,6 +1519,7 @@ export class TaxIdentitiesService {
         where: {
           id: requestId,
           tenantId,
+          contextType: TaxIdentityContextType.POS_ORDER,
           status: TaxIdentityApprovalRequestStatus.PENDING,
           expiresAt: { lte: now },
         },

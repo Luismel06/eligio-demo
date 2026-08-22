@@ -30,6 +30,8 @@ export class TaxIdentitiesController {
   }
 
   @Post('approval-requests')
+  @UseGuards(RolesGuard)
+  @Roles(Role.CASHIER)
   @Header('Cache-Control', 'no-store')
   createApprovalRequest(
     @TenantId() tenantId: string,

@@ -7,9 +7,11 @@ services:
     init: true
     restart: unless-stopped
     cpus: ${RIVNU_DGII_PREVIEW_DB_CPUS:-0.25}
-    mem_limit: ${RIVNU_DGII_PREVIEW_DB_MEMORY_LIMIT:-256m}
-    memswap_limit: ${RIVNU_DGII_PREVIEW_DB_MEMORY_SWAP_LIMIT:-256m}
-    mem_reservation: ${RIVNU_DGII_PREVIEW_DB_MEMORY_RESERVATION:-128m}
+    # The isolated preview carries the complete DGII registry. PostgreSQL can
+    # exceed 256 MiB briefly while concurrent lookups and checkpoints overlap.
+    mem_limit: ${RIVNU_DGII_PREVIEW_DB_MEMORY_LIMIT:-384m}
+    memswap_limit: ${RIVNU_DGII_PREVIEW_DB_MEMORY_SWAP_LIMIT:-384m}
+    mem_reservation: ${RIVNU_DGII_PREVIEW_DB_MEMORY_RESERVATION:-160m}
     pids_limit: ${RIVNU_DGII_PREVIEW_DB_PIDS_LIMIT:-96}
     env_file:
       - path: ${RIVNU_DGII_PREVIEW_SECRET_DIR:-/opt/corestack/apps/rivnu/secrets/preview-dgii}/db.env

@@ -29,23 +29,40 @@ Credenciales demo creadas por el seed; todos usan `DemoPassword123!`:
 
 No se utiliza ni se copia información de clientes, ventas o usuarios de producción.
 
-## Flujo de validación manual
+## Flujos ante una identidad no verificada
 
 Cuando un RNC o una cédula tiene un formato válido pero no puede verificarse con el padrón activo,
-RIVNU no lo presenta como verificado por DGII. En Caja, Clientes o Suplidores, el usuario debe:
+RIVNU no lo presenta como verificado por DGII. La respuesta depende del módulo.
 
-1. Digitar la razón social o el nombre fiscal manual.
-2. Enviar una solicitud de validación al administrador.
-3. Esperar la decisión, que se actualiza automáticamente en la misma pantalla.
+### Caja: solicitud y aprobación administrativa
+
+Caja es el único módulo que utiliza solicitudes de validación y aprobaciones administrativas. El
+cajero digita la razón social o el nombre fiscal, envía la solicitud y espera la decisión, cuyo
+estado se actualiza automáticamente en la misma pantalla.
 
 Los administradores reciben una alerta en la campana y revisan las solicitudes en
 `/tax-identity-approvals`. Allí pueden corregir el nombre fiscal, aprobarlo o rechazarlo con una
-nota. La aprobación crea una autorización de uso único, vinculada al documento y al contexto que
-la originó, y con vencimiento corto. No se solicita ni se comparte la contraseña del administrador.
+nota. La aprobación crea una autorización de uso único, vinculada al documento y a la orden que la
+originó, y con vencimiento corto. No se solicita ni se comparte la contraseña del administrador.
 
 Una aprobación se guarda y se muestra como **autorización manual por administrador**; nunca como
-una verificación de DGII. En Caja, el nombre operativo recibido desde Toma de órdenes se conserva
-como referencia independiente y no se crea automáticamente un registro en el módulo Clientes.
+una verificación de DGII. El nombre operativo recibido desde Toma de órdenes se conserva como
+referencia independiente. Facturar en Caja no crea automáticamente un registro en el módulo
+Clientes.
+
+### Clientes y Suplidores: registro manual explícito
+
+Clientes y Suplidores no envían solicitudes al administrador ni consumen autorizaciones de Caja.
+Si el padrón responde específicamente **No encontrado (`NOT_FOUND`)**, un usuario con permiso de
+escritura en el módulo puede digitar la razón social y confirmar explícitamente el registro manual.
+El dato queda identificado como **entrada manual no verificada por DGII**, junto con la fuente y la
+fecha de consulta; no se presenta como una coincidencia oficial.
+
+Esta excepción no se aplica a contribuyentes no activos ni a respuestas de padrón desactualizado o
+no disponible. Los permisos existentes siguen gobernando quién puede guardar: Administración y
+Superadministración gestionan Clientes y Suplidores, mientras Contabilidad puede crear suplidores.
+Cada alta en estos módulos requiere una acción explícita del usuario y nunca se deriva
+automáticamente de una venta o de una solicitud realizada en Caja.
 
 ## Acceso desde otra computadora
 
@@ -149,13 +166,13 @@ La importación manual queda como alternativa operativa. Ejecutar `fixture` desp
 
 ## Límites de recursos
 
-En ejecución normal, el presupuesto máximo del preview es aproximadamente 1 GiB de RAM y 1 CPU:
+En ejecución normal, el presupuesto máximo del preview es aproximadamente 1.13 GiB de RAM y 1 CPU:
 
-- PostgreSQL: 256 MiB / 0.25 CPU
+- PostgreSQL: 384 MiB / 0.25 CPU
 - API: 384 MiB / 0.45 CPU
 - Web: 384 MiB / 0.30 CPU
 
-Los trabajos de migración, seed, fixture e importación son transitorios y no permanecen ejecutándose. Fixture e importación se ejecutan con API/Web pausados, por lo que su máximo simultáneo es PostgreSQL más un trabajo transitorio (640 MiB o menos con los límites actuales), no 1 GiB más otro contenedor.
+Los trabajos de migración, seed, fixture e importación son transitorios y no permanecen ejecutándose. Fixture e importación se ejecutan con API/Web pausados, por lo que su máximo simultáneo es PostgreSQL más un trabajo transitorio (768 MiB o menos con los límites actuales), no 1.13 GiB más otro contenedor. El margen de PostgreSQL evita que un checkpoint concurrente con consultas al padrón oficial completo agote el contenedor.
 
 El driver local de Docker no ofrece una cuota dura portable para el volumen PostgreSQL. El importador conserva un número limitado de versiones anteriores y elimina las más antiguas; aun así, se debe vigilar el crecimiento junto con imágenes y caché:
 

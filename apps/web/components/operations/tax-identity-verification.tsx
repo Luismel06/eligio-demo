@@ -40,6 +40,20 @@ export function hasVerifiedTaxIdentity(
   );
 }
 
+export function canRegisterTaxIdentityManually(
+  state: TaxIdentityVerificationState | null,
+  documentType: TaxIdentityDocumentType,
+  documentNumber: string,
+) {
+  return Boolean(
+    state?.checksumValid &&
+    !state.pending &&
+    state.result?.outcome === 'NOT_FOUND' &&
+    state.documentType === documentType &&
+    state.documentNumber === normalizeDominicanDocument(documentNumber),
+  );
+}
+
 type TaxIdentityVerificationProps = {
   tenantId: string;
   accessToken: string;
@@ -48,6 +62,7 @@ type TaxIdentityVerificationProps = {
   onChange?: (state: TaxIdentityVerificationState) => void;
   manualReviewAction?: React.ReactNode;
   manualOverride?: TaxIdentityOverrideResult | null;
+  allowManualEntry?: boolean;
   storedVerification?: TaxIdentityVerificationEvidence | null;
   className?: string;
 };
@@ -60,6 +75,7 @@ export function TaxIdentityVerification({
   onChange,
   manualReviewAction,
   manualOverride,
+  allowManualEntry = false,
   storedVerification,
   className,
 }: TaxIdentityVerificationProps) {
@@ -193,10 +209,15 @@ export function TaxIdentityVerification({
       <StatusPanel
         tone="warning"
         title="No fue posible consultar DGII"
-        description="El documento no ha sido verificado. Intenta nuevamente; si el servicio continúa indisponible, envía una solicitud de validación al administrador."
+        description={
+          allowManualEntry
+            ? 'El documento no pudo consultarse. Reintenta: el registro manual solo se habilita cuando el padrón responde que no fue encontrado.'
+            : 'El documento no ha sido verificado. Intenta nuevamente; si el servicio continúa indisponible, envía una solicitud de validación al administrador.'
+        }
         onRetry={() => void query.refetch()}
         refreshing={query.isFetching}
         manualReviewAction={manualReviewAction}
+        allowManualEntry={false}
         storedVerification={storedVerification}
         className={className}
       />
@@ -281,6 +302,7 @@ export function TaxIdentityVerification({
       onRetry={() => void query.refetch()}
       refreshing={query.isFetching}
       manualReviewAction={manualReviewAction}
+      allowManualEntry={allowManualEntry && currentResult.outcome === 'NOT_FOUND'}
       storedVerification={
         currentResult.outcome === 'UNAVAILABLE' || currentResult.outcome === 'REGISTRY_STALE'
           ? storedVerification
@@ -299,6 +321,7 @@ function StatusPanel({
   onRetry,
   refreshing,
   manualReviewAction,
+  allowManualEntry,
   storedVerification,
   className,
 }: {
@@ -309,6 +332,7 @@ function StatusPanel({
   onRetry: () => void;
   refreshing: boolean;
   manualReviewAction?: React.ReactNode;
+  allowManualEntry: boolean;
   storedVerification?: TaxIdentityVerificationEvidence | null;
   className?: string;
 }) {
@@ -341,14 +365,19 @@ function StatusPanel({
               </p>
               <TaxIdentityVerificationBadge verification={storedVerification} />
             </div>
-          ) : (
+          ) : manualReviewAction ? (
             <>
               <p className="text-xs font-medium">
                 Para continuar, digita el nombre fiscal y envía una solicitud al administrador.
               </p>
-              {manualReviewAction ? <div className="pt-1">{manualReviewAction}</div> : null}
+              <div className="pt-1">{manualReviewAction}</div>
             </>
-          )}
+          ) : allowManualEntry ? (
+            <p className="text-xs font-medium">
+              Como usuario autorizado, puedes digitar el nombre fiscal manualmente. El registro
+              quedará identificado como no verificado por DGII.
+            </p>
+          ) : null}
         </div>
         <Button
           type="button"
@@ -372,7 +401,11 @@ function StatusPanel({
 export function hasStoredTaxIdentityVerification(
   verification: TaxIdentityVerificationEvidence | null | undefined,
 ) {
-  return verification?.outcome === 'VERIFIED' || verification?.outcome === 'MANUAL_OVERRIDE';
+  return (
+    verification?.outcome === 'VERIFIED' ||
+    verification?.outcome === 'MANUAL_OVERRIDE' ||
+    verification?.outcome === 'UNVERIFIED_MANUAL'
+  );
 }
 
 export function TaxIdentityVerificationBadge({
@@ -397,12 +430,19 @@ export function TaxIdentityVerificationBadge({
     );
   }
 
-  const manual = verification.source === 'MANUAL_OVERRIDE';
-  const date = verification.sourceUpdatedAt ?? verification.verifiedAt;
+  const manualApproval = verification.source === 'MANUAL_OVERRIDE';
+  const manualEntry = verification.source === 'MANUAL_ENTRY';
+  const date = manualEntry
+    ? verification.recordedAt
+    : verification.sourceUpdatedAt ?? verification.verifiedAt;
   return (
     <div className={cn('space-y-1', className)}>
-      <Badge variant={manual ? 'warning' : 'success'}>
-        {manual ? 'Autorizado por administrador' : 'Verificado por DGII'}
+      <Badge variant={manualApproval || manualEntry ? 'warning' : 'success'}>
+        {manualEntry
+          ? 'Registrado manualmente'
+          : manualApproval
+            ? 'Autorizado por administrador'
+            : 'Verificado por DGII'}
       </Badge>
       <p className="text-xs text-muted-foreground">
         {translateVerificationSource(verification.source)}
@@ -418,6 +458,7 @@ export function TaxIdentityVerificationBadge({
 function translateVerificationSource(source: TaxIdentityVerificationEvidence['source']) {
   if (source === 'DGII_OFFICIAL') return 'DGII · padrón oficial';
   if (source === 'TEST_FIXTURE') return 'Padrón de prueba';
+  if (source === 'MANUAL_ENTRY') return 'Entrada manual · no verificada por DGII';
   return 'Autorización manual';
 }
 

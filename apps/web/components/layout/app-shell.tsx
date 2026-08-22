@@ -138,7 +138,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         description:
           newRequests.length === 1
             ? `${newRequests[0].requestedBy.name} solicita revisar ${newRequests[0].documentType}.`
-            : 'Caja, Clientes o Suplidores esperan una decisión administrativa.',
+            : 'Caja espera una decisión administrativa para estas órdenes.',
         duration: 10_000,
         action: {
           label: 'Revisar',
