@@ -77,29 +77,32 @@ production_resolve_image_tag() {
   printf '%s' "$production_tag"
 }
 
-production_validate_candidate_api_image() {
+production_validate_candidate_images() {
   local production_tag="$1"
+  local production_service
 
-  docker run --rm --pull never \
-    --network none \
-    --read-only \
-    --cap-drop ALL \
-    --pids-limit 32 \
-    --memory 128m \
-    --memory-swap 128m \
-    --security-opt no-new-privileges:true \
-    --entrypoint sh \
-    "corestack/rivnu-api:${production_tag}" \
-    -c '
-      set -eu
-      test -r apps/api/dist/cli/import-dgii-registry.js
-      printf "%s  %s\n" \
-        968fdfa95acaaa71c28ea7f127dcffb6cf09d16be30cb8b112f4e60a64765c9e packages/database/prisma/migrations/20260807123000_return_refund_reference/migration.sql \
-        d5d9c4f97e4549e677e03db04e7b37fb4f1fb104757119448542cc5c014ba0f3 packages/database/prisma/migrations/20260821163000_dgii_tax_identity_registry/migration.sql \
-        158b8d4e716d6d399c39531a5d4d3f00437d48465a8e71158c65093d1d74e709 packages/database/prisma/migrations/20260821213000_tax_identity_approval_requests/migration.sql \
-        95670250188093b8a05dab2d07c46e895a7a64bd728a4b575f3deff4ca311334 packages/database/prisma/migrations/20260822014500_pos_only_tax_identity_approvals/migration.sql \
-        | sha256sum --check --status
-    '
+  for production_service in api web; do
+    docker run --rm --pull never \
+      --network none \
+      --read-only \
+      --cap-drop ALL \
+      --pids-limit 32 \
+      --memory 128m \
+      --memory-swap 128m \
+      --security-opt no-new-privileges:true \
+      --entrypoint sh \
+      "corestack/rivnu-${production_service}:${production_tag}" \
+      -c '
+        set -eu
+        test -r apps/api/dist/cli/import-dgii-registry.js
+        printf "%s  %s\n" \
+          968fdfa95acaaa71c28ea7f127dcffb6cf09d16be30cb8b112f4e60a64765c9e packages/database/prisma/migrations/20260807123000_return_refund_reference/migration.sql \
+          d5d9c4f97e4549e677e03db04e7b37fb4f1fb104757119448542cc5c014ba0f3 packages/database/prisma/migrations/20260821163000_dgii_tax_identity_registry/migration.sql \
+          158b8d4e716d6d399c39531a5d4d3f00437d48465a8e71158c65093d1d74e709 packages/database/prisma/migrations/20260821213000_tax_identity_approval_requests/migration.sql \
+          95670250188093b8a05dab2d07c46e895a7a64bd728a4b575f3deff4ca311334 packages/database/prisma/migrations/20260822014500_pos_only_tax_identity_approvals/migration.sql \
+          | sha256sum --check --status
+      '
+  done
 }
 
 production_validate_environment() {
@@ -147,8 +150,8 @@ production_validate_environment() {
     production_die "no existe localmente corestack/rivnu-api:${production_tag}"
   docker image inspect "corestack/rivnu-web:${production_tag}" >/dev/null 2>&1 ||
     production_die "no existe localmente corestack/rivnu-web:${production_tag}"
-  production_validate_candidate_api_image "$production_tag" ||
-    production_die "la imagen API ${production_tag} no contiene el release DGII aprobado"
+  production_validate_candidate_images "$production_tag" ||
+    production_die "las imágenes ${production_tag} no contienen el mismo release DGII aprobado"
 
   if [[ -z "$production_override" ]]; then
     for production_service in api web; do
