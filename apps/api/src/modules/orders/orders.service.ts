@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   Injectable,
   NotFoundException,
@@ -473,8 +474,14 @@ export class OrdersService {
         );
       }
 
-      const released = await tx.salesOrder.update({
-        where: { id },
+      const releasedRows = await tx.salesOrder.updateMany({
+        where: {
+          id,
+          tenantId,
+          status: SalesOrderStatus.IN_CASHIER,
+          invoiceId: null,
+          ...(!adminRoles.includes(membership.role) ? { claimedById: user.id } : {}),
+        },
         data: {
           status: SalesOrderStatus.SENT_TO_CASHIER,
           ...provisionalFiscalDetails,
@@ -484,8 +491,20 @@ export class OrdersService {
           claimExpiresAt: null,
           releasedAt: new Date(),
         },
+      });
+      if (releasedRows.count !== 1) {
+        throw new ConflictException(
+          'Sales order changed while it was being released. Refresh and try again.',
+        );
+      }
+
+      const released = await tx.salesOrder.findFirst({
+        where: { id, tenantId },
         include: this.orderInclude(),
       });
+      if (!released) {
+        throw new ConflictException('Released sales order could not be reloaded.');
+      }
 
       await tx.employeeActivityLog.create({
         data: {

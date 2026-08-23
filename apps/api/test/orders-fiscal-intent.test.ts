@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { ConflictException } from '@nestjs/common';
 import {
   CreditTermOption,
   CustomerCreditStatus,
@@ -26,6 +27,13 @@ function adminUser(): AuthenticatedUser {
   return {
     id: 'admin-1',
     memberships: [{ tenantId, role: Role.ADMIN }],
+  } as AuthenticatedUser;
+}
+
+function cashierUser(): AuthenticatedUser {
+  return {
+    id: 'cashier-1',
+    memberships: [{ tenantId, role: Role.CASHIER, canUsePos: true }],
   } as AuthenticatedUser;
 }
 
@@ -361,6 +369,8 @@ test('accepting a legacy B01 quotation resets it to provisional B02 without sequ
 
 test('releasing a claimed order clears its fiscal identity and restores provisional B02', async () => {
   const updates: Array<Record<string, unknown>> = [];
+  let releasedOrder: Record<string, unknown> | null = null;
+  let findCalls = 0;
   const claimedOrder = {
     id: 'order-claimed-1',
     tenantId,
@@ -389,10 +399,17 @@ test('releasing a claimed order clears its fiscal identity and restores provisio
   };
   const tx = {
     salesOrder: {
-      findFirst: async () => claimedOrder,
-      update: async (args: { data: Record<string, unknown> }) => {
-        updates.push(args.data);
-        return { ...claimedOrder, ...args.data };
+      findFirst: async () => {
+        findCalls += 1;
+        return findCalls === 1 ? claimedOrder : releasedOrder;
+      },
+      updateMany: async (args: {
+        where: Record<string, unknown>;
+        data: Record<string, unknown>;
+      }) => {
+        updates.push(args);
+        releasedOrder = { ...claimedOrder, ...args.data };
+        return { count: 1 };
       },
     },
     employeeActivityLog: { create: async () => ({ id: 'log-1' }) },
@@ -402,11 +419,73 @@ test('releasing a claimed order clears its fiscal identity and restores provisio
   };
   const service = new OrdersService(prisma as never);
 
-  await service.release(tenantId, adminUser(), claimedOrder.id);
+  await service.release(tenantId, cashierUser(), claimedOrder.id);
 
-  assert.equal(updates[0].fiscalPurpose, FiscalDocumentPurpose.CONSUMER);
-  assert.equal(updates[0].fiscalDocumentTypeSnapshot, InvoiceDocumentType.CONSUMER_02);
-  assert.equal(updates[0].fiscalCustomerSnapshot, Prisma.JsonNull);
+  const where = updates[0].where as Record<string, unknown>;
+  const data = updates[0].data as Record<string, unknown>;
+  assert.deepEqual(where, {
+    id: claimedOrder.id,
+    tenantId,
+    status: SalesOrderStatus.IN_CASHIER,
+    invoiceId: null,
+    claimedById: 'cashier-1',
+  });
+  assert.equal(data.fiscalPurpose, FiscalDocumentPurpose.CONSUMER);
+  assert.equal(data.fiscalDocumentTypeSnapshot, InvoiceDocumentType.CONSUMER_02);
+  assert.equal(data.fiscalCustomerSnapshot, Prisma.JsonNull);
+  assert.equal(findCalls, 2);
+});
+
+test('release fails atomically when checkout wins the sales order race', async () => {
+  const updateManyCalls: Array<Record<string, unknown>> = [];
+  let activityLogCalls = 0;
+  let findCalls = 0;
+  const claimedOrder = {
+    id: 'order-race-1',
+    tenantId,
+    status: SalesOrderStatus.IN_CASHIER,
+    invoiceId: null,
+    claimedById: 'cashier-1',
+    claimedCashSessionId: 'cash-session-1',
+  };
+  const tx = {
+    salesOrder: {
+      findFirst: async () => {
+        findCalls += 1;
+        return claimedOrder;
+      },
+      updateMany: async (args: Record<string, unknown>) => {
+        updateManyCalls.push(args);
+        return { count: 0 };
+      },
+    },
+    employeeActivityLog: {
+      create: async () => {
+        activityLogCalls += 1;
+        return { id: 'unexpected-log' };
+      },
+    },
+  };
+  const prisma = {
+    $transaction: async <T>(operation: (client: typeof tx) => Promise<T>) => operation(tx),
+  };
+  const service = new OrdersService(prisma as never);
+
+  await assert.rejects(
+    service.release(tenantId, cashierUser(), claimedOrder.id),
+    ConflictException,
+  );
+
+  const where = updateManyCalls[0].where as Record<string, unknown>;
+  assert.deepEqual(where, {
+    id: claimedOrder.id,
+    tenantId,
+    status: SalesOrderStatus.IN_CASHIER,
+    invoiceId: null,
+    claimedById: 'cashier-1',
+  });
+  assert.equal(findCalls, 1);
+  assert.equal(activityLogCalls, 0);
 });
 
 test('expiring a claim clears its fiscal identity before the order can be reclaimed', async () => {
