@@ -77,6 +77,8 @@ async function main() {
 
   await prisma.$transaction(
     async (tx) => {
+      await tx.taxIdentityApprovalRequest.deleteMany({ where: { tenantId: tenant.id } });
+      await tx.taxIdentityOverride.deleteMany({ where: { tenantId: tenant.id } });
       await tx.returnRequest.deleteMany({ where: { tenantId: tenant.id } });
       await tx.employeeActivityLog.deleteMany({ where: { tenantId: tenant.id } });
       await tx.cashMovement.deleteMany({ where: { tenantId: tenant.id } });
@@ -143,6 +145,8 @@ async function main() {
 
 async function getCleanupCounts(tenantId: string, preservedUserIds: string[]) {
   const [
+    taxIdentityApprovalRequests,
+    taxIdentityOverrides,
     returnRequests,
     employeeActivityLogs,
     cashMovements,
@@ -165,6 +169,8 @@ async function getCleanupCounts(tenantId: string, preservedUserIds: string[]) {
     removableEmployeeProfiles,
     removableUsers,
   ] = await Promise.all([
+    prisma.taxIdentityApprovalRequest.count({ where: { tenantId } }),
+    prisma.taxIdentityOverride.count({ where: { tenantId } }),
     prisma.returnRequest.count({ where: { tenantId } }),
     prisma.employeeActivityLog.count({ where: { tenantId } }),
     prisma.cashMovement.count({ where: { tenantId } }),
@@ -203,6 +209,8 @@ async function getCleanupCounts(tenantId: string, preservedUserIds: string[]) {
 
   return {
     delete: {
+      taxIdentityApprovalRequests,
+      taxIdentityOverrides,
       returnRequests,
       employeeActivityLogs,
       cashMovements,
@@ -236,7 +244,9 @@ function printPlan(counts: Awaited<ReturnType<typeof getCleanupCounts>>) {
   console.log('');
   console.log(`RIVNU launch cleanup plan for tenant: ${tenantSlug}`);
   console.log(`Mode: ${execute ? 'EXECUTE' : 'DRY-RUN'}`);
-  console.log(`Fiscal sequences: ${resetFiscalSequences ? 'reset nextNumber to startNumber' : 'keep current nextNumber'}`);
+  console.log(
+    `Fiscal sequences: ${resetFiscalSequences ? 'reset nextNumber to startNumber' : 'keep current nextNumber'}`,
+  );
   console.log('');
   console.log('Will delete/reset tenant data:');
   for (const [key, value] of Object.entries(counts.delete)) {

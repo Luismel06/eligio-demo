@@ -39,6 +39,10 @@ export function isAccountantSession(session: AuthSession | null | undefined) {
   return session?.role === 'ACCOUNTANT';
 }
 
+export function canCreateSuppliers(session: AuthSession | null | undefined) {
+  return isAdminSession(session) || isAccountantSession(session);
+}
+
 export function canTakeOrders(session: AuthSession | null | undefined) {
   return Boolean(isAdminSession(session) || session?.role === 'ORDER_TAKER');
 }
@@ -46,6 +50,10 @@ export function canTakeOrders(session: AuthSession | null | undefined) {
 export function canAccessPath(session: AuthSession | null | undefined, pathname: string) {
   if (!session) {
     return false;
+  }
+
+  if (pathname === '/tax-identity-approvals' || pathname.startsWith('/tax-identity-approvals/')) {
+    return isAdminSession(session);
   }
 
   if (isAccountantSession(session)) {

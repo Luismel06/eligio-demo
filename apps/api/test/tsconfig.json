@@ -1,0 +1,14 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": ".."
+  },
+  "include": [
+    "../src/**/*.ts",
+    "./pos-fiscal-security.test.ts",
+    "./tax-identity-approval-dto.test.ts",
+    "./tax-identity-approval.integration.test.ts",
+    "./tax-identity-managed-records.test.ts"
+  ]
+}

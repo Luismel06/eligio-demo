@@ -14,12 +14,14 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { CreateCustomerDto } from './dto/create-customer.dto';
 import { UpdateCustomerDto } from './dto/update-customer.dto';
 import { ConfigureCustomerCreditDto } from './dto/configure-customer-credit.dto';
+import { TaxIdentitiesService } from '../tax-identities/tax-identities.service';
 
 @Injectable()
 export class CustomersService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
+    private readonly taxIdentities: TaxIdentitiesService,
   ) {}
 
   findAll(tenantId: string) {
@@ -30,20 +32,32 @@ export class CustomersService {
   }
 
   async create(tenantId: string, userId: string, dto: CreateCustomerDto) {
-    const documentNumber = this.normalizeAndValidateDocument(
-      dto.documentType,
-      dto.documentNumber,
-    );
+    const { manualTaxIdentityConfirmed = false, ...customerInput } = dto;
+    const documentNumber = this.normalizeAndValidateDocument(dto.documentType, dto.documentNumber);
 
     await this.ensureUniqueDocument(tenantId, dto.documentType, documentNumber);
 
     try {
-      const customer = await this.prisma.customer.create({
-        data: {
-          ...dto,
-          documentNumber,
+      const customer = await this.prisma.$transaction(async (tx) => {
+        const verification = await this.resolveTaxIdentity(tx, {
           tenantId,
-        },
+          documentType: dto.documentType,
+          documentNumber,
+          manualFiscalName: customerInput.name,
+          manualEntryConfirmed: manualTaxIdentityConfirmed,
+        });
+
+        return tx.customer.create({
+          data: {
+            ...customerInput,
+            name: verification?.fiscalName ?? customerInput.name.trim(),
+            documentNumber,
+            tenantId,
+            ...(verification
+              ? { taxIdentityVerification: verification }
+              : { taxIdentityVerification: Prisma.JsonNull }),
+          },
+        });
       });
 
       await this.audit.log({
@@ -52,7 +66,12 @@ export class CustomersService {
         action: 'CUSTOMER_CREATED',
         entity: 'Customer',
         entityId: customer.id,
-        metadata: { name: customer.name, documentNumber: customer.documentNumber },
+        metadata: {
+          name: customer.name,
+          documentType: customer.documentType,
+          documentLast4: customer.documentNumber?.slice(-4) ?? null,
+          taxIdentitySource: readVerificationSource(customer.taxIdentityVerification),
+        },
       });
 
       return customer;
@@ -74,9 +93,8 @@ export class CustomersService {
   }
 
   async update(tenantId: string, userId: string, id: string, dto: UpdateCustomerDto) {
+    const { manualTaxIdentityConfirmed = false, ...customerInput } = dto;
     const current = await this.findOne(tenantId, id);
-    const documentChanged =
-      dto.documentType !== undefined || dto.documentNumber !== undefined;
     const nextDocumentType = dto.documentType ?? current.documentType;
     const nextDocumentValue =
       dto.documentNumber !== undefined
@@ -86,21 +104,40 @@ export class CustomersService {
             dto.documentType !== DocumentType.CEDULA
           ? null
           : current.documentNumber;
-    const documentNumber = documentChanged
-      ? this.normalizeAndValidateDocument(nextDocumentType, nextDocumentValue)
-      : undefined;
+    const documentNumber = this.normalizeAndValidateDocument(nextDocumentType, nextDocumentValue);
+    const documentChanged =
+      nextDocumentType !== current.documentType || documentNumber !== current.documentNumber;
 
     if (documentChanged) {
       await this.ensureUniqueDocument(tenantId, nextDocumentType, documentNumber, id);
     }
 
     try {
-      const customer = await this.prisma.customer.update({
-        where: { id },
-        data: {
-          ...dto,
-          ...(documentChanged ? { documentNumber } : {}),
-        },
+      const customer = await this.prisma.$transaction(async (tx) => {
+        const verification = await this.resolveTaxIdentity(tx, {
+          tenantId,
+          documentType: nextDocumentType,
+          documentNumber: documentChanged ? documentNumber : current.documentNumber,
+          manualFiscalName: customerInput.name ?? (documentChanged ? '' : current.name),
+          manualEntryConfirmed: manualTaxIdentityConfirmed,
+          fallbackVerification: documentChanged ? undefined : current.taxIdentityVerification,
+        });
+
+        return tx.customer.update({
+          where: { id },
+          data: {
+            ...customerInput,
+            ...(verification
+              ? {
+                  name: verification.fiscalName,
+                  taxIdentityVerification: verification,
+                }
+              : nextDocumentType !== DocumentType.RNC && nextDocumentType !== DocumentType.CEDULA
+                ? { taxIdentityVerification: Prisma.JsonNull }
+                : {}),
+            ...(documentChanged ? { documentNumber } : {}),
+          },
+        });
       });
 
       await this.audit.log({
@@ -109,7 +146,11 @@ export class CustomersService {
         action: 'CUSTOMER_UPDATED',
         entity: 'Customer',
         entityId: id,
-        metadata: { fields: Object.keys(dto) },
+        metadata: {
+          fields: Object.keys(customerInput),
+          documentLast4: customer.documentNumber?.slice(-4) ?? null,
+          taxIdentitySource: readVerificationSource(customer.taxIdentityVerification),
+        },
       });
 
       return customer;
@@ -147,6 +188,35 @@ export class CustomersService {
     return normalizeDominicanDocument(trimmedValue);
   }
 
+  private async resolveTaxIdentity(
+    tx: Prisma.TransactionClient,
+    input: {
+      tenantId: string;
+      documentType: DocumentType;
+      documentNumber: string | null | undefined;
+      manualFiscalName: string;
+      manualEntryConfirmed: boolean;
+      fallbackVerification?: unknown;
+    },
+  ) {
+    if (input.documentType !== DocumentType.RNC && input.documentType !== DocumentType.CEDULA) {
+      return null;
+    }
+
+    return this.taxIdentities.resolveManagedRecordIdentity(
+      {
+        documentType: input.documentType,
+        documentNumber: input.documentNumber ?? '',
+        manualFiscalName: input.manualFiscalName,
+        manualEntryConfirmed: input.manualEntryConfirmed,
+      },
+      {
+        db: tx,
+        fallbackVerification: input.fallbackVerification,
+      },
+    );
+  }
+
   private async ensureUniqueDocument(
     tenantId: string,
     documentType: DocumentType,
@@ -175,10 +245,7 @@ export class CustomersService {
   }
 
   private rethrowDocumentConflict(error: unknown): never {
-    if (
-      error instanceof Prisma.PrismaClientKnownRequestError &&
-      error.code === 'P2002'
-    ) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
       throw new ConflictException(
         'Ya existe un cliente con este tipo y número de documento en la empresa.',
       );
@@ -244,4 +311,13 @@ export class CustomersService {
 
     return customer;
   }
+}
+
+function readVerificationSource(value: Prisma.JsonValue | null | undefined) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+
+  const source = (value as Prisma.JsonObject).source;
+  return typeof source === 'string' && source.trim() ? source.trim() : null;
 }

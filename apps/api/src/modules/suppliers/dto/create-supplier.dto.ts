@@ -2,6 +2,7 @@ import { DocumentType, SupplierStatus } from '@qorvex/database';
 import { Type } from 'class-transformer';
 import {
   IsEmail,
+  IsBoolean,
   IsEnum,
   IsIn,
   IsInt,
@@ -86,4 +87,8 @@ export class CreateSupplierDto {
   @IsOptional()
   @IsEnum(SupplierStatus)
   status?: SupplierStatus;
+
+  @IsOptional()
+  @IsBoolean()
+  manualTaxIdentityConfirmed?: boolean;
 }

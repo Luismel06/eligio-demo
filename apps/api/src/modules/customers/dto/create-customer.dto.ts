@@ -1,5 +1,5 @@
 import { DocumentType } from '@qorvex/database';
-import { IsEmail, IsEnum, IsOptional, IsString, MaxLength } from 'class-validator';
+import { IsBoolean, IsEmail, IsEnum, IsOptional, IsString, MaxLength } from 'class-validator';
 
 export class CreateCustomerDto {
   @IsString()
@@ -27,4 +27,8 @@ export class CreateCustomerDto {
   @IsString()
   @MaxLength(240)
   address?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  manualTaxIdentityConfirmed?: boolean;
 }

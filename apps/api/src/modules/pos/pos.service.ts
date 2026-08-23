@@ -30,6 +30,7 @@ import {
   SalesOrderDestination,
   SalesOrderStatus,
   TaxCategory,
+  TaxIdentityContextType,
 } from '@qorvex/database';
 import { PrismaService } from '../../prisma/prisma.service';
 import { AuthenticatedUser } from '../../common/types/authenticated-request';
@@ -51,6 +52,7 @@ import {
 } from '../fiscal-documents/fiscal-document';
 import { isLocalNcfDocumentType } from '../fiscal-sequences/fiscal-number';
 import { FiscalSequencesService } from '../fiscal-sequences/fiscal-sequences.service';
+import { TaxIdentitiesService } from '../tax-identities/tax-identities.service';
 import { CompleteSaleDto, PosSaleItemDto } from './dto/complete-sale.dto';
 import { UpdatePosFiscalDetailsDto } from './dto/update-pos-fiscal-details.dto';
 
@@ -80,6 +82,7 @@ export class PosService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly fiscalSequences: FiscalSequencesService,
+    private readonly taxIdentities: TaxIdentitiesService,
   ) {}
 
   async searchProducts(tenantId: string, user: AuthenticatedUser, q: string) {
@@ -220,20 +223,39 @@ export class PosService {
         throw new NotFoundException('Customer not found for tenant.');
       }
 
-      const inlineCustomerSnapshot = hasInlineDocumentType
-        ? buildInlineFiscalCustomerSnapshot(order.clientName, dto.documentType!, dto.documentNumber)
-        : null;
-      if (hasInlineDocumentType && !inlineCustomerSnapshot) {
-        if (!order.clientName?.trim()) {
-          throw new BadRequestException(
-            'La orden debe tener el nombre del cliente antes de confirmar los datos fiscales.',
-          );
-        }
+      if (hasInlineDocumentType && !order.clientName?.trim()) {
         throw new BadRequestException(
-          dto.documentType === DocumentType.RNC
-            ? 'El RNC indicado no es válido.'
-            : 'La cédula indicada no es válida.',
+          'La orden debe tener el nombre del cliente antes de confirmar los datos fiscales.',
         );
+      }
+
+      const verifiedIdentity = hasInlineDocumentType
+        ? this.taxIdentities.toVerificationSnapshot(
+            await this.taxIdentities.requireUsableIdentity(
+              {
+                tenantId,
+                documentType: dto.documentType!,
+                documentNumber: dto.documentNumber!,
+                contextType: TaxIdentityContextType.POS_ORDER,
+                contextId: order.id,
+                overrideId: dto.taxIdentityOverrideId,
+              },
+              {
+                db: tx,
+                consumeOverride: Boolean(dto.taxIdentityOverrideId),
+              },
+            ),
+          )
+        : null;
+      const inlineCustomerSnapshot = verifiedIdentity
+        ? buildInlineFiscalCustomerSnapshot(order.clientName, {
+            ...verifiedIdentity,
+            outcome:
+              verifiedIdentity.source === 'MANUAL_OVERRIDE' ? 'MANUAL_OVERRIDE' : 'VERIFIED',
+          })
+        : null;
+      if (verifiedIdentity && !inlineCustomerSnapshot) {
+        throw new BadRequestException('No se pudo construir la identidad fiscal verificada.');
       }
 
       const tenantFiscalSettings = await tx.tenant.findUnique({
@@ -277,16 +299,16 @@ export class PosService {
             documentType: updated.fiscalDocumentTypeSnapshot,
             previousCustomerId: order.customerId,
             customerId: order.customerId,
-            fiscalIdentitySource: fiscalDetails.customerSnapshot
-              ? fiscalDetails.customerSnapshot.id
-                ? 'REGISTERED_CUSTOMER'
-                : 'ORDER_INLINE'
-              : 'NONE',
-            customerNameSource: fiscalDetails.customerSnapshot
-              ? fiscalDetails.customerSnapshot.id
+            fiscalIdentitySource:
+              fiscalDetails.customerSnapshot?.verification?.source ??
+              (fiscalDetails.customerSnapshot?.id ? 'REGISTERED_CUSTOMER' : 'NONE'),
+            customerNameSource: fiscalDetails.customerSnapshot?.verification
+              ? 'VERIFIED_FISCAL_IDENTITY'
+              : fiscalDetails.customerSnapshot?.id
                 ? 'CUSTOMER_RECORD'
-                : 'SALES_ORDER_CLIENT_NAME'
-              : 'NONE',
+                : 'NONE',
+            operationalCustomerName: order.clientName,
+            fiscalCustomerName: fiscalDetails.customerSnapshot?.name ?? null,
             customerDocumentType: fiscalDetails.customerSnapshot?.documentType ?? null,
             customerDocumentLast4: fiscalDetails.customerSnapshot?.documentNumber.slice(-4) ?? null,
           },
@@ -484,6 +506,7 @@ export class PosService {
       const requiresConsumerIdentity =
         documentType === InvoiceDocumentType.CONSUMER_02 && netAmountBeforeTaxes.gte(250_000);
       const fiscalCustomerSnapshot = readFiscalCustomerSnapshot(order.fiscalCustomerSnapshot);
+      const hasVerifiedFiscalIdentity = Boolean(fiscalCustomerSnapshot?.verification);
       if (
         fiscalCustomerSnapshot &&
         fiscalCustomerSnapshot.id !== null &&
@@ -497,15 +520,16 @@ export class PosService {
         isFiscalCreditDocumentType(documentType) &&
         (!fiscalCustomerSnapshot ||
           (fiscalCustomerSnapshot.documentType !== DocumentType.RNC &&
-            fiscalCustomerSnapshot.documentType !== DocumentType.CEDULA))
+            fiscalCustomerSnapshot.documentType !== DocumentType.CEDULA) ||
+          !hasVerifiedFiscalIdentity)
       ) {
         throw new BadRequestException(
-          'B01 requiere confirmar un RNC o cédula válida antes de facturar.',
+          'B01 requiere confirmar un RNC o cédula verificado por DGII o validado manualmente por un administrador.',
         );
       }
-      if (requiresConsumerIdentity && !fiscalCustomerSnapshot) {
+      if (requiresConsumerIdentity && (!fiscalCustomerSnapshot || !hasVerifiedFiscalIdentity)) {
         throw new BadRequestException(
-          'Las facturas B02 de RD$250,000 o más antes de ITBIS requieren identificar al cliente.',
+          'Las facturas B02 de RD$250,000 o más antes de ITBIS requieren una identidad verificada.',
         );
       }
 
@@ -678,7 +702,10 @@ export class PosService {
               orderNumber: order?.orderNumber,
               status: invoice.status,
               destination: SalesOrderDestination.CASH_SALE,
-              clientName: fiscalCustomerSnapshot?.name ?? order.clientName ?? customer?.name,
+              clientName: order.clientName ?? customer?.name,
+              fiscalName: fiscalCustomerSnapshot?.name ?? null,
+              fiscalIdentitySource: fiscalCustomerSnapshot?.verification?.source ?? null,
+              fiscalDocumentLast4: fiscalCustomerSnapshot?.documentNumber.slice(-4) ?? null,
             },
           },
           {
@@ -699,7 +726,10 @@ export class PosService {
               orderNumber: order?.orderNumber,
               status: invoice.status,
               destination: SalesOrderDestination.CASH_SALE,
-              clientName: fiscalCustomerSnapshot?.name ?? order.clientName ?? customer?.name,
+              clientName: order.clientName ?? customer?.name,
+              fiscalName: fiscalCustomerSnapshot?.name ?? null,
+              fiscalIdentitySource: fiscalCustomerSnapshot?.verification?.source ?? null,
+              fiscalDocumentLast4: fiscalCustomerSnapshot?.documentNumber.slice(-4) ?? null,
             },
           },
           ...(order

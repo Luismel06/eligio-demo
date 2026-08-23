@@ -46,7 +46,7 @@ import {
   type SupplierInvoiceStatus,
   type SupplierPayment,
 } from '@/lib/api';
-import { isAdminSession } from '@/lib/authorization';
+import { canCreateSuppliers, isAdminSession } from '@/lib/authorization';
 import type { SupplierInvoiceOcrItem, SupplierInvoiceOcrResult } from '@/lib/supplier-invoice-ocr';
 import { formatCurrency, formatDate, formatDateTime } from '@/lib/utils';
 import { CancelReasonModal } from './cancel-reason-modal';
@@ -130,6 +130,7 @@ export function SupplierInvoicesView() {
   const session = useCurrentSession();
   const queryClient = useQueryClient();
   const admin = isAdminSession(session);
+  const canCreateSupplier = canCreateSuppliers(session);
   const [search, setSearch] = useState('');
   const [status, setStatus] = useState<'ALL' | SupplierInvoiceStatus | 'OVERDUE'>('ALL');
   const [showForm, setShowForm] = useState(false);
@@ -1184,7 +1185,7 @@ export function SupplierInvoicesView() {
                         la cédula para no duplicarlo.
                       </p>
                     </div>
-                    {admin ? (
+                    {canCreateSupplier ? (
                       <Button
                         type="button"
                         variant="outline"
@@ -1347,7 +1348,7 @@ export function SupplierInvoicesView() {
                           </option>
                         ))}
                       </select>
-                      {!purchaseOrderId && admin ? (
+                      {!purchaseOrderId && canCreateSupplier ? (
                         <Button
                           type="button"
                           variant="ghost"
@@ -1359,9 +1360,9 @@ export function SupplierInvoicesView() {
                           Registrar suplidor sin salir
                         </Button>
                       ) : null}
-                      {!purchaseOrderId && !admin ? (
+                      {!purchaseOrderId && !canCreateSupplier ? (
                         <p className="text-xs text-muted-foreground">
-                          Un administrador puede registrar un suplidor nuevo desde esta misma
+                          Un usuario autorizado puede registrar un suplidor nuevo desde esta misma
                           factura.
                         </p>
                       ) : null}
@@ -2216,62 +2217,62 @@ export function SupplierInvoicesView() {
         onRecognized={applyOcrResult}
       />
 
-      {admin ? (
-        <>
-          <SupplierQuickCreateDialog
-            open={quickSupplierOpen}
-            onOpenChange={setQuickSupplierOpen}
-            session={session}
-            existingSuppliers={suppliersQuery.data ?? []}
-            prefill={
-              ocrResult
-                ? {
-                    commercialName: ocrResult.supplierName,
-                    documentNumber: ocrResult.supplierDocument,
-                    documentType: inferSupplierDocumentType(ocrResult.supplierDocument),
-                    paymentTerms: ocrResult.paymentCondition,
-                  }
-                : undefined
+      {canCreateSupplier ? (
+        <SupplierQuickCreateDialog
+          open={quickSupplierOpen}
+          onOpenChange={setQuickSupplierOpen}
+          session={session}
+          existingSuppliers={suppliersQuery.data ?? []}
+          prefill={
+            ocrResult
+              ? {
+                  commercialName: ocrResult.supplierName,
+                  documentNumber: ocrResult.supplierDocument,
+                  documentType: inferSupplierDocumentType(ocrResult.supplierDocument),
+                  paymentTerms: ocrResult.paymentCondition,
+                }
+              : undefined
+          }
+          onCreated={(supplier) => {
+            setSupplierId(supplier.id);
+            toast.success(`${supplier.commercialName} quedó seleccionado para esta factura.`);
+          }}
+          onExistingSupplier={(supplier) => {
+            if (supplier.status !== 'ACTIVE') {
+              toast.error(
+                'Este suplidor existe, pero está inactivo. Reactívalo desde Suplidores antes de usarlo.',
+              );
+              return;
             }
-            onCreated={(supplier) => {
-              setSupplierId(supplier.id);
-              toast.success(`${supplier.commercialName} quedó seleccionado para esta factura.`);
-            }}
-            onExistingSupplier={(supplier) => {
-              if (supplier.status !== 'ACTIVE') {
-                toast.error(
-                  'Este suplidor existe, pero está inactivo. Reactívalo desde Suplidores antes de usarlo.',
-                );
-                return;
-              }
-              setSupplierId(supplier.id);
-              toast.success(`${supplier.commercialName} ya existía y fue seleccionado.`);
-            }}
-          />
+            setSupplierId(supplier.id);
+            toast.success(`${supplier.commercialName} ya existía y fue seleccionado.`);
+          }}
+        />
+      ) : null}
 
-          <QuickProductCreateDialog
-            open={Boolean(quickProductItem)}
-            onOpenChange={(open) => {
-              if (!open) setQuickProductItemKey(null);
-            }}
-            session={session}
-            existingProducts={productOptions}
-            supplierId={supplierId || undefined}
-            supplierName={selectedSupplierQuery.data?.commercialName}
-            prefill={
-              quickProductItem
-                ? {
-                    name: quickProductItem.ocrItem?.description,
-                    supplierSku: quickProductItem.ocrItem?.code,
-                    costNet: toOptionalNonNegativeNumber(quickProductItem.unitCostNet),
-                    taxRate: Number(quickProductItem.taxPercent || 0) / 100,
-                  }
-                : undefined
-            }
-            onCreated={applyQuickCreatedProduct}
-            onSelectExisting={useExistingProductFromQuickCreate}
-          />
-        </>
+      {admin ? (
+        <QuickProductCreateDialog
+          open={Boolean(quickProductItem)}
+          onOpenChange={(open) => {
+            if (!open) setQuickProductItemKey(null);
+          }}
+          session={session}
+          existingProducts={productOptions}
+          supplierId={supplierId || undefined}
+          supplierName={selectedSupplierQuery.data?.commercialName}
+          prefill={
+            quickProductItem
+              ? {
+                  name: quickProductItem.ocrItem?.description,
+                  supplierSku: quickProductItem.ocrItem?.code,
+                  costNet: toOptionalNonNegativeNumber(quickProductItem.unitCostNet),
+                  taxRate: Number(quickProductItem.taxPercent || 0) / 100,
+                }
+              : undefined
+          }
+          onCreated={applyQuickCreatedProduct}
+          onSelectExisting={useExistingProductFromQuickCreate}
+        />
       ) : null}
 
       <CancelReasonModal
