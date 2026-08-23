@@ -1,0 +1,5 @@
+SHELL=/bin/bash
+PATH=/usr/local/bin:/usr/bin:/bin
+
+# Padrón oficial DGII: domingo y reintento lunes a las 04:15, zona de VM2.
+15 4 * * 0,1 /bin/bash -o pipefail -c 'cd /opt/corestack/apps/rivnu/repo/CoreStackSystemsv1 && ./deploy/scripts/rivnu-dgii-production.sh sync-official 2>&1 | /usr/bin/logger -t rivnu-dgii-production-sync'

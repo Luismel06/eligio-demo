@@ -477,6 +477,7 @@ export class OrdersService {
         where: { id },
         data: {
           status: SalesOrderStatus.SENT_TO_CASHIER,
+          ...provisionalFiscalDetails,
           claimedById: null,
           claimedCashSessionId: null,
           claimedAt: null,
@@ -1352,6 +1353,7 @@ export class OrdersService {
       },
       data: {
         status: SalesOrderStatus.SENT_TO_CASHIER,
+        ...provisionalFiscalDetails,
         claimedById: null,
         claimedCashSessionId: null,
         claimedAt: null,

@@ -25,8 +25,9 @@ import { PosService } from '../src/modules/pos/pos.service';
 const tenantId = 'tenant-rivnu';
 const cashierId = 'cashier-1';
 const cashSessionId = 'cash-session-1';
+const verificationTimestamp = new Date().toISOString();
 
-function verifiedInlineFiscalSnapshot() {
+function verifiedInlineFiscalSnapshot(verifiedAt = verificationTimestamp) {
   return {
     id: null,
     name: 'Razón Social Verificada DGII',
@@ -37,7 +38,7 @@ function verifiedInlineFiscalSnapshot() {
       outcome: 'VERIFIED',
       source: 'DGII_OFFICIAL',
       sourceUpdatedAt: '2026-08-20T12:00:00.000Z',
-      verifiedAt: '2026-08-21T12:00:00.000Z',
+      verifiedAt,
       registryStatus: 'ACTIVO',
     },
   };
@@ -77,6 +78,7 @@ function cashierUser(): AuthenticatedUser {
 type HarnessOptions = {
   lockOrder?: boolean;
   sessionOpen?: boolean;
+  claimUpdateCount?: number;
   order?: Record<string, unknown>;
   customer?: Record<string, unknown> | null;
 };
@@ -132,6 +134,7 @@ function createHarness(options: HarnessOptions = {}) {
   const updates: Array<Record<string, unknown>> = [];
   const audits: Array<Record<string, unknown>> = [];
   const availabilityChecks: Array<{ tenantId: string; documentType: InvoiceDocumentType }> = [];
+  const salesOrderUpdateManyCalls: Array<Record<string, unknown>> = [];
   let reserveCalls = 0;
   let rawCall = 0;
 
@@ -145,7 +148,11 @@ function createHarness(options: HarnessOptions = {}) {
       return [{ id: cashSessionId }];
     },
     salesOrder: {
-      updateMany: async () => ({ count: 1 }),
+      updateMany: async (args: Record<string, unknown>) => {
+        salesOrderUpdateManyCalls.push(args);
+        return { count: options.claimUpdateCount ?? 1 };
+      },
+      findFirst: async () => baseOrder,
       findUniqueOrThrow: async () => baseOrder,
       update: async (args: { data: Record<string, unknown> }) => {
         updates.push(args.data);
@@ -213,7 +220,7 @@ function createHarness(options: HarnessOptions = {}) {
       if (!validateDominicanDocument(input.documentType, input.documentNumber)) {
         throw new BadRequestException('La identidad fiscal indicada no es válida.');
       }
-      const checkedAt = new Date('2026-08-21T12:00:00.000Z');
+      const checkedAt = new Date(verificationTimestamp);
       return {
         outcome: 'VERIFIED' as const,
         documentType: input.documentType,
@@ -253,6 +260,7 @@ function createHarness(options: HarnessOptions = {}) {
       updates,
       audits,
       availabilityChecks,
+      salesOrderUpdateManyCalls,
       reserveCalls: () => reserveCalls,
     },
   };
@@ -638,6 +646,58 @@ test('POS checkout accepts an inline B01 snapshot and reaches atomic sequence re
   );
 
   assert.equal(harness.calls.reserveCalls(), 1);
+});
+
+test('POS checkout rejects an expired fiscal identity snapshot before reserving an NCF', async () => {
+  const staleVerifiedAt = new Date(Date.now() - 31 * 60_000).toISOString();
+  const harness = createHarness({
+    order: {
+      fiscalPurpose: FiscalDocumentPurpose.FISCAL_CREDIT,
+      fiscalDocumentTypeSnapshot: InvoiceDocumentType.FISCAL_CREDIT_01,
+      fiscalCustomerSnapshot: verifiedInlineFiscalSnapshot(staleVerifiedAt),
+    },
+  });
+
+  await assert.rejects(
+    harness.service.completeSale(tenantId, cashierUser(), {
+      orderId: 'order-1',
+      paymentMethod: PaymentMethod.CASH,
+    } as never),
+    (error: unknown) => {
+      assert.equal(error instanceof BadRequestException, true);
+      assert.match((error as BadRequestException).message, /validación fiscal.*venció/i);
+      return true;
+    },
+  );
+
+  assert.equal(harness.calls.reserveCalls(), 0);
+});
+
+test('POS checkout cannot reclaim an expired order with its prior fiscal snapshot', async () => {
+  const harness = createHarness({
+    claimUpdateCount: 0,
+    order: {
+      claimExpiresAt: new Date(Date.now() - 1_000),
+      fiscalPurpose: FiscalDocumentPurpose.FISCAL_CREDIT,
+      fiscalDocumentTypeSnapshot: InvoiceDocumentType.FISCAL_CREDIT_01,
+      fiscalCustomerSnapshot: verifiedInlineFiscalSnapshot(),
+    },
+  });
+
+  await assert.rejects(
+    harness.service.completeSale(tenantId, cashierUser(), {
+      orderId: 'order-1',
+      paymentMethod: PaymentMethod.CASH,
+    } as never),
+    BadRequestException,
+  );
+
+  const claimWhere = harness.calls.salesOrderUpdateManyCalls[0].where as Record<string, unknown>;
+  assert.equal(claimWhere.status, SalesOrderStatus.IN_CASHIER);
+  assert.equal(claimWhere.claimedById, cashierId);
+  assert.equal(claimWhere.claimedCashSessionId, cashSessionId);
+  assert.deepEqual(Object.keys(claimWhere.claimExpiresAt as object), ['gt']);
+  assert.equal(harness.calls.reserveCalls(), 0);
 });
 
 test('POS checkout rejects pending B01 identity before consuming a sequence', async () => {

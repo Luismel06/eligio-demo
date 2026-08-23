@@ -100,10 +100,7 @@ test('order taking ignores requested B01 and persists a provisional B02 without 
   assert.equal(created.status, SalesOrderStatus.SENT_TO_CASHIER);
   assert.equal(capturedCreates[0].clientName, 'Nombre tomado en órdenes');
   assert.equal(capturedCreates[0].fiscalPurpose, FiscalDocumentPurpose.CONSUMER);
-  assert.equal(
-    capturedCreates[0].fiscalDocumentTypeSnapshot,
-    InvoiceDocumentType.CONSUMER_02,
-  );
+  assert.equal(capturedCreates[0].fiscalDocumentTypeSnapshot, InvoiceDocumentType.CONSUMER_02);
   assert.equal(capturedCreates[0].fiscalCustomerSnapshot, Prisma.JsonNull);
   assert.equal(tenantFiscalQueries, 0);
   assert.equal(sequenceQueries, 0);
@@ -189,10 +186,7 @@ test('credit order keeps its approved debtor flow but starts as provisional B02'
   assert.equal(created.status, SalesOrderStatus.CREATED);
   assert.equal(capturedCreates[0].customerId, customer.id);
   assert.equal(capturedCreates[0].fiscalPurpose, FiscalDocumentPurpose.CONSUMER);
-  assert.equal(
-    capturedCreates[0].fiscalDocumentTypeSnapshot,
-    InvoiceDocumentType.CONSUMER_02,
-  );
+  assert.equal(capturedCreates[0].fiscalDocumentTypeSnapshot, InvoiceDocumentType.CONSUMER_02);
   assert.equal(capturedCreates[0].fiscalCustomerSnapshot, Prisma.JsonNull);
   const nestedApproval = capturedCreates[0].creditApproval as {
     create: { customerId: string };
@@ -363,4 +357,77 @@ test('accepting a legacy B01 quotation resets it to provisional B02 without sequ
   assert.equal(updates[0].fiscalDocumentTypeSnapshot, InvoiceDocumentType.CONSUMER_02);
   assert.equal(updates[0].fiscalCustomerSnapshot, Prisma.JsonNull);
   assert.equal(sequenceQueries, 0);
+});
+
+test('releasing a claimed order clears its fiscal identity and restores provisional B02', async () => {
+  const updates: Array<Record<string, unknown>> = [];
+  const claimedOrder = {
+    id: 'order-claimed-1',
+    tenantId,
+    orderNumber: 'ORD-CLAIMED-1',
+    status: SalesOrderStatus.IN_CASHIER,
+    destination: SalesOrderDestination.CASH_SALE,
+    claimedById: 'cashier-1',
+    claimedCashSessionId: 'cash-session-1',
+    clientName: 'Cliente fiscal',
+    total: new Prisma.Decimal(118),
+    fiscalPurpose: FiscalDocumentPurpose.FISCAL_CREDIT,
+    fiscalDocumentTypeSnapshot: InvoiceDocumentType.FISCAL_CREDIT_01,
+    fiscalCustomerSnapshot: {
+      id: null,
+      name: 'Cliente fiscal',
+      documentType: 'RNC',
+      documentNumber: '101850043',
+      verification: {
+        outcome: 'VERIFIED',
+        source: 'DGII_OFFICIAL',
+        sourceUpdatedAt: '2026-08-20T12:00:00.000Z',
+        verifiedAt: '2026-08-21T12:00:00.000Z',
+        registryStatus: 'ACTIVO',
+      },
+    },
+  };
+  const tx = {
+    salesOrder: {
+      findFirst: async () => claimedOrder,
+      update: async (args: { data: Record<string, unknown> }) => {
+        updates.push(args.data);
+        return { ...claimedOrder, ...args.data };
+      },
+    },
+    employeeActivityLog: { create: async () => ({ id: 'log-1' }) },
+  };
+  const prisma = {
+    $transaction: async <T>(operation: (client: typeof tx) => Promise<T>) => operation(tx),
+  };
+  const service = new OrdersService(prisma as never);
+
+  await service.release(tenantId, adminUser(), claimedOrder.id);
+
+  assert.equal(updates[0].fiscalPurpose, FiscalDocumentPurpose.CONSUMER);
+  assert.equal(updates[0].fiscalDocumentTypeSnapshot, InvoiceDocumentType.CONSUMER_02);
+  assert.equal(updates[0].fiscalCustomerSnapshot, Prisma.JsonNull);
+});
+
+test('expiring a claim clears its fiscal identity before the order can be reclaimed', async () => {
+  const capturedUpdates: Array<Record<string, unknown>> = [];
+  const prisma = {
+    salesOrder: {
+      updateMany: async (args: Record<string, unknown>) => {
+        capturedUpdates.push(args);
+        return { count: 1 };
+      },
+    },
+  };
+  const service = new OrdersService(prisma as never);
+
+  await (
+    service as unknown as { releaseExpiredClaims: (selectedTenantId: string) => Promise<void> }
+  ).releaseExpiredClaims(tenantId);
+
+  const data = capturedUpdates[0].data as Record<string, unknown>;
+  assert.equal(data.status, SalesOrderStatus.SENT_TO_CASHIER);
+  assert.equal(data.fiscalPurpose, FiscalDocumentPurpose.CONSUMER);
+  assert.equal(data.fiscalDocumentTypeSnapshot, InvoiceDocumentType.CONSUMER_02);
+  assert.equal(data.fiscalCustomerSnapshot, Prisma.JsonNull);
 });

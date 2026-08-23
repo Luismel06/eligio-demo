@@ -6,6 +6,7 @@
   },
   "include": [
     "../src/**/*.ts",
+    "./orders-fiscal-intent.test.ts",
     "./pos-fiscal-security.test.ts",
     "./tax-identity-approval-dto.test.ts",
     "./tax-identity-approval.integration.test.ts",

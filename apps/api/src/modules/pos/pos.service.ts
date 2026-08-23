@@ -58,6 +58,7 @@ import { UpdatePosFiscalDetailsDto } from './dto/update-pos-fiscal-details.dto';
 
 const adminRoles: Role[] = [Role.ADMIN, Role.SUPER_ADMIN, Role.QORVEX_SUPER_ADMIN];
 const claimTtlMs = 30 * 60 * 1000;
+const fiscalIdentityFutureSkewMs = 60 * 1000;
 
 type ComputedSaleLine = {
   product: Product;
@@ -250,8 +251,7 @@ export class PosService {
       const inlineCustomerSnapshot = verifiedIdentity
         ? buildInlineFiscalCustomerSnapshot(order.clientName, {
             ...verifiedIdentity,
-            outcome:
-              verifiedIdentity.source === 'MANUAL_OVERRIDE' ? 'MANUAL_OVERRIDE' : 'VERIFIED',
+            outcome: verifiedIdentity.source === 'MANUAL_OVERRIDE' ? 'MANUAL_OVERRIDE' : 'VERIFIED',
           })
         : null;
       if (verifiedIdentity && !inlineCustomerSnapshot) {
@@ -506,6 +506,17 @@ export class PosService {
       const requiresConsumerIdentity =
         documentType === InvoiceDocumentType.CONSUMER_02 && netAmountBeforeTaxes.gte(250_000);
       const fiscalCustomerSnapshot = readFiscalCustomerSnapshot(order.fiscalCustomerSnapshot);
+      if (
+        fiscalCustomerSnapshot?.verification &&
+        !this.isFreshFiscalIdentityVerification(
+          fiscalCustomerSnapshot.verification.verifiedAt,
+          new Date(),
+        )
+      ) {
+        throw new BadRequestException(
+          'La validación fiscal de la orden venció. Confirma nuevamente los datos fiscales antes de cobrar.',
+        );
+      }
       const hasVerifiedFiscalIdentity = Boolean(fiscalCustomerSnapshot?.verification);
       if (
         fiscalCustomerSnapshot &&
@@ -829,17 +840,10 @@ export class PosService {
         tenantId,
         destination: SalesOrderDestination.CASH_SALE,
         invoiceId: null,
-        OR: [
-          { status: SalesOrderStatus.SENT_TO_CASHIER },
-          {
-            status: SalesOrderStatus.IN_CASHIER,
-            claimedById: userId,
-          },
-          {
-            status: SalesOrderStatus.IN_CASHIER,
-            claimExpiresAt: { lt: now },
-          },
-        ],
+        status: SalesOrderStatus.IN_CASHIER,
+        claimedById: userId,
+        claimedCashSessionId: cashSessionId,
+        claimExpiresAt: { gt: now },
       },
       data: {
         status: SalesOrderStatus.IN_CASHIER,
@@ -889,6 +893,16 @@ export class PosService {
         },
       },
     });
+  }
+
+  private isFreshFiscalIdentityVerification(verifiedAt: string, checkedAt: Date) {
+    const verifiedAtMs = Date.parse(verifiedAt);
+    if (!Number.isFinite(verifiedAtMs)) {
+      return false;
+    }
+
+    const ageMs = checkedAt.getTime() - verifiedAtMs;
+    return ageMs >= -fiscalIdentityFutureSkewMs && ageMs <= claimTtlMs;
   }
 
   private async computeSale(
