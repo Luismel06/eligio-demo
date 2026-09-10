@@ -23,7 +23,7 @@ export default function SettingsPage() {
     <div className="space-y-6">
       <ModuleHeader
         title="Configuracion"
-        description="Ajustes operativos de Ferreteria RIVNU sobre la plataforma CoreStack."
+        description="Ajustes operativos de EligioValdez Comercial."
       />
       <div className="grid gap-4 md:grid-cols-2">
         {settings.map((item) => (

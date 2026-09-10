@@ -27,7 +27,7 @@ export function EmployeeDetail({ employeeId }: { employeeId: string }) {
 
   return (
     <div className="space-y-6">
-      <ModuleHeader title="Empleado" description="Detalle operativo y permisos del usuario en Ferreteria RIVNU." />
+      <ModuleHeader title="Empleado" description="Detalle operativo y permisos del usuario en EligioValdez Comercial." />
 
       <Card>
         <CardHeader>

@@ -35,7 +35,7 @@ export function EmployeesView() {
     <div className="space-y-6">
       <ModuleHeader
         title="Empleados"
-        description="Usuarios operativos de Ferreteria RIVNU con roles y permisos por tenant."
+        description="Usuarios operativos de EligioValdez Comercial con roles y permisos por tenant."
       />
 
       <div className="flex justify-end">
@@ -49,7 +49,7 @@ export function EmployeesView() {
 
       <Card>
         <CardHeader>
-          <CardTitle>Equipo RIVNU</CardTitle>
+          <CardTitle>Equipo EligioValdez</CardTitle>
           <CardDescription>{employeesQuery.data?.length ?? 0} perfiles laborales registrados.</CardDescription>
         </CardHeader>
         <CardContent>

@@ -228,7 +228,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                   <Building2 className="h-5 w-5" />
                 </div>
                 <div className="min-w-0">
-                  <p className="truncate text-sm font-semibold">Ferreteria RIVNU</p>
+                  <p className="truncate text-sm font-semibold">EligioValdez Comercial</p>
                   <p className="truncate text-xs text-muted-foreground">Operacion del cliente</p>
                 </div>
               </div>
@@ -276,7 +276,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                   {session?.user.name.slice(0, 2).toUpperCase() ?? 'RV'}
                 </div>
                 <div className="hidden sm:block">
-                  <p className="text-sm font-medium">{session?.user.name ?? 'Ferreteria RIVNU'}</p>
+                  <p className="text-sm font-medium">{session?.user.name ?? 'EligioValdez Comercial'}</p>
                   <p className="text-xs text-muted-foreground">
                     {translateRole(session?.role) ?? 'Operacion'}
                   </p>
@@ -314,8 +314,8 @@ type PopupAlert = {
   href: string;
 };
 
-const alertTransitionStoragePrefix = 'rivnu:operational-alert-transitions:v1';
-const fiscalApprovalSeenStoragePrefix = 'rivnu:fiscal-approval-seen:v1';
+const alertTransitionStoragePrefix = 'eligiovaldez:operational-alert-transitions:v1';
+const fiscalApprovalSeenStoragePrefix = 'eligiovaldez:fiscal-approval-seen:v1';
 
 function fiscalApprovalSeenStorageKey(session: AuthSession) {
   return `${fiscalApprovalSeenStoragePrefix}:${session.tenantId}:${session.user.id}`;

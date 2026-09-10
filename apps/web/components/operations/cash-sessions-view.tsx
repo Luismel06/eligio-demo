@@ -173,7 +173,7 @@ export function CashSessionsView() {
     <div className="space-y-6">
       <ModuleHeader
         title="Sesiones de caja"
-        description="Apertura, control y cierre de caja de Ferreteria RIVNU."
+        description="Apertura, control y cierre de caja de EligioValdez Comercial."
       />
 
       {canOpenCashSession ? (

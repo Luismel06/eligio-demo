@@ -4,8 +4,8 @@ import './globals.css';
 import { Providers } from './providers';
 
 export const metadata: Metadata = {
-  title: 'Ferreteria RIVNU',
-  description: 'POS, facturacion e inventario para Ferreteria RIVNU.',
+  title: 'EligioValdez Comercial',
+  description: 'POS, facturacion e inventario para EligioValdez Comercial.',
   icons: {
     icon: '/favicon.ico',
     shortcut: '/favicon.ico',

@@ -142,7 +142,7 @@ export function QuotationsView() {
     <div className="space-y-6">
       <ModuleHeader
         title="Cotizaciones"
-        description="Gestion centralizada de cotizaciones RIVNU: pendientes, aceptadas y canceladas."
+        description="Gestion centralizada de cotizaciones de EligioValdez Comercial: pendientes, aceptadas y canceladas."
       />
 
       <Card>

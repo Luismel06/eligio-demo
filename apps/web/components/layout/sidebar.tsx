@@ -179,14 +179,14 @@ export function SidebarContent({
       >
         <div className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-white shadow-sm">
           <img
-            src="/tenants/RIVNU.jpeg"
-            alt="Logo Ferretería RIVNU"
+              src="/logo.png"
+              alt="Logo EligioValdez Comercial"
             className="h-full w-full object-cover"
           />
         </div>
         <div className={cn('min-w-0', collapsed && 'hidden')}>
-          <p className="truncate text-sm font-semibold">Ferretería RIVNU</p>
-          <p className="truncate text-xs text-slate-400">Powered by CoreStack</p>
+            <p className="truncate text-sm font-semibold">EligioValdez Comercial</p>
+            <p className="truncate text-xs text-slate-400">Operación comercial</p>
         </div>
       </div>
 
@@ -271,10 +271,10 @@ export function SidebarContent({
             )}
           >
             <Boxes className="h-4 w-4 text-[#f36c10]" />
-            <span className={cn(collapsed && 'hidden')}>CoreStack Core</span>
+            <span className={cn(collapsed && 'hidden')}>Centro de control</span>
           </div>
           <p className={cn('mt-2 text-xs leading-5 text-slate-400', collapsed && 'hidden')}>
-            Plataforma provista por CoreStack. Datos aislados por tenant.
+            Datos aislados por tenant.
           </p>
         </div>
       </div>

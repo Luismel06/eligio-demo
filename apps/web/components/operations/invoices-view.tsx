@@ -89,7 +89,7 @@ export function InvoicesView() {
     <div className="space-y-6">
       <ModuleHeader
         title="Facturas"
-        description="Facturas locales de Ferreteria RIVNU con NCF B01 o B02."
+        description="Facturas locales de EligioValdez Comercial con NCF B01 o B02."
       />
 
       <section className="grid gap-4 md:grid-cols-3">

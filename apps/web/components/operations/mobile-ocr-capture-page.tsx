@@ -155,7 +155,7 @@ export function MobileOcrCapturePage({ sessionId }: MobileOcrCapturePageProps) {
           <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-primary text-primary-foreground shadow-sm">
             <ScanText className="h-5 w-5" aria-hidden="true" />
           </span>
-          Ferretería RIVNU
+          EligioValdez Comercial
         </div>
 
         <Card className="overflow-hidden rounded-2xl border-primary/15 shadow-[0_24px_70px_-35px_rgb(15_23_42/0.45)]">

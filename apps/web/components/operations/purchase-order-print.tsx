@@ -70,7 +70,7 @@ export function PurchaseOrderPrint({
             </div>
           </div>
           <div className="text-right text-sm">
-            <p className="font-semibold">Ferretería RIVNU</p>
+            <p className="font-semibold">EligioValdez Comercial</p>
             <p>Moneda: DOP / RD$</p>
             <p>Fecha: {formatDate(order.createdAt)}</p>
           </div>

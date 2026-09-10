@@ -1,16 +1,16 @@
 services:
   postgres:
     image: postgres:16
-    container_name: corestack-postgres
+    container_name: eligio-demo-postgres
     restart: unless-stopped
     ports:
       - "5432:5432"
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:-corestack}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-corestack}
-      POSTGRES_DB: ${POSTGRES_DB:-corestack}
+      POSTGRES_USER: ${POSTGRES_USER:-eligio_demo}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-eligio_demo_local_only}
+      POSTGRES_DB: ${POSTGRES_DB:-eligio_demo}
     volumes:
-      - corestack_postgres_data:/var/lib/postgresql/data
+      - eligio_demo_postgres_data:/var/lib/postgresql/data
 
 volumes:
-  corestack_postgres_data:
+  eligio_demo_postgres_data:

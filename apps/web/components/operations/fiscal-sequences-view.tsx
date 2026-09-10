@@ -162,7 +162,7 @@ export function FiscalSequencesView() {
               </p>
               <p className="mt-1 text-xs leading-5 text-amber-900/80">
                 Copia exactamente el rango autorizado por DGII. El siguiente número puede ser mayor
-                que el inicio si ya utilizaste NCF fuera de RIVNU. Los rangos nunca pueden
+                que el inicio si ya utilizaste NCF fuera de EligioValdez Comercial. Los rangos nunca pueden
                 solaparse.
               </p>
             </div>
@@ -221,7 +221,7 @@ export function FiscalSequencesView() {
                 id="sequenceNext"
                 label="Siguiente a utilizar"
                 value={form.nextNumber}
-                hint="Déjalo igual al inicio salvo que ya hayas usado números fuera de RIVNU."
+                hint="Déjalo igual al inicio salvo que ya hayas usado números fuera de EligioValdez Comercial."
                 onChange={(value) => setForm((current) => ({ ...current, nextNumber: value }))}
               />
               <div className="space-y-2">

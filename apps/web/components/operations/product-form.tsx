@@ -221,14 +221,14 @@ export function ProductForm({ productId }: { productId?: string }) {
     <div className="space-y-6">
       <ModuleHeader
         title={productId ? 'Editar producto' : 'Nuevo producto'}
-        description="Datos persistidos en PostgreSQL para el catalogo operativo de Ferreteria RIVNU."
+        description="Datos persistidos en PostgreSQL para el catalogo operativo de EligioValdez Comercial."
       />
 
       <Card>
         <CardHeader>
           <CardTitle>Ficha del producto</CardTitle>
           <CardDescription>
-            CoreStack valida duplicados de SKU y codigo de barras dentro del tenant RIVNU.
+            La plataforma valida duplicados de SKU y codigo de barras dentro del tenant EligioValdez Comercial.
           </CardDescription>
         </CardHeader>
         <CardContent>

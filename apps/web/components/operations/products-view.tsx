@@ -270,7 +270,7 @@ export function ProductsView() {
     <div className="space-y-6">
       <ModuleHeader
         title="Productos"
-        description="Catalogo de productos/servicios de Ferreteria RIVNU, precios e inventario desde PostgreSQL."
+        description="Catalogo de productos/servicios de EligioValdez Comercial, precios e inventario desde PostgreSQL."
       />
 
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">

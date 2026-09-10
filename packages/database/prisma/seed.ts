@@ -30,7 +30,7 @@ function assertSeedAllowed() {
     throw new Error(
       [
         'Refusing to run the development seed in production.',
-        'This seed deletes existing data before recreating the CoreStack/RIVNU demo dataset.',
+        'This seed deletes existing data before recreating the EligioValdez Comercial demo dataset.',
         'Set ALLOW_PRODUCTION_SEED=true only for an intentional staging/demo reseed.',
       ].join(' '),
     );
@@ -136,23 +136,23 @@ async function main() {
     },
   });
 
-  const rivnuTenant = await prisma.tenant.create({
+  const eligiovaldezTenant = await prisma.tenant.create({
     data: {
-      name: 'Ferreteria RIVNU',
-      commercialName: 'Ferreteria RIVNU',
-      legalName: 'Ferreteria RIVNU SRL',
-      slug: 'ferreteria-rivnu',
-      rnc: '131000000',
-      email: 'admin@rivnu.local',
-      phone: '809-555-0100',
-      address: 'Av. Principal 102, Santo Domingo, Republica Dominicana',
+      name: 'EligioValdez Comercial',
+      commercialName: 'EligioValdez Comercial',
+      legalName: 'EligioValdez Comercial SRL (Demo)',
+      slug: 'eligiovaldez-comercial',
+      rnc: '000000000',
+      email: 'admin@eligiovaldez.local',
+      phone: '000-000-0000',
+      address: 'Direccion de demostracion, Santo Domingo, Republica Dominicana',
       branding: {
         create: {
-          logoUrl: '/tenants/Ferreteria_RIVNU.jpeg',
+          logoUrl: '/logo.png',
           primaryColor: '#111111',
           accentColor: '#f36c10',
-          loginTitle: 'Ferreteria RIVNU',
-          loginSubtitle: 'Acceso privado al POS, facturacion e inventario.',
+          loginTitle: 'EligioValdez Comercial',
+          loginSubtitle: 'Acceso de demostracion al POS, facturacion e inventario.',
         },
       },
     },
@@ -160,8 +160,8 @@ async function main() {
 
   const superAdmin = await prisma.user.create({
     data: {
-      email: 'superadmin@corestack.local',
-      name: 'Soporte CoreStack',
+      email: 'plataforma@eligiovaldez.local',
+      name: 'Soporte de plataforma',
       phone: '809-555-9001',
       passwordHash,
       memberships: {
@@ -179,13 +179,13 @@ async function main() {
 
   const admin = await prisma.user.create({
     data: {
-      email: 'admin@rivnu.local',
-      name: 'Administrador RIVNU',
-      phone: '809-555-0101',
+      email: 'admin@eligiovaldez.local',
+      name: 'Administrador EligioValdez',
+      phone: '000-000-0001',
       passwordHash,
       memberships: {
         create: {
-          tenantId: rivnuTenant.id,
+          tenantId: eligiovaldezTenant.id,
           role: Role.ADMIN,
           canUsePos: false,
           canOpenCashSession: false,
@@ -204,7 +204,7 @@ async function main() {
       },
       employeeProfiles: {
         create: {
-          tenantId: rivnuTenant.id,
+          tenantId: eligiovaldezTenant.id,
           employeeCode: 'RIV-ADM-001',
           jobTitle: 'Administrador general',
           hireDate: new Date('2025-02-01T00:00:00.000Z'),
@@ -218,13 +218,13 @@ async function main() {
 
   const cashier = await prisma.user.create({
     data: {
-      email: 'cajero@rivnu.local',
-      name: 'Cajero RIVNU',
-      phone: '809-555-0102',
+      email: 'cajero@eligiovaldez.local',
+      name: 'Cajero EligioValdez',
+      phone: '000-000-0002',
       passwordHash,
       memberships: {
         create: {
-          tenantId: rivnuTenant.id,
+          tenantId: eligiovaldezTenant.id,
           role: Role.CASHIER,
           canUsePos: true,
           canOpenCashSession: true,
@@ -235,7 +235,7 @@ async function main() {
       },
       employeeProfiles: {
         create: {
-          tenantId: rivnuTenant.id,
+          tenantId: eligiovaldezTenant.id,
           employeeCode: 'RIV-CAJ-001',
           jobTitle: 'Cajero principal',
           hireDate: new Date('2025-05-15T00:00:00.000Z'),
@@ -249,20 +249,20 @@ async function main() {
 
   const orderTaker = await prisma.user.create({
     data: {
-      email: 'ordenanza@rivnu.local',
-      name: 'Ordenanza RIVNU',
-      phone: '809-555-0103',
+      email: 'almacen@eligiovaldez.local',
+      name: 'Almacen EligioValdez',
+      phone: '000-000-0003',
       passwordHash,
       memberships: {
         create: {
-          tenantId: rivnuTenant.id,
+          tenantId: eligiovaldezTenant.id,
           role: Role.ORDER_TAKER,
           canTakeOrders: true,
         },
       },
       employeeProfiles: {
         create: {
-          tenantId: rivnuTenant.id,
+          tenantId: eligiovaldezTenant.id,
           employeeCode: 'RIV-ORD-001',
           jobTitle: 'Ordenanza / toma de ordenes',
           hireDate: new Date('2025-06-01T00:00:00.000Z'),
@@ -289,7 +289,7 @@ async function main() {
     ].map((name) =>
       prisma.productCategory.create({
         data: {
-          tenantId: rivnuTenant.id,
+          tenantId: eligiovaldezTenant.id,
           name,
           description: `Categoria operativa de ${name.toLowerCase()}.`,
         },
@@ -399,7 +399,7 @@ async function main() {
       barcode: 'QV-RIV-000007',
       barcodeType: BarcodeType.INTERNAL_CODE128,
       generatedBarcode: true,
-      brand: 'RIVNU',
+      brand: 'EligioValdez',
       unit: ProductUnit.POUND,
       price: 145,
       cost: 92,
@@ -558,7 +558,7 @@ async function main() {
     productRows.map((row) =>
       prisma.product.create({
         data: {
-          tenantId: rivnuTenant.id,
+          tenantId: eligiovaldezTenant.id,
           categoryId: categoryByName.get(row.category),
           name: row.name,
           sku: row.sku,
@@ -566,7 +566,7 @@ async function main() {
           barcodeType: row.barcodeType,
           generatedBarcode: row.generatedBarcode ?? false,
           barcodeCreatedById: row.generatedBarcode ? admin.id : null,
-          description: `${row.name} para ventas POS e inventario de Ferreteria RIVNU.`,
+          description: `${row.name} para ventas POS e inventario de EligioValdez Comercial.`,
           imageUrl: productImageByCategory.get(row.category),
           brand: row.brand,
           unit: row.unit,
@@ -587,15 +587,15 @@ async function main() {
 
   await prisma.inventoryMovement.createMany({
     data: products.map((product) => ({
-      tenantId: rivnuTenant.id,
+      tenantId: eligiovaldezTenant.id,
       productId: product.id,
       type: InventoryMovementType.INITIAL_STOCK,
       quantity: product.stock,
       previousStock: 0,
       newStock: product.stock,
       unitCost: product.cost,
-      reason: 'Inventario inicial RIVNU',
-      reference: 'SEED-RIVNU-INITIAL',
+      reason: 'Inventario inicial EligioValdez',
+      reference: 'SEED-ELIGIOVALDEZ-INITIAL',
       createdById: admin.id,
       createdAt: new Date('2026-06-01T13:00:00.000Z'),
     })),
@@ -604,7 +604,7 @@ async function main() {
   const customers = await Promise.all([
     prisma.customer.create({
       data: {
-        tenantId: rivnuTenant.id,
+        tenantId: eligiovaldezTenant.id,
         name: 'Constructora Duarte SRL',
         documentType: DocumentType.RNC,
         documentNumber: '131123456',
@@ -615,7 +615,7 @@ async function main() {
     }),
     prisma.customer.create({
       data: {
-        tenantId: rivnuTenant.id,
+        tenantId: eligiovaldezTenant.id,
         name: 'Servicios Electricos del Norte',
         documentType: DocumentType.RNC,
         documentNumber: '131654321',
@@ -626,7 +626,7 @@ async function main() {
     }),
     prisma.customer.create({
       data: {
-        tenantId: rivnuTenant.id,
+        tenantId: eligiovaldezTenant.id,
         name: 'Cliente Consumidor Final',
         documentType: DocumentType.CONSUMER_FINAL,
         status: CustomerStatus.ACTIVE,
@@ -636,15 +636,15 @@ async function main() {
 
   const cashRegister = await prisma.cashRegister.create({
     data: {
-      tenantId: rivnuTenant.id,
+      tenantId: eligiovaldezTenant.id,
       name: 'Caja Principal',
-      location: 'Mostrador RIVNU',
+      location: 'Mostrador EligioValdez',
     },
   });
 
   const cashSession = await prisma.cashSession.create({
     data: {
-      tenantId: rivnuTenant.id,
+      tenantId: eligiovaldezTenant.id,
       cashRegisterId: cashRegister.id,
       openedById: cashier.id,
       status: CashSessionStatus.OPEN,
@@ -655,7 +655,7 @@ async function main() {
 
   await prisma.cashMovement.create({
     data: {
-      tenantId: rivnuTenant.id,
+      tenantId: eligiovaldezTenant.id,
       cashSessionId: cashSession.id,
       userId: cashier.id,
       type: CashMovementType.OPENING,
@@ -671,13 +671,13 @@ async function main() {
   const seedB01AuthorizationNumber = 'SEED-ONLY-B01-0001';
   const seedB01ValidUntil = new Date('2026-12-31T00:00:00.000Z');
   const fiscalIssuerSnapshot = {
-    rnc: rivnuTenant.rnc,
-    legalName: rivnuTenant.legalName,
-    commercialName: rivnuTenant.commercialName,
-    address: rivnuTenant.address,
-    phone: rivnuTenant.phone,
-    email: rivnuTenant.email,
-    logoUrl: '/tenants/Ferreteria_RIVNU.jpeg',
+    rnc: eligiovaldezTenant.rnc,
+    legalName: eligiovaldezTenant.legalName,
+    commercialName: eligiovaldezTenant.commercialName,
+    address: eligiovaldezTenant.address,
+    phone: eligiovaldezTenant.phone,
+    email: eligiovaldezTenant.email,
+    logoUrl: '/logo.png',
     pointOfSale: cashRegister.name,
     pointOfSaleLocation: cashRegister.location,
   };
@@ -685,28 +685,28 @@ async function main() {
   const [consumerSequence, fiscalCreditSequence] = await Promise.all([
     prisma.fiscalSequence.create({
       data: {
-        tenantId: rivnuTenant.id,
+        tenantId: eligiovaldezTenant.id,
         documentType: InvoiceDocumentType.CONSUMER_02,
         prefix: 'B02',
         startNumber: 1,
         endNumber: 100,
         nextNumber: 3,
         authorizationNumber: seedB02AuthorizationNumber,
-        issuerTaxId: rivnuTenant.rnc,
+        issuerTaxId: eligiovaldezTenant.rnc,
         validUntil: null,
         status: FiscalSequenceStatus.ACTIVE,
       },
     }),
     prisma.fiscalSequence.create({
       data: {
-        tenantId: rivnuTenant.id,
+        tenantId: eligiovaldezTenant.id,
         documentType: InvoiceDocumentType.FISCAL_CREDIT_01,
         prefix: 'B01',
         startNumber: 1,
         endNumber: 100,
         nextNumber: 2,
         authorizationNumber: seedB01AuthorizationNumber,
-        issuerTaxId: rivnuTenant.rnc,
+        issuerTaxId: eligiovaldezTenant.rnc,
         validUntil: seedB01ValidUntil,
         status: FiscalSequenceStatus.ACTIVE,
       },
@@ -740,7 +740,7 @@ async function main() {
 
   const pendingSalesOrder = await prisma.salesOrder.create({
     data: {
-      tenantId: rivnuTenant.id,
+      tenantId: eligiovaldezTenant.id,
       customerId: customers[2].id,
       orderNumber: 'ORD-20260617-0001',
       status: SalesOrderStatus.SENT_TO_CASHIER,
@@ -802,7 +802,7 @@ async function main() {
 
   const paidInvoice = await prisma.invoice.create({
     data: {
-      tenantId: rivnuTenant.id,
+      tenantId: eligiovaldezTenant.id,
       customerId: customers[2].id,
       documentType: InvoiceDocumentType.CONSUMER_02,
       invoiceNumber: 'RIV-B0200000001',
@@ -848,7 +848,7 @@ async function main() {
 
   await prisma.payment.create({
     data: {
-      tenantId: rivnuTenant.id,
+      tenantId: eligiovaldezTenant.id,
       invoiceId: paidInvoice.id,
       method: PaymentMethod.CASH,
       amount: paidAmounts.total,
@@ -861,7 +861,7 @@ async function main() {
 
   await prisma.cashMovement.create({
     data: {
-      tenantId: rivnuTenant.id,
+      tenantId: eligiovaldezTenant.id,
       cashSessionId: cashSession.id,
       userId: cashier.id,
       type: CashMovementType.SALE_PAYMENT,
@@ -895,7 +895,7 @@ async function main() {
 
   await prisma.invoice.create({
     data: {
-      tenantId: rivnuTenant.id,
+      tenantId: eligiovaldezTenant.id,
       customerId: customers[1].id,
       documentType: InvoiceDocumentType.FISCAL_CREDIT_01,
       invoiceNumber: 'RIV-B0100000001',
@@ -956,7 +956,7 @@ async function main() {
 
   await prisma.invoice.create({
     data: {
-      tenantId: rivnuTenant.id,
+      tenantId: eligiovaldezTenant.id,
       customerId: customers[0].id,
       documentType: InvoiceDocumentType.CONSUMER_02,
       invoiceNumber: 'RIV-B0200000002',
@@ -1001,7 +1001,7 @@ async function main() {
   await prisma.employeeActivityLog.createMany({
     data: [
       {
-        tenantId: rivnuTenant.id,
+        tenantId: eligiovaldezTenant.id,
         userId: orderTaker.id,
         action: EmployeeLogAction.CREATE_SALES_ORDER,
         entity: 'SalesOrder',
@@ -1011,7 +1011,7 @@ async function main() {
         createdAt: new Date('2026-06-17T14:45:00.000Z'),
       },
       {
-        tenantId: rivnuTenant.id,
+        tenantId: eligiovaldezTenant.id,
         userId: orderTaker.id,
         action: EmployeeLogAction.SEND_SALES_ORDER_TO_CASHIER,
         entity: 'SalesOrder',
@@ -1021,7 +1021,7 @@ async function main() {
         createdAt: new Date('2026-06-17T14:46:00.000Z'),
       },
       {
-        tenantId: rivnuTenant.id,
+        tenantId: eligiovaldezTenant.id,
         userId: cashier.id,
         cashSessionId: cashSession.id,
         action: EmployeeLogAction.OPEN_CASH_SESSION,
@@ -1032,7 +1032,7 @@ async function main() {
         createdAt: new Date('2026-06-17T12:00:00.000Z'),
       },
       {
-        tenantId: rivnuTenant.id,
+        tenantId: eligiovaldezTenant.id,
         userId: cashier.id,
         cashSessionId: cashSession.id,
         action: EmployeeLogAction.CREATE_SALE,
@@ -1044,7 +1044,7 @@ async function main() {
         createdAt: now,
       },
       {
-        tenantId: rivnuTenant.id,
+        tenantId: eligiovaldezTenant.id,
         userId: cashier.id,
         cashSessionId: cashSession.id,
         action: EmployeeLogAction.ISSUE_INVOICE,
@@ -1056,7 +1056,7 @@ async function main() {
         createdAt: now,
       },
       {
-        tenantId: rivnuTenant.id,
+        tenantId: eligiovaldezTenant.id,
         userId: admin.id,
         action: EmployeeLogAction.ADD_PRODUCT,
         entity: 'Product',
@@ -1069,9 +1069,9 @@ async function main() {
 
   await prisma.importBatch.create({
     data: {
-      tenantId: rivnuTenant.id,
+      tenantId: eligiovaldezTenant.id,
       type: ImportType.PRODUCTS,
-      filename: 'plantilla-productos-rivnu.xlsx',
+      filename: 'plantilla-productos-eligiovaldez.xlsx',
       status: ImportStatus.DRAFT,
       totalRows: 0,
       createdById: admin.id,
@@ -1081,14 +1081,14 @@ async function main() {
   await prisma.auditLog.createMany({
     data: [
       {
-        tenantId: rivnuTenant.id,
+        tenantId: eligiovaldezTenant.id,
         userId: admin.id,
-        action: 'RIVNU_SEED_CREATED',
+        action: 'ELIGIOVALDEZ_SEED_CREATED',
         entity: 'Tenant',
-        entityId: rivnuTenant.id,
+        entityId: eligiovaldezTenant.id,
         metadata: {
           source: 'development-seed',
-          tenant: 'Ferreteria RIVNU',
+          tenant: 'EligioValdez Comercial',
           poweredBy: 'CoreStack',
         },
       },
@@ -1100,17 +1100,17 @@ async function main() {
         entityId: coreStackTenant.id,
         metadata: {
           source: 'development-seed',
-          note: 'CoreStack es proveedor/core, no tenant operativo de RIVNU.',
+          note: 'El tenant de plataforma es interno; EligioValdez Comercial es el tenant operativo de demo.',
         },
       },
     ],
   });
 
-  console.log(`Seed completed for tenant ${rivnuTenant.name} (${rivnuTenant.id})`);
-  console.log(`RIVNU admin login: admin@rivnu.local / ${demoPassword}`);
-  console.log(`RIVNU cashier login: cajero@rivnu.local / ${demoPassword}`);
-  console.log(`RIVNU ordenanza login: ordenanza@rivnu.local / ${demoPassword}`);
-  console.log(`CoreStack platform login: superadmin@corestack.local / ${demoPassword}`);
+  console.log(`Seed completed for tenant ${eligiovaldezTenant.name} (${eligiovaldezTenant.id})`);
+  console.log(`EligioValdez admin login: admin@eligiovaldez.local / ${demoPassword}`);
+  console.log(`EligioValdez cashier login: cajero@eligiovaldez.local / ${demoPassword}`);
+  console.log(`EligioValdez almacen login: almacen@eligiovaldez.local / ${demoPassword}`);
+  console.log(`Platform admin login: plataforma@eligiovaldez.local / ${demoPassword}`);
 }
 
 main()

@@ -1,6 +1,6 @@
-# CoreStack
+# EligioValdez Comercial
 
-CoreStack is a custom SaaS/ERP foundation for multi-company business management in the Dominican Republic. This repository intentionally does not use Odoo, Supabase, fake DGII logic, microservices, or premature infrastructure complexity.
+EligioValdez Comercial is an independent demo built on the existing multi-tenant SaaS/ERP foundation for business management in the Dominican Republic. This repository intentionally does not use Odoo, Supabase Auth, fake DGII logic, microservices, or premature infrastructure complexity.
 
 ## Stack
 
@@ -80,12 +80,12 @@ After running migrations and seed:
 curl http://localhost:4000/health
 ```
 
-Demo credentials:
+Demo credentials for the isolated EligioValdez Comercial seed:
 
 ```text
-RIVNU admin: admin@rivnu.local / DemoPassword123!
-RIVNU cashier: cajero@rivnu.local / DemoPassword123!
-CoreStack platform: superadmin@corestack.local / DemoPassword123!
+EligioValdez admin: admin@eligiovaldez.local / DemoPassword123!
+EligioValdez cashier: cajero@eligiovaldez.local / DemoPassword123!
+EligioValdez almacen: almacen@eligiovaldez.local / DemoPassword123!
 ```
 
 Login and call protected endpoints:
@@ -93,11 +93,11 @@ Login and call protected endpoints:
 ```bash
 TOKEN=$(curl -s -X POST http://localhost:4000/auth/login \
   -H "Content-Type: application/json" \
-  -d '{"email":"admin@rivnu.local","password":"DemoPassword123!"}' | jq -r .accessToken)
+  -d '{"email":"admin@eligiovaldez.local","password":"DemoPassword123!"}' | jq -r .accessToken)
 
 TENANT_ID=$(curl -s -X POST http://localhost:4000/auth/login \
   -H "Content-Type: application/json" \
-  -d '{"email":"admin@rivnu.local","password":"DemoPassword123!"}' | jq -r '.memberships[0].tenantId')
+  -d '{"email":"admin@eligiovaldez.local","password":"DemoPassword123!"}' | jq -r '.memberships[0].tenantId')
 
 curl -H "Authorization: Bearer $TOKEN" \
   -H "x-tenant-id: $TENANT_ID" \
@@ -113,13 +113,13 @@ Tenant-scoped business endpoints require both `Authorization: Bearer <token>` an
 - The dashboard stores the demo JWT in local storage and fetches real summary data from the API.
 - Operational modules for dashboard, POS, products, customers, invoices, employees, cash logs, cash sessions, imports and fiscal sequences read/write through the API using PostgreSQL data.
 
-## RIVNU Data And CoreStack Core
+## Demo Data And Platform Core
 
-The current seed creates the operational tenant `Ferreteria RIVNU` and a separate internal provider tenant `CoreStack`.
+The current seed creates the operational tenant `EligioValdez Comercial` and a separate internal platform tenant.
 
-RIVNU users only operate RIVNU tenant data: POS, invoices, customers, products, inventory, employees, cash sessions, cash movements and fiscal sequences all require tenant context. CoreStack is the platform/core provider and appears in the UI as a secondary "Powered by CoreStack" brand, not as the customer business.
+EligioValdez users only operate their tenant data: POS, invoices, customers, products, inventory, employees, cash sessions, cash movements and fiscal sequences all require tenant context. The platform tenant remains internal and is not part of the customer branding.
 
-The seed data is persisted in PostgreSQL and is not hardcoded in the frontend. It is a development starting dataset for RIVNU operations: hardware-store products, barcodes, opening stock, customers, cash session, fiscal sequences, paid/pending/cancelled invoices, payments and employee logs. It is not RIVNU's historical production data. When the client provides real catalog/customers/opening inventory, it should be loaded through the API or the prepared import module.
+The seed data is persisted in PostgreSQL and is not hardcoded in the frontend. It is a fictional development starting dataset for EligioValdez operations: hardware-store products, barcodes, opening stock, customers, cash session, fiscal sequences, paid/pending/cancelled invoices, payments and employee logs. It is not production data. When the client provides real catalog/customers/opening inventory, it should be loaded through the API or the prepared import module.
 
 ## Multitenancy
 
@@ -149,7 +149,7 @@ Business modules are protected by tenant membership. Write operations also requi
 - Invoices: company admin, manager, accountant, cashier depending on action.
 - Audit logs: company admin or manager.
 
-`SUPER_ADMIN` / `QORVEX_SUPER_ADMIN` are platform-level roles. RIVNU tenant employees use roles such as `ADMIN`, `CASHIER`, `INVENTORY` and permission booleans like `canUsePos`, `canOpenCashSession`, `canManageProducts`, and `canManageEmployees`.
+`SUPER_ADMIN` / `QORVEX_SUPER_ADMIN` are platform-level roles. EligioValdez tenant employees use roles such as `ADMIN`, `CASHIER`, `INVENTORY` and permission booleans like `canUsePos`, `canOpenCashSession`, `canManageProducts`, and `canManageEmployees`.
 
 ## Audit
 

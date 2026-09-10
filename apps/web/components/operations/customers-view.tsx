@@ -309,7 +309,7 @@ export function CustomersView() {
     <div className="space-y-6">
       <ModuleHeader
         title="Clientes"
-        description="Clientes fiscales y comerciales de Ferreteria RIVNU cargados desde PostgreSQL."
+        description="Clientes fiscales y comerciales de EligioValdez Comercial cargados desde PostgreSQL."
       />
 
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">

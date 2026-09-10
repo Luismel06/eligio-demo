@@ -18,7 +18,7 @@ export function SessionRequired({ session }: { session: AuthSession | null }) {
       <CardHeader>
         <CardTitle>Sesion requerida</CardTitle>
         <CardDescription>
-          Inicia sesion como usuario autorizado de Ferreteria RIVNU para consultar este modulo.
+          Inicia sesion como usuario autorizado de EligioValdez Comercial para consultar este modulo.
         </CardDescription>
       </CardHeader>
       <CardContent>

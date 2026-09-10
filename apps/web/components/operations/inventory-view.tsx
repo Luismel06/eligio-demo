@@ -43,7 +43,7 @@ export function InventoryView() {
     <div className="space-y-6">
       <ModuleHeader
         title="Inventario"
-        description="Stock y movimientos de Ferreteria RIVNU consultados directamente desde PostgreSQL."
+        description="Stock y movimientos de EligioValdez Comercial consultados directamente desde PostgreSQL."
       />
 
       <section className="grid gap-4 md:grid-cols-3">

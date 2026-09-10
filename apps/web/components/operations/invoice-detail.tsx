@@ -75,7 +75,7 @@ export function InvoiceDetail({
       ) {
         event.preventDefault();
         toast.warning(
-          'La vista previa no se imprime con Ctrl+P. Usa la acción de impresión autorizada de RIVNU.',
+          'La vista previa no se imprime con Ctrl+P. Usa la acción de impresión autorizada de EligioValdez Comercial.',
         );
       }
     };
@@ -171,7 +171,7 @@ export function InvoiceDetail({
             IMPRESIÓN BLOQUEADA.{' '}
             {printBlockReason ??
               printPermissionReason ??
-              'USE EL BOTÓN DE IMPRESIÓN AUTORIZADA DE RIVNU.'}
+              'USE EL BOTÓN DE IMPRESIÓN AUTORIZADA DE ELIGIOVALDEZ COMERCIAL.'}
           </div>
         ) : null}
         <div className="mt-4 print:hidden">
@@ -221,7 +221,7 @@ export function InvoiceDetail({
           </div>
           <div className="hidden p-8 text-center font-bold print:block">
             IMPRESIÓN BLOQUEADA. LA VISTA PREVIA NO ES UN COMPROBANTE IMPRIMIBLE. USE LA ACCIÓN
-            AUTORIZADA DE RIVNU.
+            AUTORIZADA DE ELIGIOVALDEZ COMERCIAL.
           </div>
         </CardContent>
       </Card>
@@ -452,7 +452,7 @@ function Receipt({
 
       <div className="pt-2 text-center text-xs">
         <p className="font-bold">{destination}</p>
-        <p className="text-zinc-500">Powered by CoreStack</p>
+        <p className="text-zinc-500">EligioValdez Comercial</p>
       </div>
     </section>
   );

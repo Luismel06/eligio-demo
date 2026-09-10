@@ -1652,7 +1652,7 @@ const apiUrl = process.env.NEXT_PUBLIC_API_URL;
 
 if (!apiUrl) {
   throw new Error(
-    'NEXT_PUBLIC_API_URL is required to connect the frontend with the CoreStack API.',
+    'NEXT_PUBLIC_API_URL is required to connect the frontend with the application API.',
   );
 }
 

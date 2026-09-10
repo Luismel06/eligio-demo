@@ -88,7 +88,7 @@ export function ReceivableCustomerStatementPrint({
               Estado de cuenta por cobrar
             </p>
             <h2 className="mt-2 text-2xl font-bold">{session.tenantName}</h2>
-            <p className="mt-1 text-sm text-zinc-600">Ferretería RIVNU</p>
+            <p className="mt-1 text-sm text-zinc-600">EligioValdez Comercial</p>
           </div>
           <div className="text-sm sm:text-right">
             <p>
@@ -243,7 +243,7 @@ export function ReceivableCustomerStatementPrint({
         </section>
 
         <footer className="border-t border-zinc-200 pt-4 text-xs leading-5 text-zinc-500">
-          Documento generado por Qorvex para {session.tenantName}. Los pagos anulados se conservan
+          Documento generado para {session.tenantName}. Los pagos anulados se conservan
           en el historial para fines de auditoría.
         </footer>
       </article>

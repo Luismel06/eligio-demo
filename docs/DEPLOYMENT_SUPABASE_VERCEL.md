@@ -1,8 +1,8 @@
-# Despliegue temporal con Supabase PostgreSQL y Vercel
+# Despliegue independiente con Supabase PostgreSQL y Vercel
 
 Fecha de corte: 2026-06-21
 
-Esta guia explica como ejecutar CoreStack usando Supabase solo como PostgreSQL gestionado y Vercel como plataforma temporal para web/API. La logica de negocio debe seguir en NestJS. El frontend debe seguir hablando con la API NestJS. No se usa Supabase Auth, Supabase REST ni acceso directo a tablas desde el frontend en esta fase.
+Esta guia explica como ejecutar EligioValdez Comercial usando un proyecto Supabase independiente solo como PostgreSQL gestionado y dos proyectos Vercel separados para web/API. La logica de negocio debe seguir en NestJS. El frontend debe seguir hablando con la API NestJS. No se usa Supabase Auth, Supabase REST ni acceso directo a tablas desde el frontend.
 
 ## 1. Arquitectura temporal
 
@@ -24,8 +24,8 @@ Supabase se usa solo como Postgres porque el sistema ya tiene auth, permisos, ai
 
 Regla de mantenimiento:
 
-- `corestack-api`: base de datos, Auth, Prisma, JWT, CORS, backend y logica de negocio.
-- `corestack-web`: UI, login page, dashboard, POS, formularios y `NEXT_PUBLIC_API_URL`.
+- `eligio-demo-api`: Prisma, JWT, CORS, backend y logica de negocio; la base sigue siendo Supabase PostgreSQL.
+- `eligio-demo-web`: UI, login page, dashboard, POS, formularios y `NEXT_PUBLIC_API_URL`.
 - Cambios de codigo: push/merge a `main` redeploya los proyectos configurados en Vercel.
 - Cambios de variables: actualizar Vercel Settings > Environment Variables y redeploy manual.
 - Cambios de Prisma schema: crear migracion local, revisar SQL, aplicar con `db:migrate:deploy` en Supabase y redeployar API si hace falta.
@@ -35,14 +35,12 @@ Regla de mantenimiento:
 Valores publicos/no secretos:
 
 ```text
-Project Ref: ofiajrknxhtquctgrysr
-Project URL: https://ofiajrknxhtquctgrysr.supabase.co
-REST URL: https://ofiajrknxhtquctgrysr.supabase.co/rest/v1/
-JWKS URL: https://ofiajrknxhtquctgrysr.supabase.co/auth/v1/.well-known/jwks.json
-Database host directo: db.ofiajrknxhtquctgrysr.supabase.co
+Project Ref: YOUR_INDEPENDENT_PROJECT_REF
+Project URL: https://YOUR_INDEPENDENT_PROJECT_REF.supabase.co
+Database host directo: db.YOUR_INDEPENDENT_PROJECT_REF.supabase.co
 Database: postgres
 Database user: postgres
-Pooler host: aws-1-us-east-2.pooler.supabase.com
+Pooler host: YOUR_SUPABASE_POOLER_HOST
 ```
 
 No escribas la contrasena real en codigo, README, documentacion ni commits. Si la contrasena contiene `@`, en URLs PostgreSQL debe ir como `%40`.
@@ -52,26 +50,18 @@ No escribas la contrasena real en codigo, README, documentacion ni commits. Si l
 Configurar en `.env`, `.env.local`, `.env.production.local` o en Vercel Environment Variables:
 
 ```env
-DATABASE_URL="postgresql://postgres.ofiajrknxhtquctgrysr:YOUR_URL_ENCODED_PASSWORD@aws-1-us-east-2.pooler.supabase.com:6543/postgres?pgbouncer=true&sslmode=require"
-DIRECT_URL="postgresql://postgres.ofiajrknxhtquctgrysr:YOUR_URL_ENCODED_PASSWORD@aws-1-us-east-2.pooler.supabase.com:5432/postgres?sslmode=require"
-JWT_SECRET="replace-with-corestack-secret"
+DATABASE_URL="postgresql://postgres.YOUR_INDEPENDENT_PROJECT_REF:YOUR_URL_ENCODED_PASSWORD@YOUR_SUPABASE_POOLER_HOST:6543/postgres?pgbouncer=true&sslmode=require"
+DIRECT_URL="postgresql://postgres.YOUR_INDEPENDENT_PROJECT_REF:YOUR_URL_ENCODED_PASSWORD@YOUR_SUPABASE_DB_HOST:5432/postgres?sslmode=require"
+JWT_SECRET="replace-with-independent-demo-secret"
 JWT_EXPIRES_IN="8h"
 CORS_ORIGIN="http://localhost:3000,https://YOUR_FRONTEND_VERCEL_URL"
 NODE_ENV="production"
 ```
 
-Opcionales para futuro, no usados para la logica principal actual:
-
-```env
-SUPABASE_URL="https://ofiajrknxhtquctgrysr.supabase.co"
-SUPABASE_SECRET_KEY="replace-with-secret-key"
-SUPABASE_JWKS_URL="https://ofiajrknxhtquctgrysr.supabase.co/auth/v1/.well-known/jwks.json"
-```
-
 Reglas:
 
-- `JWT_SECRET` debe ser propio de CoreStack, no el JWT secret de Supabase.
-- `SUPABASE_SECRET_KEY` nunca debe estar en frontend ni empezar con `NEXT_PUBLIC_`.
+- `JWT_SECRET` debe ser propio de EligioValdez Comercial y nunca el JWT secret de Supabase.
+- No configurar Supabase Auth, Supabase REST, Supabase Storage ni variables `NEXT_PUBLIC_SUPABASE_*`.
 - No usar `*` en `CORS_ORIGIN` en produccion.
 
 ## 4. Variables requeridas para web
@@ -99,13 +89,13 @@ La opción **Capturar con el teléfono** genera un QR temporal de 10 minutos. El
 `DATABASE_URL` usa el pooler transaction-mode y es la URL para runtime/serverless:
 
 ```env
-DATABASE_URL="postgresql://postgres.ofiajrknxhtquctgrysr:YOUR_URL_ENCODED_PASSWORD@aws-1-us-east-2.pooler.supabase.com:6543/postgres?pgbouncer=true&sslmode=require"
+DATABASE_URL="postgresql://postgres.YOUR_INDEPENDENT_PROJECT_REF:YOUR_URL_ENCODED_PASSWORD@YOUR_SUPABASE_POOLER_HOST:6543/postgres?pgbouncer=true&sslmode=require"
 ```
 
 `DIRECT_URL` se usa para migraciones Prisma:
 
 ```env
-DIRECT_URL="postgresql://postgres.ofiajrknxhtquctgrysr:YOUR_URL_ENCODED_PASSWORD@aws-1-us-east-2.pooler.supabase.com:5432/postgres?sslmode=require"
+DIRECT_URL="postgresql://postgres.YOUR_INDEPENDENT_PROJECT_REF:YOUR_URL_ENCODED_PASSWORD@YOUR_SUPABASE_DB_HOST:5432/postgres?sslmode=require"
 ```
 
 Resumen:
@@ -144,7 +134,7 @@ No ejecutes seed contra Supabase real/produccion salvo que sea una base staging/
 
 ## 7. Seed
 
-El seed de desarrollo borra tablas y recrea datos demo de CoreStack/Ferreteria RIVNU. Ahora esta protegido:
+El seed de desarrollo borra tablas y recrea datos demo de EligioValdez Comercial. Ahora esta protegido:
 
 ```text
 NODE_ENV=production
@@ -174,8 +164,8 @@ corepack pnpm dev
 Variables locales Docker:
 
 ```env
-DATABASE_URL="postgresql://corestack:corestack@localhost:5432/corestack?schema=public"
-DIRECT_URL="postgresql://corestack:corestack@localhost:5432/corestack?schema=public"
+DATABASE_URL="postgresql://eligio_demo:eligio_demo@localhost:5432/eligio_demo?schema=public"
+DIRECT_URL="postgresql://eligio_demo:eligio_demo@localhost:5432/eligio_demo?schema=public"
 NEXT_PUBLIC_API_URL="http://localhost:4000"
 # Para probar con un teléfono, reemplazar por una URL HTTPS pública temporal.
 NEXT_PUBLIC_APP_URL=""
@@ -196,7 +186,7 @@ NODE_ENV="development"
 ### Proyecto web
 
 ```text
-Name: corestack-web
+Name: eligio-demo-web
 Root Directory: apps/web
 Framework: Next.js
 Install Command: cd ../.. && corepack pnpm install --frozen-lockfile
@@ -214,7 +204,7 @@ NODE_ENV=production
 ### Proyecto API
 
 ```text
-Name: corestack-api
+Name: eligio-demo-api
 Root Directory: apps/api
 Runtime: Node.js / Vercel Functions
 Install Command: cd ../.. && corepack enable && corepack pnpm install --frozen-lockfile
@@ -274,7 +264,7 @@ Login:
 ```bash
 curl -X POST https://YOUR_API_VERCEL_URL/auth/login \
   -H "Content-Type: application/json" \
-  -d "{\"email\":\"admin@rivnu.local\",\"password\":\"DemoPassword123!\"}"
+  -d "{\"email\":\"admin@eligiovaldez.local\",\"password\":\"DemoPassword123!\"}"
 ```
 
 Dashboard:

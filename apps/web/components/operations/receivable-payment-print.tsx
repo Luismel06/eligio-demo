@@ -95,7 +95,7 @@ export function ReceivablePaymentPrint({
               Recibo de abono
             </p>
             <h2 className="mt-2 text-2xl font-bold">{session.tenantName}</h2>
-            <p className="mt-1 text-sm text-zinc-600">Ferretería RIVNU</p>
+            <p className="mt-1 text-sm text-zinc-600">EligioValdez Comercial</p>
           </div>
           <div className="text-sm sm:text-right">
             <p className="font-semibold">{payment.receiptNumber ?? 'Recibo sin numeración'}</p>

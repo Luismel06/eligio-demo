@@ -71,7 +71,7 @@ export default function LoginPage() {
       <section className="relative flex min-h-[32rem] overflow-hidden bg-black px-5 py-6 text-white sm:px-10 lg:min-h-screen">
         <div className="pointer-events-none absolute inset-0">
           <div className="absolute -right-10 top-8 text-[5rem] font-semibold leading-none text-white/[0.035] sm:text-[10rem] lg:-right-16 lg:top-12 lg:text-[15rem]">
-            CoreStack
+            EligioValdez
           </div>
           <div className="absolute inset-x-0 bottom-0 h-32 bg-gradient-to-t from-zinc-950 to-transparent lg:h-40" />
         </div>
@@ -85,8 +85,8 @@ export default function LoginPage() {
           <div className="mx-auto flex w-full max-w-2xl flex-1 flex-col items-center justify-center py-8 text-center lg:py-12">
             <div className="flex aspect-square w-full max-w-[16rem] items-center justify-center overflow-hidden rounded-lg border border-white/10 bg-black p-4 shadow-2xl shadow-black/50 sm:max-w-[20rem] sm:p-6 lg:max-w-[24rem]">
               <img
-                src="/tenants/RIVNU.jpeg"
-                alt="Logo Ferretería RIVNU"
+                src="/logo.png"
+                alt="Logo EligioValdez Comercial"
                 className="max-h-full max-w-full object-contain"
                 width={384}
                 height={384}
@@ -94,17 +94,17 @@ export default function LoginPage() {
               />
             </div>
             <p className="mt-6 text-xs font-medium uppercase tracking-[0.18em] text-[#f36c10] sm:text-sm lg:mt-8">
-              Ferretería RIVNU
+              EligioValdez Comercial
             </p>
             <h1 className="mt-3 max-w-xl text-2xl font-semibold leading-tight sm:text-4xl">
               Acceso privado para POS, facturación e inventario.
             </h1>
             <p className="mt-4 max-w-xl text-sm leading-6 text-zinc-300">
-              Plataforma CoreStack configurada exclusivamente para la operación diaria de RIVNU.
+              Plataforma configurada para la operación diaria de EligioValdez Comercial.
             </p>
           </div>
 
-          <p className="text-center text-xs text-zinc-500 sm:text-left">Powered by CoreStack</p>
+          <p className="text-center text-xs text-zinc-500 sm:text-left">EligioValdez Comercial</p>
         </div>
       </section>
 
@@ -123,7 +123,7 @@ export default function LoginPage() {
             className={`${styles.coreStackWordmark} absolute inset-x-0 bottom-[max(1rem,env(safe-area-inset-bottom))] flex justify-center px-4`}
           >
             <span className="select-none text-center text-[clamp(2.25rem,8vw,5.5rem)] font-black leading-none tracking-[-0.055em] text-[#0b4cae]/[0.12]">
-              CoreStack
+              EligioValdez
             </span>
           </div>
         </div>
@@ -143,7 +143,7 @@ export default function LoginPage() {
                 className="object-cover object-center"
               />
             </div>
-            <CardTitle>Ferretería RIVNU</CardTitle>
+            <CardTitle>EligioValdez Comercial</CardTitle>
             <CardDescription>Acceso de personal autorizado</CardDescription>
           </CardHeader>
           <CardContent>
@@ -160,7 +160,7 @@ export default function LoginPage() {
                     type="email"
                     className="pl-9"
                     autoComplete="username"
-                    placeholder="usuario@rivnu.local"
+                    placeholder="usuario@eligiovaldez.local"
                     aria-invalid={Boolean(errors.email)}
                     aria-describedby={errors.email ? 'email-error' : undefined}
                     {...register('email')}
@@ -231,7 +231,7 @@ export default function LoginPage() {
 
             <div className="mt-6 flex items-center justify-center gap-2 text-xs text-muted-foreground">
               <span>Powered by</span>
-              <span className="font-semibold text-zinc-700">CoreStack</span>
+              <span className="font-semibold text-zinc-700">EligioValdez Comercial</span>
             </div>
           </CardContent>
         </Card>

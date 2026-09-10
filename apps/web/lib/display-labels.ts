@@ -110,7 +110,7 @@ const statusVariants: Record<string, BadgeVariant> = {
 };
 
 const roleLabels: Record<string, string> = {
-  QORVEX_SUPER_ADMIN: 'Super admin CoreStack',
+  QORVEX_SUPER_ADMIN: 'Super admin de plataforma',
   SUPER_ADMIN: 'Super admin',
   ADMIN: 'Administrador',
   ACCOUNTANT: 'Contador',

@@ -725,7 +725,7 @@ export function PosView() {
     <div className="space-y-5">
       <ModuleHeader
         title="Caja"
-        description="Cobro de ordenes enviadas a caja y cierre operativo de Ferreteria RIVNU."
+        description="Cobro de ordenes enviadas a caja y cierre operativo de EligioValdez Comercial."
       />
 
       <CashStatusHeader

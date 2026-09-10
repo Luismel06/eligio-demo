@@ -1,5 +1,5 @@
 export function ModuleHeader({
-  eyebrow = 'Ferreteria RIVNU',
+  eyebrow = 'EligioValdez Comercial',
   title,
   description,
 }: {
