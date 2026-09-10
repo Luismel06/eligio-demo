@@ -85,7 +85,7 @@ export default function LoginPage() {
           <div className="mx-auto flex w-full max-w-2xl flex-1 flex-col items-center justify-center py-8 text-center lg:py-12">
             <div className="flex aspect-square w-full max-w-[16rem] items-center justify-center overflow-hidden rounded-lg border border-white/10 bg-black p-4 shadow-2xl shadow-black/50 sm:max-w-[20rem] sm:p-6 lg:max-w-[24rem]">
               <img
-                src="/logo.png"
+                src="/logo-app.png"
                 alt="Logo EligioValdez Comercial"
                 className="max-h-full max-w-full object-contain"
                 width={384}

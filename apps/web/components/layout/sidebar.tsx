@@ -173,18 +173,21 @@ export function SidebarContent({
     <div className="flex h-full flex-col">
       <div
         className={cn(
-          'flex min-h-24 flex-col items-center justify-center gap-1 border-b border-evc-700 px-3 py-3',
-          collapsed && 'min-h-16 px-2',
+          'flex h-16 items-center gap-3 border-b border-evc-700 px-4',
+          collapsed && 'justify-center px-2',
         )}
       >
-        <div className={cn('flex h-14 w-full max-w-44 items-center justify-center', collapsed && 'h-10')}>
+        <div className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-white shadow-sm">
           <img
-            src="/logo.png"
+            src="/logo-app.png"
             alt="Logo EligioValdez Comercial"
-            className="h-full w-full object-contain"
+            className="h-full w-full object-cover"
           />
         </div>
-        <p className={cn('text-[0.65rem] text-evc-300', collapsed && 'hidden')}>Powered by CoreStack</p>
+        <div className={cn('min-w-0', collapsed && 'hidden')}>
+          <p className="truncate text-sm font-semibold">EligioValdez Comercial</p>
+          <p className="truncate text-xs text-evc-200">Powered by CoreStack</p>
+        </div>
       </div>
 
       {onToggle ? (
@@ -422,13 +425,13 @@ function SidebarNavigationLink({
         'flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-evc-300',
         collapsed && 'justify-center px-2.5',
         isActive
-          ? 'bg-evc-secondary text-evc-900 shadow-sm'
+          ? 'bg-evc-600 text-white shadow-sm'
           : 'text-evc-100 hover:bg-evc-700 hover:text-white',
       )}
       title={collapsed ? item.name : undefined}
       aria-current={isActive ? 'page' : undefined}
     >
-      <Icon className={cn('h-5 w-5 shrink-0', isActive && 'text-evc-900')} />
+      <Icon className={cn('h-5 w-5 shrink-0', isActive && 'text-white')} />
       <span className={cn('min-w-0 truncate', collapsed && 'hidden')}>{item.name}</span>
     </Link>
   );

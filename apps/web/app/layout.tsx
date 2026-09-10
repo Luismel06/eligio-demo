@@ -6,9 +6,22 @@ import { Providers } from './providers';
 export const metadata: Metadata = {
   title: 'EligioValdez Comercial',
   description: 'POS, facturacion e inventario para EligioValdez Comercial.',
+  applicationName: 'EligioValdez Comercial',
+  manifest: '/manifest.webmanifest',
   icons: {
-    icon: '/favicon.ico',
-    shortcut: '/favicon.ico',
+    icon: [
+      {
+        url: '/icons/favicon-32.png',
+        sizes: '32x32',
+        type: 'image/png',
+      },
+      {
+        url: '/icons/icon-192.png',
+        sizes: '192x192',
+        type: 'image/png',
+      },
+    ],
+    shortcut: '/icons/favicon-32.png',
     apple: [
       {
         url: '/apple-touch-icon.png',
@@ -16,6 +29,16 @@ export const metadata: Metadata = {
         type: 'image/png',
       },
     ],
+  },
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: 'default',
+    title: 'EligioValdez',
+  },
+  other: {
+    'mobile-web-app-capable': 'yes',
+    'msapplication-TileColor': '#ffffff',
+    'msapplication-config': '/browserconfig.xml',
   },
 };
 

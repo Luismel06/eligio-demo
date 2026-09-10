@@ -1060,7 +1060,7 @@ export function OrdersView() {
                       type="button"
                       className={`rounded-md px-3 py-2 text-sm font-medium transition-colors ${
                         destination === 'CASH_SALE'
-                          ? 'bg-[#f36c10] text-white shadow-sm'
+                          ? 'bg-evc-600 text-white shadow-sm'
                           : 'text-zinc-600 hover:bg-zinc-50'
                       }`}
                       onClick={() => setDestination('CASH_SALE')}
@@ -1071,7 +1071,7 @@ export function OrdersView() {
                       type="button"
                       className={`rounded-md px-3 py-2 text-sm font-medium transition-colors ${
                         destination === 'QUOTATION'
-                          ? 'bg-[#f36c10] text-white shadow-sm'
+                          ? 'bg-evc-600 text-white shadow-sm'
                           : 'text-zinc-600 hover:bg-zinc-50'
                       }`}
                       onClick={() => setDestination('QUOTATION')}
@@ -1103,7 +1103,7 @@ export function OrdersView() {
                 </div>
 
                 {destination === 'QUOTATION' ? (
-                  <div className="space-y-1 border-l-2 border-[#f36c10] pl-3">
+                  <div className="space-y-1 border-l-2 border-evc-400 pl-3">
                     <p className="text-sm font-semibold text-foreground">Datos de cotización</p>
                     <p className="text-xs text-muted-foreground">
                       El nombre del cliente es obligatorio. La cédula o el RNC son opcionales.
@@ -1163,7 +1163,7 @@ export function OrdersView() {
                               </span>
                             </button>
                           ) : (
-                            <p className="mb-1 rounded-md border border-warning/25 bg-warning/[0.05] px-3 py-2 text-xs text-muted-foreground">
+                            <p className="mb-1 rounded-md border border-evc-300/60 bg-evc-50 px-3 py-2 text-xs text-evc-900">
                               Las cotizaciones fiadas requieren un cliente registrado con crédito
                               habilitado.
                             </p>
@@ -1478,7 +1478,7 @@ export function OrdersView() {
                       </div>
                     </div>
                     {exceedsCreditLimit ? (
-                      <p className="rounded-md bg-amber-100 px-3 py-2 text-xs font-medium text-amber-900">
+                      <p className="rounded-md border border-danger/25 bg-danger/10 px-3 py-2 text-xs font-medium text-danger">
                         Supera el límite de crédito. El administrador deberá autorizar
                         explícitamente el exceso y dejar una nota.
                       </p>
@@ -1534,7 +1534,7 @@ export function OrdersView() {
 
                 <Button
                   type="submit"
-                  className="h-14 w-full bg-[#f36c10] text-base text-white hover:bg-[#d85f0e]"
+                  className="h-14 w-full bg-evc-600 text-base text-white hover:bg-evc-700"
                   disabled={!cart.length || createOrderMutation.isPending}
                 >
                   {editOrderId ? (
@@ -1646,7 +1646,7 @@ export function OrdersView() {
             </Button>
             <Button
               type="button"
-              className="h-11 bg-[#f36c10] px-4 text-white hover:bg-[#d85f0e]"
+              className="h-11 bg-evc-600 px-4 text-white hover:bg-evc-700"
               onClick={() => setMobileSection('order')}
             >
               Revisar
@@ -1702,7 +1702,10 @@ function PendingOrdersPanel({
                       </Badge>
                     ) : null}
                     {order.sentToCashierAt ? (
-                      <Badge variant={getWaitingVariant(order)}>
+                      <Badge
+                        variant={getWaitingVariant(order)}
+                        className={getWaitingClassName(order)}
+                      >
                         {getWaitingMinutes(order)} min
                       </Badge>
                     ) : null}
@@ -1715,7 +1718,7 @@ function PendingOrdersPanel({
                     Creada por {order.createdBy.name}
                   </p>
                   {order.claimedBy ? (
-                    <p className="mt-1 text-xs text-warning">
+                    <p className="mt-1 text-xs text-evc-700">
                       Tomada por {order.claimedBy.name}
                       {order.claimedCashSession?.cashRegister.name
                         ? ` en ${order.claimedCashSession.cashRegister.name}`
@@ -1860,9 +1863,13 @@ function getWaitingVariant(order: SalesOrder) {
     return 'danger' as const;
   }
 
-  if (minutes >= 10) {
-    return 'warning' as const;
-  }
-
   return 'outline' as const;
+}
+
+function getWaitingClassName(order: SalesOrder) {
+  const minutes = getWaitingMinutes(order);
+
+  return minutes >= 10 && minutes < 30
+    ? 'border-evc-300 bg-evc-50 text-evc-700'
+    : undefined;
 }
