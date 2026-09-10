@@ -1,7 +1,6 @@
-import type { INestApplication } from '@nestjs/common';
-import { createQorvexApiApp } from '../src/bootstrap';
+const { createQorvexApiApp } = require('../dist/bootstrap');
 
-let cachedApp: INestApplication | null = null;
+let cachedApp = null;
 
 async function getServer() {
   if (!cachedApp) {
@@ -12,12 +11,12 @@ async function getServer() {
   return cachedApp.getHttpAdapter().getInstance();
 }
 
-export default async function handler(request: unknown, response: unknown) {
+module.exports = async function handler(request, response) {
   const server = await getServer();
   return server(request, response);
-}
+};
 
-export const config = {
+module.exports.config = {
   api: {
     bodyParser: false,
   },
