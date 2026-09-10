@@ -338,6 +338,7 @@ export function ProductForm({ productId }: { productId?: string }) {
                 <option value="GALLON">Galon</option>
                 <option value="LITER">Litro</option>
                 <option value="KILOGRAM">Kilogramo</option>
+                <option value="QUINTAL">Quintal</option>
                 <option value="PACK">Paquete</option>
                 <option value="SERVICE">Servicio</option>
               </select>

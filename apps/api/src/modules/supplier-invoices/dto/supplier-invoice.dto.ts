@@ -35,7 +35,7 @@ export class SupplierInvoiceItemDto {
   quantity: number;
 
   @Type(() => Number)
-  @IsNumber({ maxDecimalPlaces: 2 })
+  @IsNumber({ maxDecimalPlaces: 6 })
   @Min(0)
   unitCostNet: number;
 

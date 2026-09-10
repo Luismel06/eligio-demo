@@ -21,3 +21,8 @@ coverage
 .DS_Store
 CORESTACK_MIGRACION_RIVNU.txt
 Qorvex_RIVNU_Plantilla_Importacion_Product*.xlsx
+
+# Private OCR samples and regression fixtures are never runtime assets.
+docs/factura test.jpeg
+apps/web/test
+apps/api/test

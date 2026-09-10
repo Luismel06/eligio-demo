@@ -132,7 +132,7 @@ export class MobileOcrCaptureItemDto {
 
   @IsOptional()
   @Type(() => Number)
-  @IsNumber({ allowNaN: false, allowInfinity: false, maxDecimalPlaces: 2 })
+  @IsNumber({ allowNaN: false, allowInfinity: false, maxDecimalPlaces: 6 })
   @Min(0)
   @Max(100_000_000)
   unitCostNet?: number;
@@ -205,6 +205,13 @@ export class MobileOcrCaptureResultDto {
   @Min(1)
   @Max(10)
   pageCount?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  @Max(100_000)
+  expectedItemCount?: number;
 
   @IsOptional()
   @IsString()

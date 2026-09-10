@@ -11,7 +11,7 @@ import {
   Search,
   Trash2,
 } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -48,7 +48,21 @@ import {
 } from '@/lib/api';
 import { canCreateSuppliers, isAdminSession } from '@/lib/authorization';
 import type { SupplierInvoiceOcrItem, SupplierInvoiceOcrResult } from '@/lib/supplier-invoice-ocr';
-import { formatCurrency, formatDate, formatDateTime } from '@/lib/utils';
+import {
+  catalogCodeMatchScore,
+  convertInvoiceUnit,
+  createOcrInvoiceItem,
+  findProductForOcrItem,
+  formatInvoiceCalendarDate,
+  invoiceUnitToProductUnit,
+  mergeOcrInvoiceItems,
+  needsInvoiceUnitReview,
+  selectInvoiceProduct,
+  type OcrEditableItem,
+  type OcrProductMatchSource,
+} from '@/lib/supplier-invoice-product-matching';
+import { formatCurrency, formatDateTime } from '@/lib/utils';
+import { translateProductUnit } from '@/lib/display-labels';
 import { CancelReasonModal } from './cancel-reason-modal';
 import { ModuleHeader } from './module-header';
 import { ProductCombobox } from './product-combobox';
@@ -61,16 +75,7 @@ import { SupplierInvoiceMobileCapturePanel } from './supplier-invoice-mobile-cap
 import { SupplierQuickCreateDialog } from './supplier-quick-create-dialog';
 import { QuickProductCreateDialog } from './quick-product-create-dialog';
 
-type EditableInvoiceItem = {
-  key: string;
-  productId: string;
-  purchaseOrderItemId?: string;
-  ocrItem?: SupplierInvoiceOcrItem;
-  quantity: string;
-  unitCostNet: string;
-  taxPercent: string;
-  discountTotal: string;
-};
+type EditableInvoiceItem = OcrEditableItem;
 
 const blankItem = (): EditableInvoiceItem => ({
   key: crypto.randomUUID(),
@@ -82,26 +87,6 @@ const blankItem = (): EditableInvoiceItem => ({
 });
 
 const emptyProductSearchTerms: string[] = [];
-
-/**
- * El resultado del OCR nunca crea un producto ni modifica el catalogo. Esta
- * informacion explica por que una linea pudo sugerir un producto, para que la
- * persona pueda revisarlo antes de confirmar la factura.
- */
-type OcrProductMatchSource =
-  | 'SUPPLIER_SKU'
-  | 'SUPPLIER_PRIMARY'
-  | 'SUPPLIER_PRODUCT'
-  | 'CATALOG_CODE'
-  | 'CATALOG_DESCRIPTION';
-
-type OcrProductMatch = {
-  product?: Product;
-  source?: OcrProductMatchSource;
-  isPrimarySupplierProduct?: boolean;
-  highConfidence?: boolean;
-  warning?: string;
-};
 
 type PurchaseOrderOcrSuggestion = {
   ocrItem: SupplierInvoiceOcrItem;
@@ -140,6 +125,14 @@ export function SupplierInvoicesView() {
   const [returnToOcrAfterMobileCapture, setReturnToOcrAfterMobileCapture] = useState(false);
   const [quickSupplierOpen, setQuickSupplierOpen] = useState(false);
   const [quickProductItemKey, setQuickProductItemKey] = useState<string | null>(null);
+  const [supplierPickerOpen, setSupplierPickerOpen] = useState(false);
+  const [pendingProductItemKey, setPendingProductItemKey] = useState<string | null>(null);
+  const [ocrBatchKey, setOcrBatchKey] = useState('');
+  const [conversionFactors, setConversionFactors] = useState<Record<string, string>>({});
+  const [detachOrderOpen, setDetachOrderOpen] = useState(false);
+  const [applyOrderOcrOpen, setApplyOrderOcrOpen] = useState(false);
+  const invoiceItemsRef = useRef<HTMLDivElement>(null);
+  const loadedPurchaseOrderRef = useRef('');
   const [ocrResult, setOcrResult] = useState<SupplierInvoiceOcrResult | null>(null);
   const [ocrUnconfirmedOrderItemIds, setOcrUnconfirmedOrderItemIds] = useState<string[]>([]);
   const [detailStage, setDetailStage] = useState<'capture' | 'review'>('capture');
@@ -356,6 +349,8 @@ export function SupplierInvoicesView() {
     if (!showForm || editingId || !purchaseOrderId || !ordersQuery.data) return;
     const order = ordersQuery.data.find((candidate) => candidate.id === purchaseOrderId);
     if (!order) return;
+    if (loadedPurchaseOrderRef.current === purchaseOrderId) return;
+    loadedPurchaseOrderRef.current = purchaseOrderId;
 
     setSupplierId(order.supplierId);
     setItems(
@@ -519,6 +514,7 @@ export function SupplierInvoicesView() {
   if (!session) return <SessionRequired session={session} />;
 
   function resetForm() {
+    loadedPurchaseOrderRef.current = '';
     setShowForm(false);
     setEditingId(null);
     setSupplierId('');
@@ -535,6 +531,11 @@ export function SupplierInvoicesView() {
     setOcrUnconfirmedOrderItemIds([]);
     setQuickSupplierOpen(false);
     setQuickProductItemKey(null);
+    setPendingProductItemKey(null);
+    setSupplierPickerOpen(false);
+    setDetachOrderOpen(false);
+    setApplyOrderOcrOpen(false);
+    setConversionFactors({});
     setPendingInvoicePayload(null);
   }
 
@@ -603,6 +604,7 @@ export function SupplierInvoicesView() {
     const matchingSupplier = findMatchingSupplier(result, activeSuppliers);
 
     setOcrResult(result);
+    setOcrBatchKey(crypto.randomUUID());
     setOcrUnconfirmedOrderItemIds([]);
     if (result.invoiceNumber) {
       setInvoiceNumber((current) => current || result.invoiceNumber!);
@@ -751,7 +753,7 @@ export function SupplierInvoicesView() {
               suggestion.quantity === undefined ? line.quantity : String(suggestion.quantity),
             unitCostNet:
               suggestion.costWeight > 0
-                ? String(roundCurrency(suggestion.costTotal / suggestion.costWeight))
+                ? String(roundUnitCost(suggestion.costTotal / suggestion.costWeight))
                 : line.unitCostNet,
             taxPercent:
               suggestion.taxRate === undefined || suggestion.taxRate === null
@@ -784,19 +786,14 @@ export function SupplierInvoicesView() {
       }
       return;
     }
-    const suggestedItems = ocrProductMatches.map(({ item, product, highConfidence }) => ({
-      key: crypto.randomUUID(),
-      // Una sugerencia por descripción o por un fragmento de código sirve
-      // para orientar a quien revisa, pero no debe seleccionar un producto
-      // por sí sola. En ferretería muchos SKU comparten prefijos y una
-      // selección automática equivocada terminaría afectando inventario.
-      productId: product && highConfidence ? product.id : '',
-      ocrItem: item,
-      quantity: item.quantity === undefined ? '1' : String(item.quantity),
-      unitCostNet: item.unitCostNet === undefined ? '' : String(item.unitCostNet),
-      taxPercent: String(roundCurrency((item.taxRate ?? Number(product?.taxRate ?? 0.18)) * 100)),
-      discountTotal: String(item.discountTotal ?? 0),
-    }));
+    const suggestedItems = ocrProductMatches.map(({ item, product, highConfidence }, index) =>
+      createOcrInvoiceItem(
+        item,
+        crypto.randomUUID(),
+        `${ocrBatchKey}:${index}`,
+        highConfidence ? product : undefined,
+      ),
+    );
 
     if (!suggestedItems.length) {
       toast.error(
@@ -805,7 +802,8 @@ export function SupplierInvoicesView() {
       return;
     }
 
-    setItems(suggestedItems);
+    setItems((current) => mergeOcrInvoiceItems(current, suggestedItems));
+    scrollToInvoiceProducts();
     const missingProducts = suggestedItems.filter((item) => !item.productId).length;
     toast.success(
       missingProducts
@@ -814,12 +812,75 @@ export function SupplierInvoicesView() {
     );
   }
 
+  function scrollToInvoiceProducts() {
+    window.setTimeout(
+      () => invoiceItemsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }),
+      50,
+    );
+  }
+
+  function prepareOcrProduct(index: number, selectedProduct?: Product, createMissing = false) {
+    if (purchaseOrderId) {
+      setDetachOrderOpen(true);
+      return;
+    }
+    const match = ocrProductMatches[index];
+    if (!match) return;
+    const sourceKey = `${ocrBatchKey}:${index}`;
+    const existing = items.find((item) => item.ocrSourceKey === sourceKey);
+    const draft =
+      existing ?? createOcrInvoiceItem(match.item, crypto.randomUUID(), sourceKey, selectedProduct);
+    setItems((current) => {
+      const merged = mergeOcrInvoiceItems(current, [draft]);
+      return selectedProduct
+        ? merged.map((line) =>
+            line.key === draft.key ? selectInvoiceProduct(line, selectedProduct) : line,
+          )
+        : merged;
+    });
+    if (createMissing) startMissingProduct(draft.key);
+    else scrollToInvoiceProducts();
+  }
+
+  function startMissingProduct(key: string) {
+    if (!admin) return;
+    if (productsQuery.isLoading || productsQuery.isError) {
+      toast.error('Espera a que cargue el catálogo para comprobar que el producto no exista.');
+      return;
+    }
+    if (!supplierId) {
+      setPendingProductItemKey(key);
+      setSupplierPickerOpen(true);
+      return;
+    }
+    setQuickProductItemKey(key);
+  }
+
+  function selectInvoiceSupplier(id: string) {
+    loadedPurchaseOrderRef.current = '';
+    setSupplierId(id);
+    setPurchaseOrderId('');
+    setOcrUnconfirmedOrderItemIds([]);
+    // Changing supplier must not erase invoice lines that were already reviewed.
+    setItems((current) => current.map((item) => ({ ...item, purchaseOrderItemId: undefined })));
+    setSupplierPickerOpen(false);
+    if (pendingProductItemKey) {
+      setQuickProductItemKey(pendingProductItemKey);
+      setPendingProductItemKey(null);
+    }
+  }
+
   function selectOrder(orderId: string) {
     setPurchaseOrderId(orderId);
     setOcrUnconfirmedOrderItemIds([]);
-    if (!orderId) return;
+    if (!orderId) {
+      loadedPurchaseOrderRef.current = '';
+      setItems((current) => current.map((item) => ({ ...item, purchaseOrderItemId: undefined })));
+      return;
+    }
     const order = ordersQuery.data?.find((candidate) => candidate.id === orderId);
     if (!order) return;
+    loadedPurchaseOrderRef.current = order.id;
     setSupplierId(order.supplierId);
     setItems(
       order.items.map((item) => ({
@@ -846,6 +907,29 @@ export function SupplierInvoicesView() {
     }
     if (!items.length || items.some((item) => !item.productId)) {
       toast.error('Completa todos los productos.');
+      return;
+    }
+    if (
+      items.some(
+        (item) =>
+          !item.quantity.trim() ||
+          !item.unitCostNet.trim() ||
+          !item.taxPercent.trim() ||
+          Number(item.quantity) <= 0 ||
+          ![item.quantity, item.unitCostNet, item.taxPercent].every((value) =>
+            Number.isFinite(Number(value)),
+          ),
+      )
+    ) {
+      toast.error(
+        'Completa la cantidad, el costo y el ITBIS de todas las líneas. Los datos que no se leyeron quedan vacíos para revisión.',
+      );
+      scrollToInvoiceProducts();
+      return;
+    }
+    if (items.some((item) => needsInvoiceUnitReview(item, productById.get(item.productId)))) {
+      toast.error('Confirma la presentación de los productos señalados antes de guardar.');
+      scrollToInvoiceProducts();
       return;
     }
     const payload: SupplierInvoicePayload = {
@@ -916,7 +1000,11 @@ export function SupplierInvoicesView() {
         productId: item.productId,
         purchaseOrderItemId: item.purchaseOrderItemId ?? undefined,
         quantity: String(Number(item.quantity)),
-        unitCostNet: String(Number(item.unitCostNet)),
+        unitCostNet: String(
+          roundUnitCost(
+            (Number(item.subtotal) + Number(item.discountTotal)) / Number(item.quantity),
+          ),
+        ),
         taxPercent: String(Number(item.taxRate) * 100),
         discountTotal: String(Number(item.discountTotal)),
       })),
@@ -946,57 +1034,39 @@ export function SupplierInvoicesView() {
     setItems((current) =>
       current.map((item) => {
         if (item.key !== key) return item;
-        const next = { ...item, ...patch };
+        let next = { ...item, ...patch };
         if (patch.productId) {
           const product = productById.get(patch.productId);
-          next.unitCostNet = String(Number(product?.cost ?? item.unitCostNet ?? 0));
-          next.taxPercent = String(Number(product?.taxRate ?? 0.18) * 100);
+          if (product) next = { ...selectInvoiceProduct(item, product), ...patch };
         }
         return next;
       }),
     );
   }
 
-  function applyQuickCreatedProduct(product: Product) {
+  function applyQuickCreatedProduct(product: Product, conversion?: { invoiceUnitFactor: number }) {
     if (!quickProductItemKey) return;
-    updateItem(quickProductItemKey, { productId: product.id });
+    setItems((current) =>
+      current.map((item) =>
+        item.key === quickProductItemKey
+          ? conversion
+            ? convertInvoiceUnit(selectInvoiceProduct(item, product), conversion.invoiceUnitFactor)
+            : selectInvoiceProduct(item, product)
+          : item,
+      ),
+    );
     setQuickProductItemKey(null);
   }
 
   async function useExistingProductFromQuickCreate(product: Product) {
     const item = quickProductItem;
     if (!item) return;
-
-    updateItem(item.key, { productId: product.id });
-
-    if (!session || !supplierId) return;
-    const alreadyLinked = selectedSupplierQuery.data?.products?.some(
-      (supplierProduct) => supplierProduct.productId === product.id && supplierProduct.active,
+    if (product.status !== 'ACTIVE')
+      throw new Error('Reactiva el producto desde Productos antes de usarlo.');
+    setItems((current) =>
+      current.map((line) => (line.key === item.key ? selectInvoiceProduct(line, product) : line)),
     );
-    if (alreadyLinked) return;
-
-    const costNet = Number(item.unitCostNet);
-    const taxRate = Number(item.taxPercent || 0) / 100;
-    try {
-      await addSupplierProduct(session.tenantId, session.accessToken, supplierId, {
-        productId: product.id,
-        supplierSku: item.ocrItem?.code || undefined,
-        lastCostNet: Number.isFinite(costNet) && costNet >= 0 ? costNet : undefined,
-        lastCostWithTax:
-          Number.isFinite(costNet) && costNet >= 0
-            ? roundCurrency(costNet * (1 + Math.max(taxRate, 0)))
-            : undefined,
-      });
-      await queryClient.invalidateQueries({ queryKey: ['supplier', session.tenantId, supplierId] });
-      toast.success('Producto existente vinculado a este suplidor.');
-    } catch (error) {
-      toast.warning('Usaremos el producto existente, pero no se pudo vincular al suplidor.', {
-        description:
-          error instanceof Error
-            ? error.message
-            : 'Podrás completar ese vínculo después desde Suplidores.',
-      });
-    }
+    toast.success('Producto existente seleccionado. Conservamos los importes de esta factura.');
   }
 
   /**
@@ -1059,7 +1129,8 @@ export function SupplierInvoicesView() {
         await addSupplierProduct(session.tenantId, session.accessToken, supplierId, {
           productId: item.productId,
           supplierSku: item.ocrItem?.code?.trim() || undefined,
-          lastCostNet: Number.isFinite(costNet) && costNet >= 0 ? costNet : undefined,
+          lastCostNet:
+            Number.isFinite(costNet) && costNet >= 0 ? roundCurrency(costNet) : undefined,
           lastCostWithTax:
             Number.isFinite(costNet) && costNet >= 0
               ? roundCurrency(costNet * (1 + Math.max(taxRate, 0)))
@@ -1137,7 +1208,10 @@ export function SupplierInvoicesView() {
                     <OcrDetected label="RNC / cédula" value={ocrResult.supplierDocument} />
                   ) : null}
                   {ocrResult.issueDate ? (
-                    <OcrDetected label="Emisión" value={formatDate(ocrResult.issueDate)} />
+                    <OcrDetected
+                      label="Emisión"
+                      value={formatInvoiceCalendarDate(ocrResult.issueDate)}
+                    />
                   ) : null}
                   {ocrResult.total !== undefined ? (
                     <OcrDetected label="Total detectado" value={formatCurrency(ocrResult.total)} />
@@ -1158,14 +1232,14 @@ export function SupplierInvoicesView() {
                     {ocrResult.paymentDueDate ? (
                       <OcrDetected
                         label="Vencimiento de pago"
-                        value={formatDate(ocrResult.paymentDueDate)}
+                        value={formatInvoiceCalendarDate(ocrResult.paymentDueDate)}
                         confidence={ocrResult.confidence.paymentDueDate}
                       />
                     ) : null}
                     {ocrResult.ncfValidUntil ? (
                       <OcrDetected
                         label="Vigencia fiscal NCF"
-                        value={formatDate(ocrResult.ncfValidUntil)}
+                        value={formatInvoiceCalendarDate(ocrResult.ncfValidUntil)}
                         confidence={ocrResult.confidence.ncfValidUntil}
                       />
                     ) : null}
@@ -1198,6 +1272,33 @@ export function SupplierInvoicesView() {
                     ) : null}
                   </div>
                 ) : null}
+                {supplierId &&
+                ocrResult.supplierDocument &&
+                selectedSupplierQuery.data &&
+                normalizeDocument(selectedSupplierQuery.data.documentNumber) !==
+                  normalizeDocument(ocrResult.supplierDocument) ? (
+                  <div
+                    className="mt-4 rounded-lg border border-warning/40 bg-warning/5 p-3 text-sm"
+                    role="alert"
+                  >
+                    <p className="font-medium">Revisa el suplidor seleccionado</p>
+                    <p className="mt-1 text-muted-foreground">
+                      La factura indica RNC {ocrResult.supplierDocument}, pero seleccionaste{' '}
+                      {selectedSupplierQuery.data.commercialName} (
+                      {selectedSupplierQuery.data.documentNumber}). Elige el suplidor de esta
+                      factura antes de vincular sus productos.
+                    </p>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="mt-2"
+                      onClick={() => setSupplierPickerOpen(true)}
+                    >
+                      Elegir suplidor
+                    </Button>
+                  </div>
+                ) : null}
                 {ocrResult.warnings.length ? (
                   <div className="mt-4 rounded-md border border-warning/30 bg-warning/5 p-3 text-sm">
                     <p className="font-medium text-warning">Revisión requerida</p>
@@ -1212,26 +1313,69 @@ export function SupplierInvoicesView() {
                   <div className="mt-4 rounded-md border bg-card/70 p-3">
                     <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                       <div>
-                        <p className="font-medium">Productos sugeridos por OCR</p>
+                        <p className="font-medium">
+                          Productos leídos de la factura · {ocrResult.items.length}
+                        </p>
                         <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                          Las coincidencias se seleccionan; los que no existan quedan listos para
-                          elegir o registrar, sin crear duplicados automáticamente.
+                          Revisa cada producto y su presentación. Puedes usar una coincidencia,
+                          buscar otra o registrar el producto faltante aquí mismo.
                         </p>
                       </div>
                       <Button
                         type="button"
                         variant="outline"
                         size="sm"
-                        disabled={supplierProductMappingsLoading}
-                        onClick={applyOcrProductSuggestions}
+                        disabled={
+                          supplierProductMappingsLoading ||
+                          productsQuery.isLoading ||
+                          productsQuery.isError
+                        }
+                        onClick={() =>
+                          purchaseOrderId
+                            ? setApplyOrderOcrOpen(true)
+                            : applyOcrProductSuggestions()
+                        }
                       >
-                        {supplierProductMappingsLoading
-                          ? 'Cargando vínculos del suplidor…'
-                          : purchaseOrderId
-                            ? 'Aplicar a líneas de la orden'
-                            : 'Preparar líneas detectadas'}
+                        {productsQuery.isLoading
+                          ? 'Cargando catálogo…'
+                          : productsQuery.isError
+                            ? 'Catálogo no disponible'
+                            : supplierProductMappingsLoading
+                              ? 'Cargando vínculos del suplidor…'
+                              : purchaseOrderId
+                                ? 'Aplicar a líneas de la orden'
+                                : 'Preparar líneas detectadas'}
                       </Button>
                     </div>
+                    {productsQuery.isError ? (
+                      <p className="mt-3 text-sm text-danger" role="alert">
+                        No se pudo cargar el catálogo.{' '}
+                        <button
+                          type="button"
+                          className="underline"
+                          onClick={() => void productsQuery.refetch()}
+                        >
+                          Volver a intentar
+                        </button>{' '}
+                        antes de confirmar que un producto no existe.
+                      </p>
+                    ) : null}
+                    {purchaseOrderId ? (
+                      <div className="mt-3 rounded-lg border border-warning/30 bg-warning/5 p-3 text-xs leading-5">
+                        Esta factura está vinculada a una orden de compra. Solo se actualizan sus
+                        productos coincidentes. Si la factura contiene productos distintos, puedes
+                        capturarla sin vincular esta orden.
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          className="mt-2 block"
+                          onClick={() => setDetachOrderOpen(true)}
+                        >
+                          Capturar todos los productos sin esta orden
+                        </Button>
+                      </div>
+                    ) : null}
                     <div className="mt-3 space-y-2">
                       {ocrProductMatches.map(
                         (
@@ -1242,6 +1386,7 @@ export function SupplierInvoicesView() {
                             isPrimarySupplierProduct,
                             warning,
                             highConfidence,
+                            alternatives,
                           },
                           index,
                         ) => (
@@ -1250,25 +1395,23 @@ export function SupplierInvoicesView() {
                             className="grid gap-2 rounded-md border bg-muted/15 p-2.5 text-sm md:grid-cols-[minmax(0,1fr)_auto_auto] md:items-center"
                           >
                             <div className="min-w-0">
-                              <p className="truncate font-medium">
+                              <p className="font-medium">
                                 {item.description ?? 'Descripción por confirmar'}
                               </p>
                               <p className="truncate text-xs text-muted-foreground">
                                 {product
                                   ? `Coincide con: ${product.name}${product.sku ? ` · ${product.sku}` : ''}`
-                                  : 'Sin coincidencia automática: selección manual requerida'}
+                                  : 'Sin coincidencia segura: busca en el catálogo o registra si no existe'}
                               </p>
                               {product ? (
                                 <p className="truncate text-xs text-muted-foreground">
                                   {getOcrProductMatchDescription(source, isPrimarySupplierProduct)}
                                 </p>
                               ) : null}
-                              {warning ? (
-                                <p className="truncate text-xs text-warning">{warning}</p>
-                              ) : null}
+                              {warning ? <p className="text-xs text-warning">{warning}</p> : null}
                             </div>
                             <p className="text-xs text-muted-foreground">
-                              {item.quantity ?? '—'} ×{' '}
+                              {item.quantity ?? '—'} {item.unit ?? ''} ×{' '}
                               {item.unitCostNet === undefined
                                 ? '—'
                                 : formatCurrency(item.unitCostNet)}
@@ -1288,6 +1431,60 @@ export function SupplierInvoicesView() {
                                 ? getOcrProductMatchBadge(source, isPrimarySupplierProduct)
                                 : 'Revisar'}
                             </span>
+                            <div className="flex flex-wrap gap-2 md:col-span-3">
+                              {items.some(
+                                (line) => line.ocrSourceKey === `${ocrBatchKey}:${index}`,
+                              ) ? (
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  size="sm"
+                                  onClick={scrollToInvoiceProducts}
+                                >
+                                  Ver línea preparada
+                                </Button>
+                              ) : null}
+                              {product ? (
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={() => prepareOcrProduct(index, product)}
+                                >
+                                  Usar {product.name}
+                                </Button>
+                              ) : (
+                                (alternatives ?? []).slice(0, 3).map((candidate) => (
+                                  <Button
+                                    key={candidate.id}
+                                    type="button"
+                                    size="sm"
+                                    variant="outline"
+                                    onClick={() => prepareOcrProduct(index, candidate)}
+                                  >
+                                    Usar {candidate.name}
+                                  </Button>
+                                ))
+                              )}
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => prepareOcrProduct(index)}
+                              >
+                                <Search className="h-4 w-4" /> Buscar en catálogo
+                              </Button>
+                              {admin ? (
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  size="sm"
+                                  onClick={() => prepareOcrProduct(index, undefined, true)}
+                                >
+                                  <Plus className="h-4 w-4" /> Registrar si no existe
+                                </Button>
+                              ) : null}
+                            </div>
                           </div>
                         ),
                       )}
@@ -1332,14 +1529,7 @@ export function SupplierInvoicesView() {
                         required
                         className={selectClassName}
                         value={supplierId}
-                        onChange={(event) => {
-                          setSupplierId(event.target.value);
-                          setPurchaseOrderId('');
-                          setOcrUnconfirmedOrderItemIds([]);
-                          if (!editingId) {
-                            setItems([blankItem()]);
-                          }
-                        }}
+                        onChange={(event) => selectInvoiceSupplier(event.target.value)}
                       >
                         <option value="">Selecciona...</option>
                         {activeSuppliers.map((supplier) => (
@@ -1465,7 +1655,7 @@ export function SupplierInvoicesView() {
                 </div>
               </section>
 
-              <div className="space-y-3">
+              <div ref={invoiceItemsRef} className="scroll-mt-4 space-y-3">
                 <div className="flex items-center justify-between gap-3">
                   <div>
                     <h3 className="font-semibold">Productos facturados</h3>
@@ -1498,9 +1688,6 @@ export function SupplierInvoicesView() {
                           required
                           disabled={Boolean(purchaseOrderId)}
                           ariaLabel={`Buscar producto ${index + 1}`}
-                          disabledProductIds={items
-                            .filter((other) => other.key !== item.key && Boolean(other.productId))
-                            .map((other) => other.productId)}
                           getSearchText={getSupplierProductSearchText}
                           onValueChange={(productId) => updateItem(item.key, { productId })}
                         />
@@ -1511,9 +1698,8 @@ export function SupplierInvoicesView() {
                                 type="button"
                                 variant="ghost"
                                 size="sm"
-                                disabled={!supplierId}
                                 className="h-auto px-0 text-primary hover:bg-transparent hover:text-primary/80"
-                                onClick={() => setQuickProductItemKey(item.key)}
+                                onClick={() => startMissingProduct(item.key)}
                               >
                                 <Plus className="h-4 w-4" />
                                 Registrar producto faltante
@@ -1521,7 +1707,8 @@ export function SupplierInvoicesView() {
                             ) : null}
                             {!supplierId ? (
                               <p className="text-xs text-muted-foreground">
-                                Selecciona o registra primero el suplidor para vincular el producto.
+                                Al registrar, podrás elegir o crear el suplidor y continuar con este
+                                producto.
                               </p>
                             ) : null}
                             {!admin ? (
@@ -1530,13 +1717,14 @@ export function SupplierInvoicesView() {
                                 proteger el catálogo.
                               </p>
                             ) : null}
-                            {item.ocrItem?.description ? (
-                              <p className="truncate text-xs text-muted-foreground">
-                                Detectado: {item.ocrItem.description}
-                                {item.ocrItem.code ? ` · Código suplidor ${item.ocrItem.code}` : ''}
-                              </p>
-                            ) : null}
                           </div>
+                        ) : null}
+                        {item.ocrItem ? (
+                          <p className="text-xs leading-5 text-muted-foreground">
+                            Factura: {item.ocrItem.description ?? 'Descripción pendiente'}
+                            {item.ocrItem.code ? ` · Código ${item.ocrItem.code}` : ''}
+                            {item.ocrItem.unit ? ` · Presentación ${item.ocrItem.unit}` : ''}
+                          </p>
                         ) : null}
                       </div>
                     </FormField>
@@ -1555,7 +1743,7 @@ export function SupplierInvoicesView() {
                         required
                         type="number"
                         min="0"
-                        step="0.01"
+                        step="0.000001"
                         value={item.unitCostNet}
                         onChange={(event) =>
                           updateItem(item.key, { unitCostNet: event.target.value })
@@ -1586,6 +1774,69 @@ export function SupplierInvoicesView() {
                         }
                       />
                     </FormField>
+                    {needsInvoiceUnitReview(item, productById.get(item.productId)) ? (
+                      <div className="space-y-3 rounded-lg border border-warning/40 bg-warning/5 p-3 text-sm md:col-span-12">
+                        <p className="font-medium">
+                          Confirma la presentación antes de aumentar el inventario
+                        </p>
+                        <p>
+                          La factura usa <strong>{item.ocrItem?.unit}</strong> y el producto del
+                          catálogo usa{' '}
+                          <strong>
+                            {translateProductUnit(productById.get(item.productId)?.unit)}
+                          </strong>
+                          . Los importes y cantidades aún corresponden a la factura.
+                        </p>
+                        <div className="flex flex-wrap items-end gap-2">
+                          <label className="space-y-1 text-xs">
+                            <span className="block">
+                              Unidades de inventario por cada {item.ocrItem?.unit}
+                            </span>
+                            <Input
+                              type="number"
+                              min="0.000001"
+                              step="any"
+                              className="w-40"
+                              value={conversionFactors[item.key] ?? ''}
+                              placeholder="Ej.: 12"
+                              onChange={(event) =>
+                                setConversionFactors((current) => ({
+                                  ...current,
+                                  [item.key]: event.target.value,
+                                }))
+                              }
+                            />
+                          </label>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            onClick={() => {
+                              try {
+                                updateItem(
+                                  item.key,
+                                  convertInvoiceUnit(item, Number(conversionFactors[item.key])),
+                                );
+                              } catch (error) {
+                                toast.error(
+                                  error instanceof Error ? error.message : 'Revisa la conversión.',
+                                );
+                              }
+                            }}
+                          >
+                            Convertir cantidad y costo
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => updateItem(item.key, { unitConversionConfirmed: true })}
+                          >
+                            Ya revisé: cantidad y costo están en la unidad del catálogo
+                          </Button>
+                        </div>
+                      </div>
+                    ) : null}
                     <div className="flex items-end justify-end md:col-span-1">
                       <Button
                         type="button"
@@ -1740,7 +1991,7 @@ export function SupplierInvoicesView() {
                         </p>
                       </TableCell>
                       <TableCell>
-                        <p>{formatDate(invoice.issueDate)}</p>
+                        <p>{formatInvoiceCalendarDate(invoice.issueDate)}</p>
                         <p
                           className={
                             invoice.isOverdue
@@ -1748,7 +1999,7 @@ export function SupplierInvoicesView() {
                               : 'text-xs text-muted-foreground'
                           }
                         >
-                          Vence pago: {formatDate(invoice.dueDate)}
+                          Vence pago: {formatInvoiceCalendarDate(invoice.dueDate)}
                         </p>
                       </TableCell>
                       <TableCell>
@@ -2217,6 +2468,134 @@ export function SupplierInvoicesView() {
         onRecognized={applyOcrResult}
       />
 
+      <SupplierInvoiceDialog
+        open={supplierPickerOpen}
+        title="Elige el suplidor para continuar"
+        description="Los productos que preparaste permanecen en esta factura. Elige un suplidor existente o regístralo aquí mismo."
+        layer="overlay"
+        size="md"
+        onClose={() => {
+          setSupplierPickerOpen(false);
+          setPendingProductItemKey(null);
+        }}
+      >
+        <div className="space-y-4">
+          {ocrResult?.supplierName || ocrResult?.supplierDocument ? (
+            <p className="rounded-lg border bg-muted/30 p-3 text-sm">
+              Leído en la factura: <strong>{ocrResult.supplierName ?? 'Nombre pendiente'}</strong> ·
+              RNC {ocrResult.supplierDocument ?? 'pendiente'}
+            </p>
+          ) : null}
+          <FormField label="Suplidor existente">
+            <select
+              className={selectClassName}
+              value=""
+              onChange={(event) => {
+                if (event.target.value) selectInvoiceSupplier(event.target.value);
+              }}
+            >
+              <option value="">Selecciona el suplidor de esta factura...</option>
+              {activeSuppliers.map((supplier) => (
+                <option key={supplier.id} value={supplier.id}>
+                  {supplier.commercialName} · {supplier.documentNumber}
+                </option>
+              ))}
+            </select>
+          </FormField>
+          {canCreateSupplier ? (
+            <Button
+              type="button"
+              onClick={() => {
+                setSupplierPickerOpen(false);
+                setQuickSupplierOpen(true);
+              }}
+            >
+              <Plus className="h-4 w-4" /> Registrar nuevo suplidor
+            </Button>
+          ) : (
+            <p className="text-sm text-muted-foreground">
+              Un administrador o contador puede registrar el suplidor si aún no existe.
+            </p>
+          )}
+        </div>
+      </SupplierInvoiceDialog>
+
+      <SupplierInvoiceDialog
+        open={detachOrderOpen}
+        title="Capturar la factura sin esta orden de compra"
+        description="Podrás seleccionar y registrar todos los productos leídos de la factura."
+        layer="overlay"
+        size="md"
+        onClose={() => setDetachOrderOpen(false)}
+      >
+        <div className="space-y-4 text-sm">
+          <p>
+            Se reemplazarán las {items.length} líneas actuales por las {ocrProductMatches.length}{' '}
+            líneas leídas. Revisa los datos OCR antes de guardar. El suplidor y los datos del
+            documento se conservan; la orden de compra seguirá disponible y sin facturar.
+          </p>
+          <div className="flex justify-end gap-2">
+            <Button type="button" variant="outline" onClick={() => setDetachOrderOpen(false)}>
+              Conservar la orden
+            </Button>
+            <Button
+              type="button"
+              disabled={!ocrProductMatches.length}
+              onClick={() => {
+                loadedPurchaseOrderRef.current = '';
+                setPurchaseOrderId('');
+                setOcrUnconfirmedOrderItemIds([]);
+                setItems(
+                  ocrProductMatches.map(({ item, product, highConfidence }, index) =>
+                    createOcrInvoiceItem(
+                      item,
+                      crypto.randomUUID(),
+                      `${ocrBatchKey}:${index}`,
+                      highConfidence ? product : undefined,
+                    ),
+                  ),
+                );
+                setDetachOrderOpen(false);
+                scrollToInvoiceProducts();
+              }}
+            >
+              Usar los productos de la factura
+            </Button>
+          </div>
+        </div>
+      </SupplierInvoiceDialog>
+
+      <SupplierInvoiceDialog
+        open={applyOrderOcrOpen}
+        title="Aplicar importes OCR a la orden"
+        description="Se actualizarán cantidad, costo e ITBIS solo donde exista una coincidencia segura."
+        layer="overlay"
+        size="md"
+        onClose={() => setApplyOrderOcrOpen(false)}
+      >
+        <div className="space-y-4 text-sm">
+          <p>
+            Los valores revisados de esas líneas serán sustituidos por los de la lectura. Las líneas
+            sin coincidencia permanecerán señaladas para revisión y los productos ajenos a la orden
+            no se agregarán.
+          </p>
+          <div className="flex justify-end gap-2">
+            <Button type="button" variant="outline" onClick={() => setApplyOrderOcrOpen(false)}>
+              Volver
+            </Button>
+            <Button
+              type="button"
+              onClick={() => {
+                setApplyOrderOcrOpen(false);
+                applyOcrProductSuggestions();
+              }}
+            >
+              Aplicar y revisar diferencias
+            </Button>
+          </div>
+        </div>
+      </SupplierInvoiceDialog>
+
       {canCreateSupplier ? (
         <SupplierQuickCreateDialog
           open={quickSupplierOpen}
@@ -2234,7 +2613,7 @@ export function SupplierInvoicesView() {
               : undefined
           }
           onCreated={(supplier) => {
-            setSupplierId(supplier.id);
+            selectInvoiceSupplier(supplier.id);
             toast.success(`${supplier.commercialName} quedó seleccionado para esta factura.`);
           }}
           onExistingSupplier={(supplier) => {
@@ -2244,7 +2623,7 @@ export function SupplierInvoicesView() {
               );
               return;
             }
-            setSupplierId(supplier.id);
+            selectInvoiceSupplier(supplier.id);
             toast.success(`${supplier.commercialName} ya existía y fue seleccionado.`);
           }}
         />
@@ -2257,7 +2636,7 @@ export function SupplierInvoicesView() {
             if (!open) setQuickProductItemKey(null);
           }}
           session={session}
-          existingProducts={productOptions}
+          existingProducts={productsQuery.data ?? []}
           supplierId={supplierId || undefined}
           supplierName={selectedSupplierQuery.data?.commercialName}
           prefill={
@@ -2266,7 +2645,14 @@ export function SupplierInvoicesView() {
                   name: quickProductItem.ocrItem?.description,
                   supplierSku: quickProductItem.ocrItem?.code,
                   costNet: toOptionalNonNegativeNumber(quickProductItem.unitCostNet),
-                  taxRate: Number(quickProductItem.taxPercent || 0) / 100,
+                  taxRate: quickProductItem.taxPercent.trim()
+                    ? Number(quickProductItem.taxPercent) / 100
+                    : undefined,
+                  unit: invoiceUnitToProductUnit(quickProductItem.ocrItem?.unit),
+                  invoiceUnit: quickProductItem.ocrItem?.unit,
+                  invoiceQuantity: quickProductItem.quantity.trim()
+                    ? Number(quickProductItem.quantity)
+                    : undefined,
                 }
               : undefined
           }
@@ -2355,15 +2741,15 @@ function CaptureMethodChoice({ onManual, onOcr }: { onManual: () => void; onOcr:
 function calculateTotals(items: EditableInvoiceItem[]) {
   return items.reduce(
     (sum, item) => {
-      const gross = Number(item.quantity || 0) * Number(item.unitCostNet || 0);
-      const discount = Math.min(Number(item.discountTotal || 0), gross);
-      const subtotal = gross - discount;
-      const tax = subtotal * (Number(item.taxPercent || 0) / 100);
+      const gross = roundCurrency(Number(item.quantity || 0) * Number(item.unitCostNet || 0));
+      const discount = Math.min(roundCurrency(Number(item.discountTotal || 0)), gross);
+      const subtotal = roundCurrency(gross - discount);
+      const tax = roundCurrency(subtotal * (Number(item.taxPercent || 0) / 100));
       return {
-        subtotal: sum.subtotal + subtotal,
-        discount: sum.discount + discount,
-        tax: sum.tax + tax,
-        total: sum.total + subtotal + tax,
+        subtotal: roundCurrency(sum.subtotal + subtotal),
+        discount: roundCurrency(sum.discount + discount),
+        tax: roundCurrency(sum.tax + tax),
+        total: roundCurrency(sum.total + subtotal + tax),
       };
     },
     { subtotal: 0, discount: 0, tax: 0, total: 0 },
@@ -2467,7 +2853,7 @@ function findMatchingSupplier(result: SupplierInvoiceOcrResult, suppliers: Suppl
       (supplier) =>
         normalizeDocument(supplier.documentNumber) === normalizeDocument(result.supplierDocument!),
     );
-    if (byDocument) return byDocument;
+    return byDocument;
   }
 
   const detectedName = normalizeCatalogText(result.supplierName ?? '');
@@ -2553,301 +2939,6 @@ function findPurchaseOrderLineForOcrItem(
   return undefined;
 }
 
-function findProductForOcrItem(
-  item: SupplierInvoiceOcrItem,
-  products: Product[],
-  supplierProducts: Supplier['products'] | undefined,
-): OcrProductMatch {
-  const productById = new Map(products.map((product) => [product.id, product]));
-  const activeSupplierProducts = (supplierProducts ?? []).filter(
-    (supplierProduct) => supplierProduct.active && productById.has(supplierProduct.productId),
-  );
-  const code = item.code?.trim();
-
-  if (code) {
-    // El codigo propio del suplidor es la evidencia mas confiable. Los
-    // formatos de factura suelen separar ese codigo con guiones, espacios o
-    // una segunda referencia; por eso se comparan tambien sus fragmentos.
-    const bySupplierSku = pickOcrProductCandidate(
-      activeSupplierProducts.flatMap((supplierProduct) => {
-        const score = catalogCodeMatchScore(code, supplierProduct.supplierSku);
-        const product = productById.get(supplierProduct.productId);
-        if (!product || !score) return [];
-        return [
-          {
-            product,
-            source: 'SUPPLIER_SKU' as const,
-            score: 1_000 + score,
-            evidenceScore: score,
-            isPrimary: supplierProduct.isPrimary,
-          },
-        ];
-      }),
-    );
-    if (bySupplierSku) return bySupplierSku;
-
-    // Algunos suplidores imprimen nuestro SKU o el codigo de barras en vez de
-    // su codigo propio. Si el producto ya esta vinculado a ese suplidor, ese
-    // vinculo sigue teniendo prioridad sobre otra coincidencia del catalogo.
-    const byLinkedCatalogCode = pickOcrProductCandidate(
-      activeSupplierProducts.flatMap((supplierProduct) => {
-        const product = productById.get(supplierProduct.productId);
-        if (!product) return [];
-        const score = Math.max(
-          catalogCodeMatchScore(code, product.sku),
-          catalogCodeMatchScore(code, product.barcode),
-        );
-        if (!score) return [];
-        return [
-          {
-            product,
-            source: supplierProduct.isPrimary
-              ? ('SUPPLIER_PRIMARY' as const)
-              : ('SUPPLIER_PRODUCT' as const),
-            score: 950 + score,
-            evidenceScore: score,
-            isPrimary: supplierProduct.isPrimary,
-          },
-        ];
-      }),
-    );
-    if (byLinkedCatalogCode) return byLinkedCatalogCode;
-
-    // Solo aceptamos un codigo del catalogo sin vinculo de suplidor cuando la
-    // coincidencia es exacta. Asi un fragmento OCR no selecciona por error un
-    // producto de otra marca o de otro suplidor.
-    const byCatalogCode = pickOcrProductCandidate(
-      products.flatMap((product) => {
-        const score = Math.max(
-          catalogCodeMatchScore(code, product.sku),
-          catalogCodeMatchScore(code, product.barcode),
-        );
-        if (score !== 100) return [];
-        return [
-          {
-            product,
-            source: 'CATALOG_CODE' as const,
-            score: 900 + score,
-            evidenceScore: score,
-            isPrimary: false,
-          },
-        ];
-      }),
-    );
-    if (byCatalogCode) return byCatalogCode;
-  }
-
-  const description = normalizeCatalogText(item.description ?? '');
-  if (description.length < 6) return {};
-
-  // Cuando no hay codigo confiable, primero se compara contra los productos
-  // que el suplidor seleccionado realmente distribuye. El producto marcado
-  // como principal solo desempata resultados practicamente equivalentes; no
-  // sustituye una descripcion claramente mas precisa.
-  const bySupplierDescription = pickOcrProductCandidate(
-    activeSupplierProducts.flatMap((supplierProduct) => {
-      const product = productById.get(supplierProduct.productId);
-      if (!product) return [];
-      const similarity = productDescriptionMatchScore(description, product);
-      if (similarity < 72) return [];
-      return [
-        {
-          product,
-          source: supplierProduct.isPrimary
-            ? ('SUPPLIER_PRIMARY' as const)
-            : ('SUPPLIER_PRODUCT' as const),
-          score: 600 + similarity,
-          evidenceScore: similarity,
-          isPrimary: supplierProduct.isPrimary,
-        },
-      ];
-    }),
-  );
-  if (bySupplierDescription) return bySupplierDescription;
-
-  const byCatalogDescription = pickOcrProductCandidate(
-    products.flatMap((product) => {
-      const similarity = productDescriptionMatchScore(description, product);
-      if (similarity < 82) return [];
-      return [
-        {
-          product,
-          source: 'CATALOG_DESCRIPTION' as const,
-          score: 400 + similarity,
-          evidenceScore: similarity,
-          isPrimary: false,
-        },
-      ];
-    }),
-  );
-  return byCatalogDescription ?? {};
-}
-
-type OcrProductMatchCandidate = {
-  product: Product;
-  source: OcrProductMatchSource;
-  score: number;
-  evidenceScore: number;
-  isPrimary: boolean;
-};
-
-function pickOcrProductCandidate(
-  candidates: OcrProductMatchCandidate[],
-): OcrProductMatch | undefined {
-  if (!candidates.length) return undefined;
-
-  // Una misma referencia puede coincidir a la vez con SKU y codigo de barras.
-  // Conservamos una sola candidatura por producto antes de evaluar ambiguedad.
-  const byProductId = new Map<string, OcrProductMatchCandidate>();
-  for (const candidate of candidates) {
-    const current = byProductId.get(candidate.product.id);
-    if (
-      !current ||
-      candidate.score > current.score ||
-      (candidate.score === current.score && candidate.isPrimary && !current.isPrimary)
-    ) {
-      byProductId.set(candidate.product.id, candidate);
-    }
-  }
-
-  const ranked = [...byProductId.values()].sort(
-    (left, right) =>
-      right.score - left.score ||
-      Number(right.isPrimary) - Number(left.isPrimary) ||
-      left.product.name.localeCompare(right.product.name, 'es'),
-  );
-  const best = ranked[0];
-  const next = ranked[1];
-
-  if (next && best.score === next.score && best.isPrimary === next.isPrimary) {
-    const supplierMatch = best.source.startsWith('SUPPLIER');
-    return {
-      warning: supplierMatch
-        ? 'El OCR coincide con varios productos de este suplidor. Selecciona el correcto.'
-        : 'El OCR coincide con varios productos del catalogo. Selecciona el correcto.',
-    };
-  }
-
-  const isExactCodeMatch =
-    best.evidenceScore === 100 &&
-    (best.source === 'SUPPLIER_SKU' ||
-      best.source === 'SUPPLIER_PRIMARY' ||
-      best.source === 'SUPPLIER_PRODUCT' ||
-      best.source === 'CATALOG_CODE');
-
-  return {
-    product: best.product,
-    source: best.source,
-    isPrimarySupplierProduct: best.isPrimary,
-    // Solo un código normalizado idéntico puede completar una línea sin
-    // intervención. Prefijos, fragmentos y descripciones se muestran como
-    // ayuda visual, pero se dejan para selección explícita.
-    highConfidence: isExactCodeMatch,
-    warning: isExactCodeMatch
-      ? undefined
-      : 'Coincidencia sugerida: confirma el producto manualmente antes de aplicarlo.',
-  };
-}
-
-function catalogCodeMatchScore(value: string, expected?: string | null) {
-  const detected = normalizedCodeVariants(value);
-  const candidate = normalizedCodeVariants(expected ?? '');
-  if (!detected.length || !candidate.length) return 0;
-
-  if (detected.some((left) => candidate.some((right) => left === right))) return 100;
-
-  if (
-    detected.some((left) =>
-      candidate.some(
-        (right) =>
-          Math.min(left.length, right.length) >= 7 &&
-          (left.startsWith(right) || right.startsWith(left)),
-      ),
-    )
-  ) {
-    // En varias facturas el OCR une al código del suplidor una segunda
-    // referencia. Un prefijo largo y exacto sigue siendo evidencia fuerte.
-    return 94;
-  }
-
-  return detected.some((left) =>
-    candidate.some(
-      (right) =>
-        Math.min(left.length, right.length) >= 7 && (left.includes(right) || right.includes(left)),
-    ),
-  )
-    ? 88
-    : 0;
-}
-
-function normalizedCodeVariants(value: string) {
-  const compact = normalizeCatalogCode(value);
-  const rawFragments = value
-    .split(/[\\s|/;,:]+/)
-    .map(normalizeCatalogCode)
-    .filter(Boolean);
-  const fragments = rawFragments.filter(
-    (fragment) => fragment.length >= 6 || (rawFragments.length === 1 && fragment.length >= 4),
-  );
-  return [...new Set([compact, ...fragments].filter((fragment) => fragment.length >= 4))];
-}
-
-function productDescriptionMatchScore(description: string, product: Product) {
-  const productTexts = [product.name, product.description]
-    .filter((value): value is string => Boolean(value?.trim()))
-    .map(normalizeCatalogText);
-  const bestTextScore = Math.max(
-    0,
-    ...productTexts.map((productText) => catalogTextSimilarity(description, productText)),
-  );
-  const brand = normalizeCatalogText(product.brand ?? '');
-  const brandBoost = brand.length >= 3 && description.includes(brand) ? 8 : 0;
-  return Math.min(100, bestTextScore + brandBoost);
-}
-
-function catalogTextSimilarity(left: string, right: string) {
-  if (!left || !right) return 0;
-  if (left === right) return 100;
-
-  const shorter = left.length <= right.length ? left : right;
-  const longer = left.length > right.length ? left : right;
-  if (shorter.length >= 6 && longer.includes(shorter)) return 94;
-
-  const leftTokens = meaningfulCatalogTokens(left);
-  const rightTokens = meaningfulCatalogTokens(right);
-  if (leftTokens.length < 2 || rightTokens.length < 2) return 0;
-
-  const rightSet = new Set(rightTokens);
-  const common = leftTokens.filter((token) => rightSet.has(token));
-  if (common.length < 2) return 0;
-
-  const coverage = common.length / Math.min(leftTokens.length, rightTokens.length);
-  const union = new Set([...leftTokens, ...rightTokens]).size;
-  const jaccard = common.length / union;
-  return Math.round(coverage * 70 + jaccard * 22 + (coverage === 1 ? 8 : 0));
-}
-
-function meaningfulCatalogTokens(value: string) {
-  const ignored = new Set([
-    'DE',
-    'DEL',
-    'LA',
-    'EL',
-    'LOS',
-    'LAS',
-    'CON',
-    'PARA',
-    'POR',
-    'UND',
-    'UNI',
-    'UNIDAD',
-    'PIEZA',
-    'PZA',
-    'REF',
-  ]);
-  return value.split(' ').filter((token) => token.length >= 2 && !ignored.has(token));
-}
-
 function getOcrProductMatchBadge(
   source?: OcrProductMatchSource,
   isPrimarySupplierProduct?: boolean,
@@ -2918,6 +3009,10 @@ function isDuplicateSupplierSkuError(error: unknown) {
 
 function roundCurrency(value: number) {
   return Math.round((value + Number.EPSILON) * 100) / 100;
+}
+
+function roundUnitCost(value: number) {
+  return Math.round((value + Number.EPSILON) * 1_000_000) / 1_000_000;
 }
 
 function numbersMatch(left: string | number, right: string | number, tolerance: number) {

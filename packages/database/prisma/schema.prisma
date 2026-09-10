@@ -246,6 +246,7 @@ enum ProductUnit {
   GALLON
   LITER
   KILOGRAM
+  QUINTAL
   SERVICE
 }
 
@@ -1169,7 +1170,7 @@ model SupplierInvoiceItem {
   descriptionSnapshot String
   unitSnapshot        ProductUnit
   quantity            Decimal            @db.Decimal(14, 3)
-  unitCostNet         Decimal            @db.Decimal(14, 2)
+  unitCostNet         Decimal            @db.Decimal(18, 6)
   unitCostWithTax     Decimal            @db.Decimal(14, 2)
   discountTotal       Decimal            @default(0) @db.Decimal(14, 2)
   taxRate             Decimal            @db.Decimal(5, 4)

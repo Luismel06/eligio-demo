@@ -1,5 +1,11 @@
-const MAX_OCR_EDGE = 2400;
-const MIN_OCR_EDGE = 1400;
+import {
+  locateSupplierInvoiceTable,
+  type SupplierInvoiceOcrLayoutLine,
+  type SupplierInvoiceOcrRectangle,
+} from './supplier-invoice-ocr-spatial';
+
+const MAX_OCR_EDGE = 3600;
+const MIN_OCR_EDGE = 3200;
 const ANALYSIS_MAX_EDGE = 720;
 
 type Point = { x: number; y: number };
@@ -74,8 +80,9 @@ export type SupplierInvoiceImageQuality = {
 };
 
 export type SupplierInvoiceOcrRegion = {
-  id: 'header' | 'table' | 'footer';
+  id: 'header' | 'table' | 'footer' | 'metadata';
   image: Blob;
+  rectangle: SupplierInvoiceOcrRectangle;
 };
 
 /**
@@ -87,7 +94,10 @@ export type SupplierInvoiceOcrRegion = {
  * be loaded, or no credible document contour is found, the former contrast
  * pipeline remains the safe fallback.
  */
-export async function preprocessSupplierInvoiceImage(source: Blob): Promise<Blob> {
+export async function preprocessSupplierInvoiceImage(
+  source: Blob,
+  options: { enhance?: boolean } = {},
+): Promise<Blob> {
   const bitmap = await loadImage(source);
   const sourceCanvas = document.createElement('canvas');
   let workingCanvas: HTMLCanvasElement | null = sourceCanvas;
@@ -131,7 +141,9 @@ export async function preprocessSupplierInvoiceImage(source: Blob): Promise<Blob
 
     const enhancedContext = workingCanvas.getContext('2d', { willReadFrequently: true });
     if (!enhancedContext) throw new Error('No se pudo preparar la imagen para el OCR.');
-    enhanceInvoiceImage(enhancedContext, workingCanvas.width, workingCanvas.height);
+    if (options.enhance !== false) {
+      enhanceInvoiceImage(enhancedContext, workingCanvas.width, workingCanvas.height);
+    }
 
     return await canvasToBlob(workingCanvas);
   } finally {
@@ -243,6 +255,7 @@ export async function assessSupplierInvoiceImageQuality(
       laplacianSquares / laplacianCount - (laplacianSum / laplacianCount) ** 2,
     );
     const warnings: string[] = [];
+    if (longestEdge < 1100) warnings.push('la imagen tiene poca resolución para letras pequeñas');
     if (average < 58 || average > 245) warnings.push('la iluminación es extrema');
     if (contrast < 18) warnings.push('hay poco contraste');
     if (sharpness < 28) warnings.push('la foto parece poco nítida');
@@ -267,6 +280,7 @@ export async function assessSupplierInvoiceImageQuality(
  */
 export async function createSupplierInvoiceOcrRegions(
   source: Blob,
+  layoutLines: SupplierInvoiceOcrLayoutLine[] = [],
 ): Promise<SupplierInvoiceOcrRegion[]> {
   let bitmap: DecodedImage | null = null;
   const canvas = document.createElement('canvas');
@@ -279,19 +293,57 @@ export async function createSupplierInvoiceOcrRegions(
     if (!context || canvas.width < 16 || canvas.height < 16) return [];
 
     context.drawImage(bitmap, 0, 0);
-    const header = await cropCanvasToBlob(canvas, 0.025, 0.02, 0.95, 0.34);
-    // Most supplier formats place their line table between the company/client
-    // header and the footer totals. Reading it as a single block preserves
-    // horizontal rows better than sparse-text OCR, especially on multipage
-    // invoices. It intentionally remains a generous crop because every
-    // supplier arranges its header differently.
-    const table = await cropCanvasToBlob(canvas, 0.015, 0.12, 0.97, 0.78);
-    const footer = await cropCanvasToBlob(canvas, 0.025, 0.62, 0.95, 0.35);
-    return [
-      { id: 'header', image: header },
-      { id: 'table', image: table },
-      { id: 'footer', image: footer },
+    const tableRectangle = locateSupplierInvoiceTable(layoutLines, canvas.width, canvas.height);
+    const tableIsLocated = tableRectangle.top > 0;
+    const headerHeight = tableIsLocated ? tableRectangle.top : Math.ceil(canvas.height * 0.42);
+    const footerTop = tableIsLocated
+      ? Math.floor(tableRectangle.top + tableRectangle.height)
+      : Math.floor(canvas.height * 0.55);
+    const rectangles: Array<{
+      id: SupplierInvoiceOcrRegion['id'];
+      rectangle: SupplierInvoiceOcrRectangle;
+    }> = [
+      { id: 'header', rectangle: { left: 0, top: 0, width: canvas.width, height: headerHeight } },
+      { id: 'table', rectangle: tableRectangle },
+      {
+        id: 'footer',
+        rectangle: {
+          left: 0,
+          top: footerTop,
+          width: canvas.width,
+          height: canvas.height - footerTop,
+        },
+      },
     ];
+    // Sparse segmentation can truncate a small date or split a payment term.
+    // Reread its actual printed line, not a fixed invoice-template coordinate.
+    for (const line of layoutLines.filter((entry) => entry.bbox.y0 < headerHeight)) {
+      const labelIndex = line.words.findIndex((word) =>
+        /^(?:EMIS[I1L][OÓ]N|CONDICI[OÓ]N(?:ES)?)[.:]?$/i.test(word.text),
+      );
+      if (labelIndex < 0) continue;
+      const label = line.words[labelIndex];
+      const lineHeight = Math.max(12, label.bbox.y1 - label.bbox.y0);
+      const labelStart =
+        labelIndex > 0 && /^FECHA$/i.test(line.words[labelIndex - 1].text)
+          ? line.words[labelIndex - 1].bbox.x0
+          : label.bbox.x0;
+      const left = Math.max(0, Math.floor(labelStart - lineHeight));
+      const top = Math.max(0, Math.floor(label.bbox.y0 - lineHeight * 0.65));
+      const right = Math.min(canvas.width, Math.ceil(line.bbox.x1 + lineHeight * 10));
+      const bottom = Math.min(headerHeight, Math.ceil(label.bbox.y1 + lineHeight * 0.35));
+      rectangles.push({
+        id: 'metadata',
+        rectangle: { left, top, width: right - left, height: bottom - top },
+      });
+      if (rectangles.length >= 7) break;
+    }
+    const regions: SupplierInvoiceOcrRegion[] = [];
+    for (const { id, rectangle } of rectangles) {
+      if (rectangle.height < 12) continue;
+      regions.push({ id, rectangle, image: await cropCanvasToBlob(canvas, rectangle) });
+    }
+    return regions;
   } catch {
     // Regional OCR is optional. The general reading remains usable if a
     // browser cannot decode a crop from an otherwise valid page.
@@ -459,7 +511,9 @@ function findLargestDocumentCorners(
   width: number,
   height: number,
 ): Point[] | null {
-  const minimumArea = width * height * 0.22;
+  // A ruled products table can occupy a quarter of a tightly cropped invoice.
+  // Treating that rectangle as the paper used to discard issuer and totals.
+  const minimumArea = width * height * 0.55;
   let bestCorners: Point[] | null = null;
   let bestArea = minimumArea;
 
@@ -622,15 +676,22 @@ function estimateDeskewAngle(context: CanvasRenderingContext2D, width: number, h
 
 function rotateCanvas(source: HTMLCanvasElement, angle: number) {
   const canvas = document.createElement('canvas');
-  canvas.width = source.width;
-  canvas.height = source.height;
+  const radians = (angle * Math.PI) / 180;
+  // Expand the destination: rotating into the original bounds clips characters
+  // at the edges, particularly quantity/amount columns on cropped photographs.
+  canvas.width = Math.ceil(
+    Math.abs(source.width * Math.cos(radians)) + Math.abs(source.height * Math.sin(radians)),
+  );
+  canvas.height = Math.ceil(
+    Math.abs(source.height * Math.cos(radians)) + Math.abs(source.width * Math.sin(radians)),
+  );
   const context = canvas.getContext('2d');
   if (!context) return source;
 
   context.fillStyle = '#ffffff';
   context.fillRect(0, 0, canvas.width, canvas.height);
   context.translate(canvas.width / 2, canvas.height / 2);
-  context.rotate((angle * Math.PI) / 180);
+  context.rotate(radians);
   context.drawImage(source, -source.width / 2, -source.height / 2);
   source.width = 1;
   source.height = 1;
@@ -640,30 +701,17 @@ function rotateCanvas(source: HTMLCanvasElement, angle: number) {
 function enhanceInvoiceImage(context: CanvasRenderingContext2D, width: number, height: number) {
   const imageData = context.getImageData(0, 0, width, height);
   const { data } = imageData;
-  const histogram = new Uint32Array(256);
+  const luminance = new Uint8Array(width * height);
 
   for (let index = 0; index < data.length; index += 4) {
-    const luminance = Math.round(
+    luminance[index / 4] = Math.round(
       data[index] * 0.2126 + data[index + 1] * 0.7152 + data[index + 2] * 0.0722,
     );
-    histogram[luminance] += 1;
   }
 
-  const low = percentile(histogram, 0.02);
-  const high = percentile(histogram, 0.98);
-  const range = Math.max(28, high - low);
-  const threshold = otsuThreshold(histogram, width * height);
-  const normalizedThreshold = Math.min(255, Math.max(0, ((threshold - low) * 255) / range));
-  const softLowerBound = Math.max(0, normalizedThreshold - 42);
-  const softRange = Math.max(80, Math.min(170, normalizedThreshold + 58 - softLowerBound));
-
+  const normalized = normalizeSupplierInvoiceLuminance(luminance, width, height);
   for (let index = 0; index < data.length; index += 4) {
-    const luminance = data[index] * 0.2126 + data[index + 1] * 0.7152 + data[index + 2] * 0.0722;
-    const normalized = Math.min(255, Math.max(0, ((luminance - low) * 255) / range));
-    // A soft Otsu threshold removes shadows without destroying thin printed text.
-    const enhanced = Math.round(
-      Math.min(255, Math.max(0, ((normalized - softLowerBound) * 255) / softRange)),
-    );
+    const enhanced = normalized[index / 4];
     data[index] = enhanced;
     data[index + 1] = enhanced;
     data[index + 2] = enhanced;
@@ -673,17 +721,56 @@ function enhanceInvoiceImage(context: CanvasRenderingContext2D, width: number, h
   context.putImageData(imageData, 0, 0);
 }
 
-function cropCanvasToBlob(
-  source: HTMLCanvasElement,
-  leftRatio: number,
-  topRatio: number,
-  widthRatio: number,
-  heightRatio: number,
-) {
-  const x = Math.max(0, Math.floor(source.width * leftRatio));
-  const y = Math.max(0, Math.floor(source.height * topRatio));
-  const width = Math.max(1, Math.min(source.width - x, Math.round(source.width * widthRatio)));
-  const height = Math.max(1, Math.min(source.height - y, Math.round(source.height * heightRatio)));
+/**
+ * Remove the local paper shade before OCR. A global histogram cannot separate
+ * bright paper, shadowed paper and the dark table beneath a photograph: it can
+ * turn half of the invoice into one solid region. Integral means keep this O(n)
+ * and distinguish ink from the nearby paper rather than the whole photograph.
+ */
+export function normalizeSupplierInvoiceLuminance(
+  luminance: Uint8Array,
+  width: number,
+  height: number,
+): Uint8Array {
+  if (luminance.length !== width * height || width < 1 || height < 1) return luminance;
+  const stride = width + 1;
+  const integral = new Float64Array(stride * (height + 1));
+  for (let y = 0; y < height; y += 1) {
+    let rowSum = 0;
+    for (let x = 0; x < width; x += 1) {
+      rowSum += luminance[y * width + x];
+      integral[(y + 1) * stride + x + 1] = integral[y * stride + x + 1] + rowSum;
+    }
+  }
+  const radius = Math.max(16, Math.round(Math.min(width, height) * 0.018));
+  const result = new Uint8Array(luminance.length);
+  for (let y = 0; y < height; y += 1) {
+    const top = Math.max(0, y - radius);
+    const bottom = Math.min(height, y + radius + 1);
+    for (let x = 0; x < width; x += 1) {
+      const left = Math.max(0, x - radius);
+      const right = Math.min(width, x + radius + 1);
+      const sum =
+        integral[bottom * stride + right] -
+        integral[top * stride + right] -
+        integral[bottom * stride + left] +
+        integral[top * stride + left];
+      const mean = sum / ((bottom - top) * (right - left));
+      const threshold = mean * 0.88;
+      // A short grayscale ramp preserves antialiased thin strokes; paper well
+      // above its local threshold becomes white, including the shadowed side.
+      const value = (luminance[y * width + x] - threshold + 8) * (255 / 24);
+      result[y * width + x] = Math.round(Math.min(255, Math.max(0, value)));
+    }
+  }
+  return result;
+}
+
+function cropCanvasToBlob(source: HTMLCanvasElement, rectangle: SupplierInvoiceOcrRectangle) {
+  const x = Math.max(0, Math.floor(rectangle.left));
+  const y = Math.max(0, Math.floor(rectangle.top));
+  const width = Math.max(1, Math.min(source.width - x, Math.round(rectangle.width)));
+  const height = Math.max(1, Math.min(source.height - y, Math.round(rectangle.height)));
   const canvas = document.createElement('canvas');
   canvas.width = width;
   canvas.height = height;
@@ -699,45 +786,6 @@ function cropCanvasToBlob(
   });
 }
 
-function percentile(histogram: Uint32Array, percentileValue: number) {
-  const total = histogram.reduce((sum, count) => sum + count, 0);
-  const target = Math.max(1, Math.ceil(total * percentileValue));
-  let seen = 0;
-  for (let value = 0; value < histogram.length; value += 1) {
-    seen += histogram[value];
-    if (seen >= target) return value;
-  }
-  return 255;
-}
-
-function otsuThreshold(histogram: Uint32Array, total: number) {
-  let sum = 0;
-  for (let index = 0; index < histogram.length; index += 1) sum += index * histogram[index];
-
-  let backgroundWeight = 0;
-  let backgroundSum = 0;
-  let bestThreshold = 127;
-  let bestVariance = -1;
-
-  for (let threshold = 0; threshold < histogram.length; threshold += 1) {
-    backgroundWeight += histogram[threshold];
-    if (backgroundWeight === 0) continue;
-    const foregroundWeight = total - backgroundWeight;
-    if (foregroundWeight === 0) break;
-
-    backgroundSum += threshold * histogram[threshold];
-    const backgroundMean = backgroundSum / backgroundWeight;
-    const foregroundMean = (sum - backgroundSum) / foregroundWeight;
-    const variance = backgroundWeight * foregroundWeight * (backgroundMean - foregroundMean) ** 2;
-    if (variance > bestVariance) {
-      bestVariance = variance;
-      bestThreshold = threshold;
-    }
-  }
-
-  return bestThreshold;
-}
-
 function canvasToBlob(canvas: HTMLCanvasElement) {
   return new Promise<Blob>((resolve, reject) => {
     canvas.toBlob(
@@ -745,8 +793,8 @@ function canvasToBlob(canvas: HTMLCanvasElement) {
         if (blob) resolve(blob);
         else reject(new Error('No se pudo preparar la imagen para el OCR.'));
       },
-      'image/jpeg',
-      0.94,
+      // Repeated JPEG encoding introduces artifacts around tiny invoice text.
+      'image/png',
     );
   });
 }

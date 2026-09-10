@@ -15,6 +15,10 @@ import {
   type ProductUnit,
 } from '@/lib/api';
 import type { AuthSession } from '@/lib/auth-session';
+import {
+  convertInvoiceUnit,
+  invoiceUnitToProductUnit,
+} from '@/lib/supplier-invoice-product-matching';
 import { selectClassName } from './procurement-ui';
 import { SupplierInvoiceDialog } from './supplier-invoice-dialog';
 
@@ -27,6 +31,10 @@ export type QuickProductCreatePrefill = {
   costNet?: number;
   /** Tasa decimal, por ejemplo 0.18 para 18 %. */
   taxRate?: number;
+  /** Unidad de inventario conocida; una presentación desconocida exige elegirla. */
+  unit?: ProductUnit;
+  invoiceUnit?: string;
+  invoiceQuantity?: number;
 };
 
 type QuickProductCreateDialogProps = {
@@ -43,7 +51,7 @@ type QuickProductCreateDialogProps = {
   supplierId?: string;
   supplierName?: string;
   linkSupplierByDefault?: boolean;
-  onCreated: (product: Product) => void | Promise<void>;
+  onCreated: (product: Product, conversion?: { invoiceUnitFactor: number }) => void | Promise<void>;
   /** Permite a la pantalla que invoca reutilizar una coincidencia en vez de duplicarla. */
   onSelectExisting?: (product: Product) => void | Promise<void>;
 };
@@ -53,11 +61,12 @@ type ProductForm = {
   sku: string;
   barcode: string;
   supplierSku: string;
-  unit: ProductUnit;
+  unit: ProductUnit | '';
   cost: string;
   salePrice: string;
   taxPercent: string;
   linkToSupplier: boolean;
+  invoiceUnitFactor: string;
 };
 
 type DuplicateMatch = {
@@ -78,6 +87,7 @@ const productUnits = [
   ['GALLON', 'Galón'],
   ['LITER', 'Litro'],
   ['KILOGRAM', 'Kilogramo'],
+  ['QUINTAL', 'Quintal'],
 ] as const;
 
 /**
@@ -123,11 +133,42 @@ export function QuickProductCreateDialog({
   );
   const hasDuplicate = duplicateMatches.length > 0;
   const canCreate = hasSessionCredentials(tenantId, accessToken);
+  const requiresUnitConversion = Boolean(
+    prefill?.invoiceUnit &&
+    form.unit &&
+    invoiceUnitToProductUnit(prefill.invoiceUnit) !== form.unit,
+  );
 
   const createMutation = useMutation({
     mutationFn: async () => {
       const validationError = validateForm(form);
       if (validationError) throw new Error(validationError);
+      const invoiceUnitFactor = Number(form.invoiceUnitFactor);
+      if (
+        requiresUnitConversion &&
+        (!Number.isFinite(invoiceUnitFactor) || invoiceUnitFactor <= 0)
+      ) {
+        throw new Error(
+          'Indica cuántas unidades de inventario contiene la presentación de la factura.',
+        );
+      }
+      if (
+        requiresUnitConversion &&
+        prefill?.costNet !== undefined &&
+        prefill.invoiceQuantity !== undefined
+      ) {
+        convertInvoiceUnit(
+          {
+            key: 'conversion-preview',
+            productId: '',
+            quantity: String(prefill.invoiceQuantity),
+            unitCostNet: String(prefill.costNet),
+            taxPercent: '',
+            discountTotal: '0',
+          },
+          invoiceUnitFactor,
+        );
+      }
       if (!tenantId || !accessToken)
         throw new Error('La sesión activa es requerida para crear el producto.');
 
@@ -138,7 +179,7 @@ export function QuickProductCreateDialog({
         name: form.name.trim(),
         sku: optional(form.sku),
         barcode: optional(form.barcode),
-        unit: form.unit,
+        unit: form.unit as ProductUnit,
         price: Number(form.salePrice),
         cost,
         taxCategory,
@@ -163,9 +204,18 @@ export function QuickProductCreateDialog({
         }
       }
 
-      return { product, supplierLinkError };
+      return {
+        product,
+        supplierLinkError,
+        conversion:
+          requiresUnitConversion &&
+          prefill?.costNet !== undefined &&
+          prefill.invoiceQuantity !== undefined
+            ? { invoiceUnitFactor }
+            : undefined,
+      };
     },
-    onSuccess: async ({ product, supplierLinkError }) => {
+    onSuccess: async ({ product, supplierLinkError, conversion }) => {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['products'] }),
         queryClient.invalidateQueries({ queryKey: ['suppliers'] }),
@@ -173,7 +223,7 @@ export function QuickProductCreateDialog({
       ]);
 
       try {
-        await onCreated(product);
+        await onCreated(product, conversion);
       } catch (error) {
         toast.error('El producto fue creado, pero no se pudo aplicarlo automáticamente.', {
           description: toError(error).message,
@@ -286,14 +336,16 @@ export function QuickProductCreateDialog({
                             variant="outline"
                             size="sm"
                             onClick={() => void selectExisting(product)}
-                            disabled={Boolean(selectingExistingId)}
+                            disabled={Boolean(selectingExistingId) || product.status !== 'ACTIVE'}
                           >
                             {selectingExistingId === product.id ? (
                               <LoaderCircle className="h-4 w-4 animate-spin" />
                             ) : (
                               <CheckCircle2 className="h-4 w-4" />
                             )}
-                            Usar existente
+                            {product.status === 'ACTIVE'
+                              ? 'Usar existente'
+                              : 'Inactivo: reactívalo en Productos'}
                           </Button>
                         ) : null}
                       </div>
@@ -334,16 +386,67 @@ export function QuickProductCreateDialog({
             <Field label="Unidad" required>
               <select
                 value={form.unit}
-                onChange={(event) => updateField('unit', event.target.value as ProductUnit)}
+                onChange={(event) => {
+                  const unit = event.target.value as ProductUnit;
+                  setForm((current) => {
+                    if (!prefill?.invoiceUnit) return { ...current, unit };
+                    const sameUnit = invoiceUnitToProductUnit(prefill.invoiceUnit) === unit;
+                    return {
+                      ...current,
+                      unit,
+                      invoiceUnitFactor: sameUnit ? '1' : '',
+                      cost: sameUnit ? toDecimalInput(prefill.costNet) : '',
+                    };
+                  });
+                }}
                 className={selectClassName}
+                required
               >
+                <option value="" disabled>
+                  Selecciona la unidad de inventario
+                </option>
                 {productUnits.map(([value, label]) => (
                   <option key={value} value={value}>
                     {label}
                   </option>
                 ))}
               </select>
+              {prefill?.invoiceUnit ? (
+                <p className="text-xs leading-5 text-muted-foreground">
+                  La factura indica {prefill.invoiceUnit}. Si eliges otra presentación, confirma la
+                  conversión en la línea de factura antes de guardar.
+                </p>
+              ) : null}
             </Field>
+            {requiresUnitConversion ? (
+              <Field
+                label={`Unidades de inventario por cada ${prefill?.invoiceUnit}`}
+                required
+                hint="Ejemplo: si una docena contiene 12 unidades, indica 12. Calcularemos el costo de una unidad y convertiremos la cantidad facturada."
+              >
+                <Input
+                  type="number"
+                  min="0.000001"
+                  step="any"
+                  inputMode="decimal"
+                  required
+                  value={form.invoiceUnitFactor}
+                  placeholder="Cantidad por presentación"
+                  onChange={(event) => {
+                    const value = event.target.value;
+                    const factor = Number(value);
+                    setForm((current) => ({
+                      ...current,
+                      invoiceUnitFactor: value,
+                      cost:
+                        Number.isFinite(factor) && factor > 0 && prefill?.costNet !== undefined
+                          ? toDecimalInput(prefill.costNet / factor)
+                          : '',
+                    }));
+                  }}
+                />
+              </Field>
+            ) : null}
             <Field label="Costo unitario sin ITBIS (RD$)" required>
               <Input
                 type="number"
@@ -483,11 +586,12 @@ function createInitialForm(
     sku: '',
     barcode: '',
     supplierSku: prefill?.supplierSku?.trim() ?? '',
-    unit: 'UNIT',
+    unit: prefill?.unit ?? (prefill?.invoiceUnit ? '' : 'UNIT'),
     cost: toDecimalInput(prefill?.costNet),
     salePrice: '',
     taxPercent: toTaxPercentInput(prefill?.taxRate),
     linkToSupplier: Boolean(supplierId && linkSupplierByDefault),
+    invoiceUnitFactor: prefill?.unit ? '1' : '',
   };
 }
 
@@ -513,9 +617,11 @@ function findDuplicateMatches(
 
 function validateForm(form: ProductForm) {
   if (!form.name.trim()) return 'Indica la descripción del producto.';
+  if (!form.unit) return 'Selecciona la unidad de inventario del producto.';
   if (form.name.trim().length > 160) return 'La descripción no puede exceder 160 caracteres.';
   const cost = Number(form.cost);
-  if (!Number.isFinite(cost) || cost < 0) return 'Indica un costo unitario válido.';
+  if (!form.cost.trim() || !Number.isFinite(cost) || cost < 0)
+    return 'Indica un costo unitario válido.';
   const salePrice = Number(form.salePrice);
   if (!Number.isFinite(salePrice) || salePrice < 0.01) return 'Indica un precio de venta válido.';
   const taxPercent = Number(form.taxPercent);

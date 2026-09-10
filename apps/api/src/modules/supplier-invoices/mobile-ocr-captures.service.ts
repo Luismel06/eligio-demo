@@ -63,6 +63,7 @@ type StoredOcrItem = {
  */
 type StoredOcrResult = {
   pageCount?: number;
+  expectedItemCount?: number;
   supplierName?: string;
   supplierDocument?: string;
   supplierTemplate?: string;
@@ -354,6 +355,7 @@ export class MobileOcrCapturesService {
   private sanitizeResult(dto: MobileOcrCaptureResultDto): StoredOcrResult {
     return compactObject({
       pageCount: dto.pageCount,
+      expectedItemCount: dto.expectedItemCount,
       supplierName: normalizeText(dto.supplierName, 200),
       supplierDocument: normalizeText(dto.supplierDocument, 32),
       supplierTemplate: normalizeText(dto.supplierTemplate, 80),

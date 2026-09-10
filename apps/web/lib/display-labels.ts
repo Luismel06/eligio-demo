@@ -156,6 +156,7 @@ const productUnitLabels: Record<string, string> = {
   GALLON: 'Galon',
   LITER: 'Litro',
   KILOGRAM: 'Kilogramo',
+  QUINTAL: 'Quintal',
   SERVICE: 'Servicio',
 };
 

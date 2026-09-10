@@ -339,9 +339,7 @@ export class SupplierInvoicesService {
     const ncf = normalizeNcf(dto.ncf);
     const issueDate = parseSupplierBusinessDate(dto.issueDate);
     const dueDate = dto.dueDate ? parseSupplierBusinessDate(dto.dueDate) : null;
-    const ncfValidUntil = dto.ncfValidUntil
-      ? parseSupplierBusinessDate(dto.ncfValidUntil)
-      : null;
+    const ncfValidUntil = dto.ncfValidUntil ? parseSupplierBusinessDate(dto.ncfValidUntil) : null;
     const paymentCondition = normalizeOptionalText(dto.paymentCondition) ?? null;
     this.validateDates(issueDate, dueDate);
     this.validateNcfValidUntil(issueDate, ncfValidUntil);
@@ -451,7 +449,7 @@ export class SupplierInvoicesService {
     const paymentCondition =
       dto.paymentCondition === undefined
         ? current.paymentCondition
-        : normalizeOptionalText(dto.paymentCondition) ?? null;
+        : (normalizeOptionalText(dto.paymentCondition) ?? null);
     this.validateDates(issueDate, dueDate);
     this.validateNcfValidUntil(issueDate, ncfValidUntil);
     await this.ensureUniqueIdentifiers(tenantId, supplier.id, invoiceNumber, ncf, current.id);
@@ -463,7 +461,13 @@ export class SupplierInvoicesService {
         productId: item.productId,
         purchaseOrderItemId: item.purchaseOrderItemId ?? undefined,
         quantity: item.quantity.toNumber(),
-        unitCostNet: item.unitCostNet.toNumber(),
+        // Stored cost is after the line discount. Reconstruct the quoted
+        // cost so saving an existing draft does not apply its discount twice.
+        unitCostNet: item.subtotal
+          .add(item.discountTotal)
+          .div(item.quantity)
+          .toDecimalPlaces(6)
+          .toNumber(),
         taxRate: item.taxRate.toNumber(),
         discountTotal: item.discountTotal.toNumber(),
       }));
@@ -585,13 +589,7 @@ export class SupplierInvoicesService {
           // debe pasar de borrador sin que una persona revise explícitamente
           // las diferencias frente a la orden de compra. Esto también protege
           // las llamadas directas a la API, no solo la pantalla web.
-          await this.assertOrderReconciliationAccepted(
-            tx,
-            tenantId,
-            userId,
-            id,
-            dto,
-          );
+          await this.assertOrderReconciliationAccepted(tx, tenantId, userId, id, dto);
 
           const receiptId = await this.receiptsService.createAndConfirmInTransaction(
             tx,
@@ -684,9 +682,7 @@ export class SupplierInvoicesService {
     }
     if (!invoice.purchaseOrder) return;
 
-    const orderItemsById = new Map(
-      invoice.purchaseOrder.items.map((item) => [item.id, item]),
-    );
+    const orderItemsById = new Map(invoice.purchaseOrder.items.map((item) => [item.id, item]));
     const linkedOrderItemIds = new Set<string>();
     const malformedLines: string[] = [];
     const quantityDifferences: Array<Record<string, string>> = [];
@@ -1307,7 +1303,9 @@ export class SupplierInvoicesService {
       }
 
       const quantity = new Prisma.Decimal(dto.quantity).toDecimalPlaces(3);
-      const quotedUnitCostNet = new Prisma.Decimal(dto.unitCostNet).toDecimalPlaces(2);
+      // Tax-inclusive supplier prices often produce a repeating net unit
+      // cost. Keep its precision until the line base is rounded to cents.
+      const quotedUnitCostNet = new Prisma.Decimal(dto.unitCostNet).toDecimalPlaces(6);
       const gross = quantity.mul(quotedUnitCostNet).toDecimalPlaces(2);
       const discountTotal = new Prisma.Decimal(dto.discountTotal ?? 0).toDecimalPlaces(2);
       if (discountTotal.gt(gross)) {
@@ -1317,7 +1315,7 @@ export class SupplierInvoicesService {
       const taxRate = new Prisma.Decimal(dto.taxRate).toDecimalPlaces(4);
       const taxTotal = subtotal.mul(taxRate).toDecimalPlaces(2);
       const total = subtotal.add(taxTotal).toDecimalPlaces(2);
-      const unitCostNet = subtotal.div(quantity).toDecimalPlaces(2);
+      const unitCostNet = subtotal.div(quantity).toDecimalPlaces(6);
       const unitCostWithTax = total.div(quantity).toDecimalPlaces(2);
 
       return {

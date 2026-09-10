@@ -349,6 +349,7 @@ export type ProductUnit =
   | 'GALLON'
   | 'LITER'
   | 'KILOGRAM'
+  | 'QUINTAL'
   | 'SERVICE';
 export type PosPaymentMethod = 'CASH' | 'CARD' | 'TRANSFER';
 export type PaymentMethod = PosPaymentMethod | 'CHECK' | 'OTHER';

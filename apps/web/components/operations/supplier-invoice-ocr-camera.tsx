@@ -14,24 +14,15 @@ import { useEffect, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import {
   assessSupplierInvoiceImageQuality,
-  createSupplierInvoiceOcrRegions,
-  preprocessSupplierInvoiceImage,
   rotateSupplierInvoiceImage,
   type SupplierInvoiceImageQuality,
 } from '@/lib/supplier-invoice-ocr-image';
-import { readSupplierInvoiceQr } from '@/lib/supplier-invoice-qr';
+import { type SupplierInvoiceOcrResult } from '@/lib/supplier-invoice-ocr';
 import {
-  extractSupplierInvoiceOcr,
-  type SupplierInvoiceOcrResult,
-} from '@/lib/supplier-invoice-ocr';
+  recognizeSupplierInvoicePages,
+  type SupplierInvoiceOcrProgress,
+} from '@/lib/supplier-invoice-ocr-recognize';
 import { SupplierInvoiceDialog } from './supplier-invoice-dialog';
-
-type OcrProgress = {
-  status: string;
-  value: number;
-  page: number;
-  totalPages: number;
-};
 
 type CapturedPage = {
   id: string;
@@ -60,13 +51,13 @@ export function SupplierInvoiceOcrCamera({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const cameraRequestRef = useRef(0);
-  const currentOcrPageRef = useRef(1);
+  const ocrAbortRef = useRef<AbortController | null>(null);
   const pagesRef = useRef<CapturedPage[]>([]);
   const [pages, setPages] = useState<CapturedPage[]>([]);
   const [activeView, setActiveView] = useState<'camera' | string>('camera');
   const [cameraError, setCameraError] = useState<string | null>(null);
   const [ocrError, setOcrError] = useState<string | null>(null);
-  const [ocrProgress, setOcrProgress] = useState<OcrProgress | null>(null);
+  const [ocrProgress, setOcrProgress] = useState<SupplierInvoiceOcrProgress | null>(null);
   const [processing, setProcessing] = useState(false);
 
   const selectedPage =
@@ -75,6 +66,7 @@ export function SupplierInvoiceOcrCamera({
 
   useEffect(() => {
     if (!open) {
+      cancelRecognition();
       stopCamera();
       clearPages();
       return;
@@ -82,6 +74,7 @@ export function SupplierInvoiceOcrCamera({
     void activateCamera();
 
     return () => {
+      cancelRecognition();
       stopCamera();
     };
   }, [open]);
@@ -95,6 +88,7 @@ export function SupplierInvoiceOcrCamera({
 
   useEffect(
     () => () => {
+      ocrAbortRef.current?.abort();
       stopCamera();
       revokePageUrls(pagesRef.current);
       pagesRef.current = [];
@@ -277,7 +271,9 @@ export function SupplierInvoiceOcrCamera({
         ),
       );
     } catch {
-      setOcrError('No se pudo girar la página. Puedes repetir la foto o introducir la factura manualmente.');
+      setOcrError(
+        'No se pudo girar la página. Puedes repetir la foto o introducir la factura manualmente.',
+      );
     } finally {
       setProcessing(false);
     }
@@ -297,7 +293,10 @@ export function SupplierInvoiceOcrCamera({
 
   async function recognizePages() {
     const capturePages = [...pagesRef.current];
-    if (!capturePages.length) return;
+    if (!capturePages.length || ocrAbortRef.current) return;
+
+    const controller = new AbortController();
+    ocrAbortRef.current = controller;
 
     setProcessing(true);
     setOcrError(null);
@@ -307,126 +306,34 @@ export function SupplierInvoiceOcrCamera({
       page: 1,
       totalPages: capturePages.length,
     });
-    let worker: Awaited<ReturnType<(typeof import('tesseract.js'))['createWorker']>> | null = null;
-
     try {
-      const { createWorker, OEM, PSM } = await import('tesseract.js');
-      worker = await createWorker('spa+eng', OEM.LSTM_ONLY, {
-        logger: (message) => {
-          const page = Math.min(capturePages.length, Math.max(1, currentOcrPageRef.current));
-          const progress = Number.isFinite(message.progress) ? message.progress : 0;
-          setOcrProgress({
-            status: message.status,
-            value: progress,
-            page,
-            totalPages: capturePages.length,
-          });
-        },
+      const result = await recognizeSupplierInvoicePages(capturePages, {
+        signal: controller.signal,
+        onProgress: setOcrProgress,
       });
-      const recognizeImage = async (
-        image: Blob,
-        pageSegmentationMode: (typeof PSM)[keyof typeof PSM],
-      ) => {
-        if (!worker) return '';
-        await worker.setParameters({ tessedit_pageseg_mode: pageSegmentationMode });
-        const { data } = await worker.recognize(image);
-        return data.text.trim();
-      };
-
-      const pageTexts: string[] = [];
-      const qrValues: string[] = [];
-      for (let index = 0; index < capturePages.length; index += 1) {
-        currentOcrPageRef.current = index + 1;
-        setOcrProgress({
-          status: 'Mejorando legibilidad de la imagen',
-          value: 0,
-          page: index + 1,
-          totalPages: capturePages.length,
-        });
-        // This derived Blob lives only for this recognition call and is never
-        // attached to the invoice or included in the OCR result.
-        const preparedImage = await preprocessSupplierInvoiceImage(capturePages[index].image);
-        const qrValue = await readSupplierInvoiceQr(capturePages[index].image);
-        if (qrValue) qrValues.push(qrValue);
-        let generalText = await recognizeImage(preparedImage, PSM.SPARSE_TEXT);
-        // Una factura muy clara o ya digitalizada puede perder detalle al
-        // aumentar el contraste. En ese caso hacemos un único intento con la
-        // toma original y conservamos la lectura más completa.
-        if (generalText.length < 24) {
-          const fallbackText = await recognizeImage(capturePages[index].image, PSM.SPARSE_TEXT);
-          if (fallbackText.length > generalText.length) generalText = fallbackText;
-        }
-
-        const requiredRegions = getRequiredOcrRegions(generalText, capturePages[index].quality);
-        const regionalTexts: string[] = [];
-        if (requiredRegions.length) {
-          setOcrProgress({
-            status: requiredRegions.includes('table')
-              ? 'Reconstruyendo líneas de productos'
-              : 'Revisando encabezado y totales',
-            value: 0.74,
-            page: index + 1,
-            totalPages: capturePages.length,
-          });
-          const regions = await createSupplierInvoiceOcrRegions(preparedImage);
-          for (const region of regions) {
-            if (!requiredRegions.includes(region.id)) continue;
-            const pageSegmentationMode =
-              region.id === 'table' || region.id === 'footer'
-                ? PSM.SINGLE_BLOCK
-                : PSM.SPARSE_TEXT;
-            const text = await recognizeImage(region.image, pageSegmentationMode);
-            if (text.length >= 8) {
-              regionalTexts.push(
-                `--- REGIÓN ${
-                  region.id === 'header'
-                    ? 'ENCABEZADO'
-                    : region.id === 'table'
-                      ? 'TABLA'
-                      : 'TOTALES'
-                } (PRIORIDAD) ---\n${text}`,
-              );
-            }
-          }
-        }
-
-        const pageText = [
-          ...regionalTexts.filter((text) => text.includes('ENCABEZADO')),
-          generalText ? `--- LECTURA GENERAL ---\n${generalText}` : '',
-          ...regionalTexts.filter((text) => text.includes('TABLA')),
-          ...regionalTexts.filter((text) => text.includes('TOTALES')),
-        ]
-          .filter(Boolean)
-          .join('\n\n');
-        if (pageText) {
-          pageTexts.push(`--- PÁGINA ${index + 1} ---\n${pageText}`);
-        }
-      }
-
-      const rawText = pageTexts.join('\n\n').trim();
-      const result = {
-        ...extractSupplierInvoiceOcr(rawText, { qrValues }),
-        pageCount: capturePages.length,
-      };
-      if (!result.rawText) {
-        throw new Error(
-          'No se pudo leer texto en las imágenes. Prueba con mejor iluminación o usa el ingreso manual.',
-        );
-      }
-
+      if (controller.signal.aborted) return;
       clearPages();
       onRecognized(result);
     } catch (error) {
+      if (controller.signal.aborted) return;
       setOcrError(
         error instanceof Error
           ? error.message
           : 'No se pudieron procesar las imágenes con OCR. Inténtalo nuevamente.',
       );
     } finally {
-      currentOcrPageRef.current = 1;
-      await worker?.terminate();
-      setProcessing(false);
+      if (ocrAbortRef.current === controller) {
+        ocrAbortRef.current = null;
+        setProcessing(false);
+      }
     }
+  }
+
+  function cancelRecognition() {
+    ocrAbortRef.current?.abort();
+    ocrAbortRef.current = null;
+    setProcessing(false);
+    setOcrProgress(null);
   }
 
   function showCamera() {
@@ -436,7 +343,7 @@ export function SupplierInvoiceOcrCamera({
   }
 
   function close() {
-    if (processing) return;
+    cancelRecognition();
     stopCamera();
     clearPages();
     setCameraError(null);
@@ -622,8 +529,8 @@ export function SupplierInvoiceOcrCamera({
         </p>
 
         <div className="flex flex-col-reverse gap-2 border-t pt-4 sm:flex-row sm:flex-wrap sm:justify-end">
-          <Button type="button" variant="outline" onClick={close} disabled={processing}>
-            Cancelar
+          <Button type="button" variant="outline" onClick={close}>
+            {processing ? 'Cancelar lectura' : 'Cancelar'}
           </Button>
           {onUsePhone ? (
             <Button type="button" variant="outline" onClick={usePhone} disabled={processing}>
@@ -696,36 +603,6 @@ function createPageId() {
 
 function revokePageUrls(capturedPages: CapturedPage[]) {
   capturedPages.forEach((page) => URL.revokeObjectURL(page.previewUrl));
-}
-
-function getRequiredOcrRegions(
-  generalText: string,
-  quality: SupplierInvoiceImageQuality | undefined,
-): Array<'header' | 'table' | 'footer'> {
-  const normalizedText = generalText
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .toUpperCase();
-  const needsHeader =
-    generalText.length < 180 ||
-    !/(?:\bRNC\b|\bNCF\b|E-?NCF|FACTURA(?:\s+DE)?\s+(?:CREDITO|CONSUMO))/.test(normalizedText);
-  const needsFooter =
-    generalText.length < 240 ||
-    !/(?:\bITBIS\b|SUB\s*-?\s*TOTAL|TOTAL\s+(?:A\s+PAGAR|RD\$|DOP))/.test(normalizedText);
-  // La tabla siempre merece su propia lectura. Precisamente en las fotos que
-  // más importan —con poco contraste o texto pequeño— la pasada general puede
-  // devolver solo el encabezado, aunque la tabla esté presente. PSM.SPARSE_TEXT
-  // sirve para encabezados, pero pierde el orden de filas; PSM.SINGLE_BLOCK
-  // sobre la tabla es la fuente que permite recuperar productos, cantidades y
-  // cambios de costo.
-  const needsTable = true;
-
-  // A weak photograph earns an extra, small reading pass even if it found a
-  // keyword. This is cheaper than running every zone for every clean image.
-  if (quality?.status === 'warning') return ['header', 'table', 'footer'];
-  return [needsHeader ? 'header' : null, needsTable ? 'table' : null, needsFooter ? 'footer' : null].filter(
-    (region): region is 'header' | 'table' | 'footer' => Boolean(region),
-  );
 }
 
 function humanizeOcrStatus(status: string) {

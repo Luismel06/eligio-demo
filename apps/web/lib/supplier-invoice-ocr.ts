@@ -42,6 +42,8 @@ export type SupplierInvoiceOcrResult = {
   rawText: string;
   /** Número de páginas procesadas localmente. Nunca incluye la imagen. */
   pageCount?: number;
+  /** Number of merchandise rows explicitly printed on the document, when present. */
+  expectedItemCount?: number;
   supplierName?: string;
   supplierDocument?: string;
   supplierTemplate?: string;
@@ -64,8 +66,10 @@ export type SupplierInvoiceOcrResult = {
   warnings: string[];
 };
 
-type SupplierInvoiceOcrOptions = {
+export type SupplierInvoiceOcrOptions = {
   qrValues?: string[];
+  /** Physical rows reconstructed from OCR word coordinates; never another invoice. */
+  layoutLines?: string[];
 };
 
 type SupplierTemplate = {
@@ -145,8 +149,11 @@ const supplierTemplates: SupplierTemplate[] = [
   },
 ];
 
-const dateExpression = /(\d{4}[/-]\d{1,2}[/-]\d{1,2}|\d{1,2}[/-]\d{1,2}[/-]\d{2,4})/;
+// An OCR-truncated year (e.g. "10-07-20,") must not silently become 2020.
+const dateExpression = /\b(\d{4}[/-]\d{1,2}[/-]\d{1,2}|\d{1,2}[/-]\d{1,2}[/-]\d{4})\b/;
 const amountExpression = /(?:RD\$?\s*)?(?:\d{1,3}(?:[.,]\d{3})+[.,]\d{2}|\d+(?:[.,]\d{2}))/gi;
+const unitPattern =
+  'UNIDADES|UNIDAD|QUINTALES|QUINTAL|DOCENAS|DOCENA|CIENTO|LIBRAS|LIBRA|PLIEGOS|PLIEGO|FUNDAS|FUNDA|METROS|METRO|PIEZAS|PIEZA|GALONES|GALON|CAJAS|CAJA|UND|UNI|DOC|GAL|PZA|PZ|CJ|GL|OZ|LB|UD';
 
 /**
  * Convierte el texto producido por Tesseract en sugerencias conservadoras.
@@ -160,10 +167,12 @@ export function extractSupplierInvoiceOcr(
   options: SupplierInvoiceOcrOptions = {},
 ): SupplierInvoiceOcrResult {
   const raw = normalizeRawText(rawText);
-  const lines = raw
+  const originalLines = raw
     .split('\n')
     .map((line) => line.trim())
     .filter(Boolean);
+  const layoutLines = options.layoutLines?.map((line) => line.trim()).filter(Boolean);
+  const lines = layoutLines?.length ? layoutLines : originalLines;
   const foldedLines = lines.map(foldText);
   const warnings: string[] = [];
   const confidence: SupplierInvoiceOcrResult['confidence'] = {};
@@ -197,7 +206,13 @@ export function extractSupplierInvoiceOcr(
     },
   };
   const purchaseOrderNumber = findPurchaseOrderNumber(lines);
-  const items = findItems(lines, template);
+  const spatialItems = findItems(lines, template);
+  const originalItems = layoutLines?.length ? findItems(originalLines, template) : spatialItems;
+  // Choose one complete reading. Combining OCR passes would duplicate merchandise.
+  const items =
+    scoreItemReading(originalItems, totals) > scoreItemReading(spatialItems, totals)
+      ? originalItems
+      : spatialItems;
 
   if (template) {
     confidence.supplierName = 'high';
@@ -224,6 +239,14 @@ export function extractSupplierInvoiceOcr(
   }
   if (!invoiceNumber) {
     warnings.push('No se pudo identificar con certeza el número interno de factura.');
+  }
+  if (!issueDate) {
+    warnings.push('No se pudo leer una fecha de emisión completa. Confírmala en la factura.');
+  }
+  if (totals.total === undefined) {
+    warnings.push(
+      'No se pudo leer el total monetario de la factura. Confírmalo antes de aplicar los productos.',
+    );
   }
   if (qrSelection.hasMultipleInvoices) {
     warnings.push(
@@ -298,9 +321,16 @@ export function extractSupplierInvoiceOcr(
     warnings.push('Algunas líneas de productos requieren revisión antes de aplicarlas.');
   }
   warnings.push(...validateInvoiceCoherence(items, totals));
+  const declaredItemCount = findDeclaredItemCount(lines);
+  if (declaredItemCount !== undefined && declaredItemCount !== items.length) {
+    warnings.push(
+      `La factura indica ${declaredItemCount} líneas de productos y se leyeron ${items.length}. Revisa las líneas faltantes antes de continuar.`,
+    );
+  }
 
   return {
     rawText: raw,
+    expectedItemCount: declaredItemCount,
     supplierName,
     supplierDocument,
     supplierTemplate: template?.key,
@@ -311,7 +341,7 @@ export function extractSupplierInvoiceOcr(
       paymentDueDate && (!issueDate || paymentDueDate >= issueDate) ? paymentDueDate : undefined,
     ncfValidUntil,
     paymentCondition,
-    currency: /\b(?:DOP|RD\$|PESOS\s+DOMINICANOS)\b/i.test(raw) ? 'DOP' : undefined,
+    currency: /\bDOP\b|RD\$|\bPESOS\s+DOMINICANOS?\b/i.test(raw) ? 'DOP' : undefined,
     subtotal: totals.subtotal,
     discountTotal: totals.discountTotal,
     taxTotal: totals.taxTotal,
@@ -514,7 +544,7 @@ function findNcf(lines: string[]) {
   const matches: Array<{ value: string; score: number }> = [];
   for (const line of lines) {
     const folded = foldText(line);
-    for (const match of line.matchAll(/\b([BE]\d{8,14})\b/gi)) {
+    for (const match of line.matchAll(/\b(B\d{10}|E\d{12})\b/gi)) {
       const value = match[1].toUpperCase();
       let score = 1;
       if (/\b(?:E-?NCF|NCF|E-BF)\b/.test(folded)) score += 5;
@@ -534,7 +564,7 @@ function findInvoiceNumber(
     ...(template?.invoicePatterns ?? []),
     /\b(?:FACTURA\s+(?:NO\.?|NUM(?:ERO)?|#|INTERNA)|FACT(?:\.)?(?=\s|:|#|$)|DOCUMENTO)\s*(?:NO\.?|NUM(?:ERO)?|#|:)?\s*([A-Z0-9][A-Z0-9/-]{2,})\b/i,
     /\b(?:FACTURA|DOCUMENTO)\s*(?:#|NO\.?|NUM(?:ERO)?)\s*[:#-]?\s*([A-Z0-9][A-Z0-9/-]{2,})\b/i,
-    /\b(?:FACTURA|DOCUMENTO)\s*:\s*([A-Z0-9][A-Z0-9/-]{2,})\b/i,
+    /\b(?:FACTURA[S#]?|DOCUMENTO)\s*:\s*([A-Z0-9][A-Z0-9/-]{2,})\b/i,
   ];
   const candidates: string[] = [];
   for (const line of lines) {
@@ -555,16 +585,17 @@ function findInvoiceNumber(
 
 function findIssueDate(lines: string[]) {
   const patterns = [
-    /\b(?:FECHA\s+(?:DE\s+)?EMISI(?:O|Ó)N|EMISI(?:O|Ó)N|FECHA\s+DOC(?:UMENTO)?|FECHA\s+FACTURA)\b[^\d]{0,24}/i,
-    /\bFECHA\b[^\d]{0,12}/i,
+    /\b(?:FECHA\s+(?:DE\s+)?EMIS[I1L](?:O|Ó)N|EMIS[I1L](?:O|Ó)N|FECHA\s+DOC(?:UMENTO)?|FECHA\s+FACTURA)\b[^\d]{0,24}/i,
+    /\bFECHA\s*[:.-]?\s*(?=\d)/i,
   ];
   for (const line of lines) {
     const folded = foldText(line);
-    if (/\b(?:VENCE|VENCIMIENTO|VALIDO|FIRMA|IMPRESO)\b/.test(folded)) continue;
     for (const pattern of patterns) {
       const prefix = line.match(pattern);
       if (!prefix) continue;
-      const date = findDateInValue(line.slice(prefix.index));
+      if (pattern === patterns[1] && /\b(?:VENCE|VENCIMIENTO|VALIDO|FIRMA|IMPRESO)\b/.test(folded))
+        continue;
+      const date = findDateInValue(line.slice((prefix.index ?? 0) + prefix[0].length));
       if (date) return date;
     }
   }
@@ -578,11 +609,13 @@ function findPaymentDueDate(
 ) {
   for (const line of lines) {
     const folded = foldText(line);
-    if (!/\b(?:VENCE|VENCIMIENTO|FECHA\s+DE\s+VENCIMIENTO)\b/.test(folded)) continue;
+    const label = /\b(?:VENCE|VENCIMIENTO|FECHA\s+DE\s+VENCIMIENTO)\b/.exec(folded);
+    if (!label) continue;
     // Una línea que habla de NCF/e-NCF o "válido hasta" es fiscal, aunque
     // contenga la palabra vencimiento.
-    if (/\b(?:E-?NCF|NCF|VALIDO\s+HASTA)\b/.test(folded)) continue;
-    const date = findDateInValue(line);
+    const precedingLabel = folded.slice(Math.max(0, label.index - 25), label.index);
+    if (/\b(?:E-?NCF|NCF|VALIDO\s+HASTA)\b/.test(precedingLabel)) continue;
+    const date = findDateInValue(line.slice(label.index + label[0].length));
     if (!date || (issueDate && date < issueDate) || date === ncfValidUntil) continue;
     return date;
   }
@@ -596,7 +629,8 @@ function findNcfValidUntil(lines: string[]) {
       /\bVALIDO\s+HASTA\b/.test(folded) ||
       (/\b(?:E-?NCF|NCF|E-BF)\b/.test(folded) && /\bVENCIMIENTO\b/.test(folded))
     ) {
-      const date = findDateInValue(line);
+      const label = /\b(?:VALIDO\s+HASTA|VENCIMIENTO)\b/.exec(folded);
+      const date = findDateInValue(line.slice((label?.index ?? 0) + (label?.[0].length ?? 0)));
       if (date) return date;
     }
   }
@@ -604,14 +638,24 @@ function findNcfValidUntil(lines: string[]) {
 }
 
 function findPaymentCondition(lines: string[]) {
-  const line = lines.find((candidate) => {
-    const folded = foldText(candidate);
-    return /\b(?:CONDICION|TERMINOS|PAGO\s+POR|VENTA\s+A\s+CREDITO|CREDITO)\b/.test(folded);
-  });
-  if (!line) return undefined;
-  return line
-    .replace(/\s{2,}/g, ' ')
-    .trim()
+  for (const line of lines) {
+    const label =
+      /\b(?:CONDICI[OÓ]N(?:ES)?(?:\s+DE\s+PAGO)?|T[EÉ]RMINOS(?:\s+DE\s+PAGO)?)\s*[:.-]?\s*/i.exec(
+        line,
+      );
+    if (label) {
+      const value = line.slice(label.index + label[0].length).trim();
+      if (value) return value.slice(0, 180);
+    }
+  }
+  // "Crédito fiscal" describes the tax document, never its payment terms.
+  return lines
+    .find((line) =>
+      /\b(?:VENTA\s+A\s+CREDITO|CREDITO\s+(?:A\s+)?\d+\s*DIAS|CONTADO|PAGO\s+POR\s+ADELANTADO)\b/.test(
+        foldText(line),
+      ),
+    )
+    ?.trim()
     .slice(0, 180);
 }
 
@@ -634,51 +678,73 @@ function findTotals(lines: string[]) {
     confidence: Partial<Record<'subtotal' | 'discountTotal' | 'taxTotal' | 'total', OcrConfidence>>;
   } = { confidence: {} };
 
-  const reversed = [...lines].reverse();
-  for (const line of reversed) {
-    const folded = foldText(line);
-    const amount = lastAmountInLine(line);
-    if (amount === undefined) continue;
-
-    if (
-      result.total === undefined &&
-      /\b(?:TOTAL\s+(?:A\s+)?PAGAR|TOTAL\s+(?:RD\$|DOP)|IMPORTE\s+TOTAL|TOTAL)\b/.test(folded) &&
-      !/\b(?:TOTAL\s+(?:ITBIS|GRAVADO|EXENTO|BULTOS|LINEAS|ITEMS)|CANT(?:IDAD)?\s+TOTAL)\b/.test(
-        folded,
+  type TotalField = 'subtotal' | 'discountTotal' | 'taxTotal' | 'total';
+  const classifyLabel = (line: string): { field: TotalField; remainder: string } | undefined => {
+    // A stamp in the left column can share a physical baseline with footer
+    // labels on the right. Geometry's tabs preserve that column boundary.
+    const cells = line.split('\t');
+    const labelCell = cells.findIndex((cell) =>
+      /^\s*[+*=|_-]*\s*(?:SUB\s*-?\s*TOTAL|(?:TOTAL\s+)?ITBIS|(?:TOTAL\s+)?DESCUENTOS?|TOTAL|IMPORTE\s+TOTAL)\b/i.test(
+        foldText(cell),
+      ),
+    );
+    const labelText = labelCell > 0 ? cells.slice(labelCell).join('\t') : line;
+    const folded = foldText(labelText).replace(/^[\s+*=|_-]+/, '');
+    const patterns: Array<[TotalField, RegExp]> = [
+      ['subtotal', /^(?:SUB\s*-?\s*TOTAL|SUBTOTAL)\b/],
+      ['taxTotal', /^(?:TOTAL\s+)?ITBIS\b/],
+      ['discountTotal', /^(?:TOTAL\s+)?DESCUENTOS?\b/],
+      ['total', /^(?:TOTAL(?:\s+(?:A\s+)?PAGAR)?|IMPORTE\s+TOTAL)\b/],
+    ];
+    for (const [field, pattern] of patterns) {
+      const match = folded.match(pattern);
+      if (!match) continue;
+      const remainder = folded
+        .slice(match[0].length)
+        .replace(/^\s*(?:RD\$|DOP|RD|\$)?\s*[:=-]?\s*/, '');
+      // Table headings, product descriptions and subtotals by tax band are not document totals.
+      if (
+        /^(?:ITBIS|GRAVADO|EXENTO|BULTOS|LINEAS|ITEMS|CANTIDAD|LINEA|%|PRECIO|VALOR)\b/.test(
+          remainder,
+        ) ||
+        remainder.startsWith('%')
       )
-    ) {
-      result.total = amount;
-      result.confidence.total = /\b(?:A\s+PAGAR|RD\$|DOP|IMPORTE\s+TOTAL)\b/.test(folded)
-        ? 'high'
-        : 'medium';
+        return undefined;
+      if (/[A-Z]/.test(remainder)) return undefined;
+      return { field, remainder };
+    }
+    return undefined;
+  };
+  const numberOnly = (line: string) => {
+    const value = line.replace(/(?:RD\$|DOP|\$)/gi, '').replace(/[\s:]/g, '');
+    return /^\d[\d.,]*$/.test(value) ? parseLocalizedNumber(value) : undefined;
+  };
+  for (let index = 0; index < lines.length; index += 1) {
+    const label = classifyLabel(lines[index]);
+    if (!label) continue;
+    const inlineAmount = numberOnly(label.remainder);
+    if (inlineAmount !== undefined) {
+      result[label.field] = inlineAmount;
+      result.confidence[label.field] = 'high';
       continue;
     }
-    if (
-      result.taxTotal === undefined &&
-      /\b(?:TOTAL\s+)?ITBIS\b/.test(folded) &&
-      !/\b(?:ITBIS\s*%|ITBIS\s+LINEA)\b/.test(folded)
-    ) {
-      result.taxTotal = amount;
-      result.confidence.taxTotal = /\bTOTAL\b/.test(folded) ? 'high' : 'medium';
-      continue;
+    if (label.remainder) continue;
+    // Some OCR layouts emit footer labels in one column followed by their values.
+    const labels = [label];
+    let cursor = index + 1;
+    while (cursor < lines.length && labels.length < 4) {
+      const next = classifyLabel(lines[cursor]);
+      if (!next || next.remainder) break;
+      labels.push(next);
+      cursor += 1;
     }
-    if (
-      result.discountTotal === undefined &&
-      /\b(?:TOTAL\s+)?DESCUENTO(?:S)?\b/.test(folded) &&
-      !/\bDESCUENTO\s+LINEA\b/.test(folded)
-    ) {
-      result.discountTotal = amount;
-      result.confidence.discountTotal = /\bTOTAL\b/.test(folded) ? 'high' : 'medium';
-      continue;
-    }
-    if (
-      result.subtotal === undefined &&
-      /\b(?:SUB\s*-?\s*TOTAL|SUBTOTAL)\b/.test(folded) &&
-      !/\b(?:GRAVADO|EXENTO)\b/.test(folded)
-    ) {
-      result.subtotal = amount;
-      result.confidence.subtotal = 'high';
-    }
+    const values = labels.map((_, offset) => numberOnly(lines[cursor + offset] ?? ''));
+    if (values.some((value) => value === undefined)) continue;
+    labels.forEach((entry, offset) => {
+      result[entry.field] = values[offset];
+      result.confidence[entry.field] = labels.length > 1 ? 'medium' : 'high';
+    });
+    index = cursor + labels.length - 1;
   }
 
   return result;
@@ -705,7 +771,7 @@ function validateInvoiceCoherence(
   const lineTax = roundCurrency(reliableItems.reduce((sum, item) => sum + (item.taxTotal ?? 0), 0));
 
   if (totals.total !== undefined) {
-    const tolerance = Math.max(0.2, totals.total * 0.01);
+    const tolerance = Math.max(0.05, reliableItems.length * 0.02);
     if (!isClose(lineTotal, totals.total, tolerance)) {
       warnings.push(
         lineTotal > totals.total
@@ -715,13 +781,13 @@ function validateInvoiceCoherence(
     }
   }
   if (totals.subtotal !== undefined) {
-    const tolerance = Math.max(0.2, totals.subtotal * 0.01);
+    const tolerance = Math.max(0.05, reliableItems.length * 0.02);
     if (!isClose(lineSubtotal, totals.subtotal, tolerance)) {
       warnings.push('El subtotal de las líneas OCR no coincide con el subtotal de la factura.');
     }
   }
   if (totals.taxTotal !== undefined) {
-    const tolerance = Math.max(0.2, totals.taxTotal * 0.012);
+    const tolerance = Math.max(0.05, reliableItems.length * 0.02);
     if (!isClose(lineTax, totals.taxTotal, tolerance)) {
       warnings.push('El ITBIS de las líneas OCR no coincide con el ITBIS de la factura.');
     }
@@ -732,34 +798,89 @@ function validateInvoiceCoherence(
 function findItems(lines: string[], template: SupplierTemplate | undefined) {
   const tableRanges = findTableRanges(lines);
   const items: SupplierInvoiceOcrItem[] = [];
+  // A known supplier's header can be unreadable while its merchandise rows are intact.
+  // Only the strict quantity/code/unit structure is eligible for this fallback.
+  if (!tableRanges.length && template?.itemLayout === 'CARIBE_RB') {
+    return lines
+      .map((line) => parseQuantityCodeUnitLine(line))
+      .filter((item): item is SupplierInvoiceOcrItem => Boolean(item));
+  }
   for (const range of tableRanges) {
     for (let index = range.start; index < range.end; index += 1) {
+      let row = lines[index];
+      // A description or its numeric columns may wrap. Join only a visible row
+      // prefix, never two independently numbered products or a footer.
+      if (hasQuantityCodeUnitPrefix(row) && !hasFinancialSuffix(row)) {
+        for (let next = index + 1; next < Math.min(range.end, index + 4); next += 1) {
+          if (hasQuantityCodeUnitPrefix(lines[next]) || isTableBoundary(lines[next])) break;
+          row += `\n${lines[next]}`;
+          if (hasFinancialSuffix(row)) {
+            index = next;
+            break;
+          }
+        }
+      }
+      const flatRow = row.replace(/\s+/g, ' ').trim();
+      const strictRow =
+        template?.itemLayout === 'CARIBE_RB' || range.priceTaxValue
+          ? parseQuantityCodeUnitLine(row)
+          : undefined;
       const item =
-        (template ? parseTemplateItemLine(lines[index], template) : undefined) ??
-        parseItemLine(lines[index], template?.key);
+        strictRow ??
+        (template ? parseTemplateItemLine(flatRow, template) : undefined) ??
+        parseItemLine(flatRow, template?.key);
+      if (item) item.rawText = row;
       if (item) items.push(item);
     }
   }
-  return dedupeItems(items);
+  // Equal rows can be real repeated purchases. Geometry selects one OCR pass;
+  // deleting equal descriptions here would silently lose invoice quantities.
+  return items;
+}
+
+function findDeclaredItemCount(lines: string[]) {
+  for (const line of lines) {
+    const match = foldText(line).match(
+      /^\s*(?:TOTAL\s+(?:DE\s+)?)?(?:[IL1]TEMS|ARTICULOS|LINEAS)\s*[:=]?\s*(\d{1,5})(?:\s*[^\d\w].*)?\s*$/,
+    );
+    if (match) return Number(match[1]);
+  }
+  return undefined;
+}
+
+function scoreItemReading(items: SupplierInvoiceOcrItem[], totals: { total?: number }) {
+  const complete = items.filter(
+    (item) => item.quantity !== undefined && item.unitCostNet !== undefined,
+  );
+  let score = complete.length * 5 + items.length;
+  score -= items.reduce((sum, item) => sum + item.warnings.length, 0);
+  if (totals.total !== undefined && items.length) {
+    const sum = items.reduce((value, item) => value + (item.total ?? 0), 0);
+    if (isClose(sum, totals.total, 0.1)) score += 20;
+    else if (sum > totals.total + 0.1) score -= 20;
+  }
+  return score;
+}
+
+function isTableBoundary(line: string) {
+  return /\b(?:SUB\s*-?\s*TOTAL|SUBTOTAL|TOTAL\s+(?:A\s+)?PAGAR|FIN\s+DE\s+PRODUCTOS|ULTIMA\s+LINEA)\b|^---\s*PAGINA\s+\d+\s*---$|^\s*(?:[IL1]TEMS\s*:|[*><_=])/.test(
+    foldText(line),
+  );
 }
 
 function findTableRanges(lines: string[]) {
-  const ranges: Array<{ start: number; end: number }> = [];
+  const ranges: Array<{ start: number; end: number; priceTaxValue: boolean }> = [];
+  const isHeader = (line: string) =>
+    /\bDESCRIP(?:CION)?\b/.test(foldText(line)) &&
+    /\b(?:CANT(?:IDAD)?|PRECIO|CODIGO|ARTICULO)\b/.test(foldText(line));
   for (let index = 0; index < lines.length; index += 1) {
     const folded = foldText(lines[index]);
-    const isHeader =
-      /\bDESCRIP(?:CION)?\b/.test(folded) &&
-      /\b(?:CANT(?:IDAD)?|PRECIO|CODIGO|ARTICULO)\b/.test(folded);
-    if (!isHeader) continue;
+    if (!isHeader(lines[index])) continue;
 
     let end = lines.length;
     for (let cursor = index + 1; cursor < lines.length; cursor += 1) {
       const candidate = foldText(lines[cursor]);
-      if (
-        /\b(?:SUB\s*-?\s*TOTAL|SUBTOTAL|TOTAL\s+(?:A\s+)?PAGAR|FIN\s+DE\s+PRODUCTOS)\b/.test(
-          candidate,
-        )
-      ) {
+      if (isTableBoundary(candidate) || isHeader(candidate)) {
         end = cursor;
         break;
       }
@@ -768,9 +889,106 @@ function findTableRanges(lines: string[]) {
         break;
       }
     }
-    if (end > index + 1) ranges.push({ start: index + 1, end });
+    if (end > index + 1)
+      ranges.push({
+        start: index + 1,
+        end,
+        priceTaxValue: /\bPRECIO\b.*\bITBIS\b.*\b(?:VALOR|IMPORTE)\b/.test(folded),
+      });
   }
   return ranges;
+}
+
+const quantityCodeUnitExpression = new RegExp(
+  `^\\s*(\\d+(?:[.,]\\d{1,3})?)\\s+(?:([A-Z0-9][A-Z0-9./-]{2,})\\s+(?:[—–|]+\\s*)?)?(${unitPattern})\\b\\s*`,
+  'i',
+);
+const financialSuffixExpression = /\s+([\d][\d.,]*)\s+([\d][\d.,]*)\s+([\d][\d.,]*)\s*[|]*\s*$/;
+
+function hasQuantityCodeUnitPrefix(line: string) {
+  return quantityCodeUnitExpression.test(line);
+}
+
+function hasFinancialSuffix(line: string) {
+  return financialSuffixExpression.test(line);
+}
+
+function recognizedTaxRate(subtotal: number, tax: number) {
+  if (tax === 0) return 0;
+  if (subtotal <= 0) return undefined;
+  return [0.18, 0.16].find((rate) => isClose(roundCurrency(subtotal * rate), tax, 0.025));
+}
+
+/** Parse explicit columns without deleting size/model numbers from the description. */
+function parseQuantityCodeUnitLine(line: string): SupplierInvoiceOcrItem | undefined {
+  const prefix = quantityCodeUnitExpression.exec(line);
+  if (!prefix) return undefined;
+  const quantity = parseLocalizedNumber(prefix[1]);
+  if (quantity === undefined || !isPlausibleQuantity(quantity)) return undefined;
+  const tail = line.slice(prefix[0].length);
+  const money = financialSuffixExpression.exec(tail);
+  const description = (
+    money ? tail.slice(0, money.index) : tail.replace(/(?:\s+\d[\d.,]*[.,]\d{2}){1,2}\s*$/, '')
+  )
+    .replace(/^[“”"|]+\s*/, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (description.length < 3 || !/[A-ZÁÉÍÓÚÑ]/i.test(description)) return undefined;
+  const item: SupplierInvoiceOcrItem = {
+    rawText: line,
+    code: prefix[2]?.toUpperCase(),
+    unit: prefix[3].toUpperCase(),
+    description,
+    quantity,
+    confidence: {
+      ...(prefix[2] ? { code: 'medium' as const } : {}),
+      description: 'medium',
+      quantity: 'high',
+    },
+    warnings: [],
+  };
+  const [price, tax, value] = money ? money.slice(1, 4).map(parseLocalizedNumber) : [];
+  if (price === undefined || tax === undefined || value === undefined) {
+    item.warnings.push(
+      'Se leyó el producto, pero faltan sus importes. Completa costo e ITBIS manualmente.',
+    );
+    return item;
+  }
+  item.total = value;
+  item.taxTotal = tax;
+  if (price === 0 || value === 0) {
+    item.confidence.total = 'low';
+    item.warnings.push(
+      'Se leyó un importe cero. Confirma el costo de este producto antes de aplicarlo.',
+    );
+    return item;
+  }
+  const multiplicationMatches = isClose(
+    roundCurrency(quantity * price),
+    value,
+    Math.max(0.025, quantity * 0.005),
+  );
+  const includedSubtotal = roundCurrency(value - tax);
+  const includedRate = recognizedTaxRate(includedSubtotal, tax);
+  const excludedRate = recognizedTaxRate(value, tax);
+  if (!multiplicationMatches || (includedRate === undefined && excludedRate === undefined)) {
+    item.confidence.total = 'low';
+    item.warnings.push(
+      !multiplicationMatches
+        ? 'La cantidad por el precio no coincide con el valor leído. Revisa los tres importes de esta línea.'
+        : 'No se pudo confirmar si el precio incluye ITBIS. Revisa el costo neto y el impuesto de esta línea.',
+    );
+    return item;
+  }
+  const included = includedRate !== undefined;
+  item.subtotal = included ? includedSubtotal : value;
+  item.total = included ? value : roundCurrency(value + tax);
+  item.taxRate = included ? includedRate : excludedRate;
+  item.unitCostNet = roundUnitCost(item.subtotal / quantity);
+  item.confidence.unitCostNet = 'high';
+  item.confidence.taxRate = 'high';
+  item.confidence.total = 'high';
+  return item;
 }
 
 type TemplateQuantity = {
@@ -818,7 +1036,12 @@ function parseTemplateItemLine(
   );
   if (!financials) return undefined;
 
-  const description = inferDescription(line, extractAmounts(line), quantity.quantity);
+  const description = inferDescription(
+    line,
+    extractAmounts(line),
+    quantity.quantity,
+    template.itemLayout,
+  );
   if (!description || description.length < 3) return undefined;
   const code = inferCode(line, description, template.key);
   const confidence: SupplierInvoiceOcrItem['confidence'] = {
@@ -852,7 +1075,6 @@ function findTemplateQuantity(
   line: string,
   layout: SupplierItemLayout,
 ): TemplateQuantity | undefined {
-  const unitPattern = 'UND|UNI|UNIDAD|GL|GAL|CJ|CAJA|FUNDA|FUNDAS|LIBRA|LIBRAS|CIENTO|PLIEGO|OZ';
   const withUnitAfterQuantity = new RegExp(
     `\\b(\\d+(?:[.,]\\d+)?)\\s+(${unitPattern})\\s+(?=[A-ZÁÉÍÓÚÑ]{3,})`,
     'gi',
@@ -926,9 +1148,13 @@ function inferTemplateItemFinancials(
   quantity: number,
   descriptionStart: number,
 ): TemplateItemFinancials | undefined {
-  const values = extractSignedAmounts(line)
+  const moneyText = line.replace(/\b\d+(?:[.,]\d+)?\s*%/g, (value) => ' '.repeat(value.length));
+  const allValues = extractSignedAmounts(moneyText)
     .filter((token) => token.index > descriptionStart)
     .map((token) => token.value);
+  const columnCount =
+    layout === 'YANWILS' || (layout === 'WURTH' && allValues.some((value) => value < 0)) ? 4 : 3;
+  const values = allValues.slice(-columnCount);
   const positive = values.filter((value) => value >= 0);
   const warnings: string[] = [];
 
@@ -951,16 +1177,20 @@ function inferTemplateItemFinancials(
     if (discountTotal === undefined && !isClose(gross, subtotal, Math.max(0.12, gross * 0.004))) {
       warnings.push('El precio por cantidad no coincide con el subtotal de esta línea.');
     }
+    const taxRate =
+      normalizedTax !== undefined ? recognizedTaxRate(subtotal, normalizedTax) : undefined;
+    if (normalizedTax !== undefined && taxRate === undefined) {
+      warnings.push(
+        'El ITBIS leído no corresponde a una tasa verificable. Confirma el impuesto de esta línea.',
+      );
+    }
     return {
-      unitCostNet: roundCurrency(unitCostNet),
+      unitCostNet: roundUnitCost(unitCostNet),
       subtotal: roundCurrency(subtotal),
       discountTotal:
         discountTotal !== undefined ? roundCurrency(Math.abs(discountTotal)) : undefined,
       taxTotal: normalizedTax,
-      taxRate:
-        normalizedTax !== undefined && subtotal > 0
-          ? roundRate(normalizedTax / subtotal)
-          : undefined,
+      taxRate,
       total: normalizedTotal,
       warnings,
     };
@@ -976,7 +1206,7 @@ function inferTemplateItemFinancials(
     total: number,
   ): TemplateItemFinancials | undefined => {
     const subtotal = roundCurrency(total - taxTotal);
-    const result = build(roundCurrency(subtotal / quantity), subtotal, taxTotal, total);
+    const result = build(roundUnitCost(subtotal / quantity), subtotal, taxTotal, total);
     if (
       result &&
       !isClose(
@@ -1015,8 +1245,12 @@ function inferTemplateItemFinancials(
   }
 
   if (layout === 'CARIBE_RB' && positive.length >= 3) {
-    const [price, tax, subtotal] = positive;
-    return build(price, subtotal, tax, subtotal + tax);
+    const [price, tax, value] = positive.slice(-3);
+    if (recognizedTaxRate(roundCurrency(value - tax), tax) !== undefined) {
+      return buildTaxIncluded(price, tax, value);
+    }
+    if (recognizedTaxRate(value, tax) !== undefined) return build(price, value, tax, value + tax);
+    return undefined;
   }
 
   if (layout === 'WURTH') {
@@ -1070,12 +1304,19 @@ function parseItemLine(
   };
   if (code) confidence.code = 'medium';
   if (inferred.discountTotal !== undefined) confidence.discountTotal = 'medium';
-  if (inferred.taxRate !== undefined) confidence.taxRate = 'medium';
+  const verifiedTaxRate =
+    inferred.taxTotal !== undefined
+      ? recognizedTaxRate(inferred.subtotal, inferred.taxTotal)
+      : undefined;
+  if (verifiedTaxRate !== undefined) confidence.taxRate = 'medium';
   if (!inferred.explicitQuantity) {
     warnings.push('La cantidad se infirió por los importes; compárala con la factura.');
   }
-  if (inferred.taxRate !== undefined && (inferred.taxRate < 0 || inferred.taxRate > 1)) {
-    warnings.push('El ITBIS de esta línea no pudo validarse.');
+  if (verifiedTaxRate === undefined) {
+    warnings.push(
+      'El ITBIS de esta línea no pudo validarse. Confirma si el precio incluye impuestos.',
+    );
+    confidence.unitCostNet = 'low';
   }
 
   return {
@@ -1086,10 +1327,7 @@ function parseItemLine(
     quantity: inferred.quantity,
     unitCostNet: inferred.unitCostNet,
     discountTotal: inferred.discountTotal,
-    taxRate:
-      inferred.taxRate !== undefined && inferred.taxRate >= 0 && inferred.taxRate <= 1
-        ? inferred.taxRate
-        : undefined,
+    taxRate: verifiedTaxRate,
     taxTotal: inferred.taxTotal,
     subtotal: inferred.subtotal,
     total: inferred.total,
@@ -1102,8 +1340,10 @@ function inferItemFinancials(line: string, amounts: AmountToken[]) {
   const percent = line.match(/\b(\d{1,2}(?:[.,]\d+)?)\s*%/)?.[1];
   const parsedDiscountPercent = percent ? parseLocalizedNumber(percent) : undefined;
   const discountRate = parsedDiscountPercent !== undefined ? parsedDiscountPercent / 100 : 0;
-  const numericValues = extractNumericValues(line);
   const descriptionStart = findLikelyDescriptionStart(line);
+  const numericValues = extractNumericValues(
+    descriptionStart >= 0 ? line.slice(0, descriptionStart) : '',
+  );
   let best:
     | {
         quantity: number;
@@ -1206,29 +1446,37 @@ function inferItemFinancials(line: string, amounts: AmountToken[]) {
 }
 
 function findLikelyDescriptionStart(line: string) {
-  const ignoredWords = new Set([
-    'UND',
-    'UNI',
-    'UNIDAD',
-    'GL',
-    'GAL',
-    'CJ',
-    'CAJA',
-    'FUNDA',
-    'FUNDAS',
-    'LIBRA',
-    'LIBRAS',
-    'CIENTO',
-    'PLIEGO',
-    'OZ',
-  ]);
+  const ignoredWords = new Set(unitPattern.split('|'));
   for (const match of line.matchAll(/\b[A-ZÁÉÍÓÚÑ]{3,}\b/gi)) {
     if (!ignoredWords.has(foldText(match[0])) && match.index !== undefined) return match.index;
   }
   return -1;
 }
 
-function inferDescription(line: string, amounts: AmountToken[], quantity: number) {
+function inferDescription(
+  line: string,
+  amounts: AmountToken[],
+  quantity: number,
+  layout?: SupplierItemLayout,
+) {
+  const start = findLikelyDescriptionStart(line);
+  // Preserve dimensions, decimals and model numbers instead of removing all numbers.
+  const valueCount =
+    layout === 'YANWILS'
+      ? 4
+      : layout === 'WURTH' && /\s-\d/.test(line)
+        ? 4
+        : layout
+          ? 3
+          : undefined;
+  const suffix = line.match(
+    valueCount
+      ? new RegExp(`(?:\\s+-?\\d[\\d.,]*(?:\\s*%)?){${valueCount}}\\s*$`)
+      : /\s+-?\d[\d.,]*[.,]\d{2}(?:\s+-?\d[\d.,]*[.,]\d{2}){1,}\s*$/,
+  );
+  if (start >= 0 && suffix?.index !== undefined && suffix.index > start) {
+    return line.slice(start, suffix.index).replace(/[|_]+/g, ' ').replace(/\s+/g, ' ').trim();
+  }
   let value = line;
   for (const amount of [...amounts].reverse()) {
     const token = line.slice(amount.index).match(amountExpression)?.[0];
@@ -1258,7 +1506,7 @@ function inferDescription(line: string, amounts: AmountToken[], quantity: number
 
 function inferCode(line: string, description: string, templateKey: string | undefined) {
   const numericCodeBeforeUnit = line.match(
-    /\b(\d{2,4})\s+(?:UND|UNI|UNIDAD|GL|GAL|CJ|CAJA|FUNDA|FUNDAS|LIBRA|LIBRAS|CIENTO|PLIEGO|OZ)\b/i,
+    new RegExp(`\\b(\\d{2,8})\\s+(?:${unitPattern})\\b`, 'i'),
   )?.[1];
   if (numericCodeBeforeUnit) return numericCodeBeforeUnit;
   const alphanumeric = [...line.matchAll(/\b(?:[A-Z]{1,5}\d{2,}[A-Z0-9-]*|\d{5,})\b/gi)].at(
@@ -1275,9 +1523,7 @@ function inferCode(line: string, description: string, templateKey: string | unde
 }
 
 function inferUnit(line: string) {
-  return line
-    .match(/\b(UND|UNI|UNIDAD|GL|GAL|CJ|CAJA|FUNDA|FUNDAS|LIBRA|LIBRAS|CIENTO|PLIEGO|OZ)\b/i)?.[1]
-    ?.toUpperCase();
+  return line.match(new RegExp(`\\b(${unitPattern})\\b`, 'i'))?.[1]?.toUpperCase();
 }
 
 function extractAmounts(line: string): AmountToken[] {
@@ -1354,22 +1600,16 @@ function toIsoDate(value: string) {
   return date.toISOString().slice(0, 10);
 }
 
-function dedupeItems(items: SupplierInvoiceOcrItem[]) {
-  const seen = new Set<string>();
-  return items.filter((item) => {
-    const key = `${foldText(item.description ?? item.rawText)}|${item.quantity ?? ''}|${item.unitCostNet ?? ''}`;
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
-}
-
 function unique(values: string[]) {
   return [...new Set(values)];
 }
 
 function roundCurrency(value: number) {
   return Math.round((value + Number.EPSILON) * 100) / 100;
+}
+
+function roundUnitCost(value: number) {
+  return Math.round((value + Number.EPSILON) * 1_000_000) / 1_000_000;
 }
 
 function roundRate(value: number) {
