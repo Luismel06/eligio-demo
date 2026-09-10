@@ -231,7 +231,7 @@ export default function LoginPage() {
 
             <div className="mt-6 flex items-center justify-center gap-2 text-xs text-muted-foreground">
               <span>Powered by</span>
-              <span className="font-semibold text-zinc-700">EligioValdez Comercial</span>
+              <span className="font-semibold text-zinc-700">CoreStack</span>
             </div>
           </CardContent>
         </Card>
