@@ -15,4 +15,5 @@ coverage
 .DS_Store
 .vscode/
 Qorvex_RIVNU_Plantilla_Importacion_Product*.xlsx
+CORESTACK_MIGRACION_RIVNU.txt
 packages/database/generated
