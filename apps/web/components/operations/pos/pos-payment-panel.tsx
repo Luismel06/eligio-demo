@@ -426,7 +426,7 @@ export function PosPaymentPanel({
               className={cn(
                 'w-fit shrink-0 rounded-full px-2.5 py-1 text-xs font-semibold',
                 fiscalDetailsDirty || fiscalDetailsInvalid
-                  ? 'bg-amber-100 text-amber-900'
+                  ? 'bg-evc-100 text-evc-900'
                   : 'bg-success/10 text-success',
               )}
               aria-live="polite"
@@ -455,7 +455,7 @@ export function PosPaymentPanel({
                 className={cn(
                   'rounded-lg border px-3 py-3 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60',
                   draftPurpose === 'CONSUMER'
-                    ? 'border-[#f36c10] bg-[#f36c10]/10 ring-1 ring-[#f36c10]/20'
+                    ? 'border-evc-500 bg-evc-50 ring-1 ring-evc-300/60'
                     : 'border-zinc-200 bg-white hover:bg-zinc-50',
                 )}
               >
@@ -474,7 +474,7 @@ export function PosPaymentPanel({
                 className={cn(
                   'rounded-lg border px-3 py-3 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60',
                   draftPurpose === 'FISCAL_CREDIT'
-                    ? 'border-[#f36c10] bg-[#f36c10]/10 ring-1 ring-[#f36c10]/20'
+                    ? 'border-evc-500 bg-evc-50 ring-1 ring-evc-300/60'
                     : 'border-zinc-200 bg-white hover:bg-zinc-50',
                 )}
               >
@@ -487,7 +487,7 @@ export function PosPaymentPanel({
           </fieldset>
 
           {inlineIdentityRequired ? (
-            <div className="space-y-3 rounded-lg border border-[#f36c10]/30 bg-[#f36c10]/5 p-3">
+            <div className="space-y-3 rounded-lg border border-evc-300/60 bg-evc-50 p-3">
               <div>
                 <p className="text-sm font-semibold">
                   {draftPurpose === 'FISCAL_CREDIT'
@@ -720,7 +720,7 @@ export function PosPaymentPanel({
                   Digita un {draftDocumentType === 'RNC' ? 'RNC' : 'número de cédula'} válido.
                 </p>
               ) : currentTaxIdentityLookup && !fiscalIdentityVerified ? (
-                <p className="rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-950" role="alert">
+                <p className="rounded-md border border-evc-200 bg-evc-50 px-3 py-2 text-sm text-evc-900" role="alert">
                   No se puede confirmar este comprobante con el resultado actual. Verifica los datos
                   o envía una solicitud de validación al administrador.
                 </p>
@@ -804,7 +804,7 @@ export function PosPaymentPanel({
         ) : null}
       </div>
 
-      <div className="rounded-md border-2 border-[#f36c10]/40 bg-white p-4 shadow-sm">
+      <div className="rounded-md border-2 border-evc-300/70 bg-white p-4 shadow-sm">
         <div className="flex flex-col gap-3">
           <div className="flex-1 space-y-2">
             <Label htmlFor="amountReceived">
@@ -857,12 +857,12 @@ export function PosPaymentPanel({
               Consultando la identidad fiscal en el padrón de DGII...
             </p>
           ) : fiscalIdentityVerificationMissing && !fiscalDocumentInvalid ? (
-            <p className="rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-900" role="status">
+            <p className="rounded-md bg-evc-50 px-3 py-2 text-sm text-evc-900" role="status">
               Verifica el RNC o la cédula con DGII o consigue autorización administrativa para
               habilitar la facturación.
             </p>
           ) : fiscalDetailsDirty ? (
-            <p className="rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-900" role="status">
+            <p className="rounded-md bg-evc-50 px-3 py-2 text-sm text-evc-900" role="status">
               Hay cambios fiscales sin confirmar. Confírmalos arriba para habilitar el cobro.
             </p>
           ) : fiscalDetailsInvalid ? (
@@ -877,7 +877,7 @@ export function PosPaymentPanel({
 
           <Button
             type="button"
-            className="h-16 w-full bg-[#f36c10] text-lg font-bold text-white hover:bg-[#d85f0e]"
+            className="h-16 w-full bg-evc-600 text-lg font-bold text-white hover:bg-evc-700"
             disabled={
               !canCompleteSale || cashInsufficient || fiscalDetailsBlockPayment || isCompleting
             }
@@ -929,7 +929,7 @@ export function PosPaymentPanel({
                 <span>Inicial a cobrar</span>
                 <span>{formatCurrency(totals.requiredPayment)}</span>
               </div>
-              <div className="flex justify-between text-base font-semibold text-amber-800">
+              <div className="flex justify-between text-base font-semibold text-evc-800">
                 <span>Saldo pendiente</span>
                 <span>{formatCurrency(totals.remainingBalance)}</span>
               </div>
@@ -1078,8 +1078,8 @@ function getTaxIdentityOutcomeDisplay(outcome: TaxIdentityLookup['outcome'] | un
     NOT_FOUND: {
       badgeLabel: 'No encontrado',
       message: 'El documento no aparece en el padrón local sincronizado de DGII.',
-      containerClassName: 'border-amber-200 bg-amber-50 text-amber-950',
-      badgeClassName: 'bg-amber-100 text-amber-900',
+      containerClassName: 'border-evc-200 bg-evc-50 text-evc-900',
+      badgeClassName: 'bg-evc-100 text-evc-800',
     },
     NON_ACTIVE: {
       badgeLabel: 'No activo',
@@ -1090,8 +1090,8 @@ function getTaxIdentityOutcomeDisplay(outcome: TaxIdentityLookup['outcome'] | un
     REGISTRY_STALE: {
       badgeLabel: 'Padrón desactualizado',
       message: 'La copia local del padrón requiere sincronización antes de validar.',
-      containerClassName: 'border-amber-200 bg-amber-50 text-amber-950',
-      badgeClassName: 'bg-amber-100 text-amber-900',
+      containerClassName: 'border-danger/25 bg-danger/10 text-danger',
+      badgeClassName: 'bg-danger/15 text-danger',
     },
     UNAVAILABLE: {
       badgeLabel: 'No disponible',

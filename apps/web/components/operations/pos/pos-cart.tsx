@@ -61,7 +61,7 @@ export function PosCart({
                       </p>
                     ) : null}
                     {stockWarning ? (
-                      <Badge variant="warning" className="mt-2">
+                      <Badge variant="danger" className="mt-2">
                         Limite de stock
                       </Badge>
                     ) : null}

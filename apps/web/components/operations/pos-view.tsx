@@ -571,7 +571,7 @@ export function PosView() {
       Math.abs(totals.requiredPayment - paymentConfirmation.amount) > 0.005;
     if (paymentChanged) {
       setPaymentConfirmation(null);
-      toast.warning('El método o el monto cambió. Revisa el cobro y confirma nuevamente.');
+      toast.info('El método o el monto cambió. Revisa el cobro y confirma nuevamente.');
       return;
     }
 
@@ -788,7 +788,7 @@ export function PosView() {
 
           <div className="space-y-3 xl:sticky xl:top-24">
             {loadedOrder ? (
-              <div className="flex flex-col gap-2 rounded-md border border-[#f36c10]/30 bg-[#f36c10]/10 px-3 py-2 text-sm text-[#9a3f05]">
+              <div className="flex flex-col gap-2 rounded-md border border-evc-300/60 bg-evc-50 px-3 py-2 text-sm text-evc-900">
                 <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                   <span>
                     Cobrando ticket pendiente {loadedOrder.orderNumber}. La factura se emitira al
@@ -798,7 +798,7 @@ export function PosView() {
                     type="button"
                     size="sm"
                     variant="outline"
-                    className="border-[#f36c10]/40 bg-white text-[#9a3f05] hover:bg-[#f36c10]/10 shrink-0"
+                    className="shrink-0 border-evc-300 bg-white text-evc-800 hover:bg-evc-50"
                     onClick={releaseLoadedOrder}
                     disabled={releaseOrderMutation.isPending || completeSaleMutation.isPending}
                   >
@@ -807,12 +807,12 @@ export function PosView() {
                   </Button>
                 </div>
                 {loadedOrder.notes ? (
-                  <div className="mt-1 border-t border-[#f36c10]/20 pt-1 text-xs text-[#9a3f05]">
+                  <div className="mt-1 border-t border-evc-300/50 pt-1 text-xs text-evc-800">
                     <span className="font-semibold">Nota:</span> {loadedOrder.notes}
                   </div>
                 ) : null}
                 {loadedOrder.paymentMode === 'CREDIT' ? (
-                  <div className="border-t border-[#f36c10]/20 pt-2 text-xs">
+                  <div className="border-t border-evc-300/50 pt-2 text-xs">
                     Venta fiada aprobada · Inicial{' '}
                     <strong>{formatCurrency(Number(loadedOrder.initialPaymentAmount))}</strong> ·
                     Saldo{' '}
@@ -823,7 +823,7 @@ export function PosView() {
                     </strong>
                   </div>
                 ) : null}
-                <div className="border-t border-[#f36c10]/20 pt-2 text-xs">
+                <div className="border-t border-evc-300/50 pt-2 text-xs">
                   Comprobante fijado: <strong>{getOrderFiscalLabel(loadedOrder)}</strong>
                 </div>
               </div>
@@ -887,6 +887,7 @@ export function PosView() {
         isPending={completeSaleMutation.isPending}
         onClose={() => setPaymentConfirmation(null)}
         onConfirm={confirmNonCashPayment}
+        tone="default"
       />
 
       <WarningConfirmModal
@@ -896,6 +897,7 @@ export function PosView() {
         confirmLabel="Cerrar en RD$0.00"
         isPending={closeSessionMutation.isPending}
         onClose={() => setZeroClosingWarningOpen(false)}
+        tone="default"
         onConfirm={() => {
           setZeroClosingWarningOpen(false);
           closeSessionMutation.mutate();
@@ -963,24 +965,27 @@ function SalesOrdersQueuePanel({
               Las ventas fiadas solo se pueden cobrar después de la aprobación administrativa.
             </CardDescription>
           </div>
-          <Badge variant={orders.length ? 'warning' : 'outline'}>
+          <Badge
+            variant="outline"
+            className={orders.length ? 'border-evc-300 bg-evc-50 text-evc-700' : undefined}
+          >
             {orders.length} pendiente(s)
           </Badge>
         </div>
       </CardHeader>
       <CardContent>
         {loadedOrder ? (
-          <div className="mb-3 rounded-md border border-[#f36c10]/30 bg-[#f36c10]/10 p-3">
+          <div className="mb-3 rounded-md border border-evc-300/60 bg-evc-50 p-3">
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div className="min-w-0">
-                <p className="text-sm font-semibold text-[#9a3f05]">
+                <p className="text-sm font-semibold text-evc-900">
                   Ticket cargado: {loadedOrder.orderNumber}
                 </p>
-                <p className="mt-1 text-xs text-[#9a3f05]">
+                <p className="mt-1 text-xs text-evc-800">
                   {getOrderSearchLabel(loadedOrder)} - {formatCurrency(Number(loadedOrder.total))}
                 </p>
                 {loadedOrder.notes ? (
-                  <p className="mt-2 text-xs text-[#9a3f05] bg-white/50 border border-[#f36c10]/20 rounded px-1.5 py-0.5 inline-block font-medium">
+                  <p className="mt-2 inline-block rounded border border-evc-300/50 bg-white/60 px-1.5 py-0.5 text-xs font-medium text-evc-800">
                     Nota: {loadedOrder.notes}
                   </p>
                 ) : null}
@@ -989,7 +994,7 @@ function SalesOrdersQueuePanel({
                 type="button"
                 size="sm"
                 variant="outline"
-                className="border-[#f36c10]/40 bg-white text-[#9a3f05] hover:bg-[#f36c10]/10"
+                className="border-evc-300 bg-white text-evc-800 hover:bg-evc-50"
                 onClick={onReleaseLoaded}
                 disabled={isReleasing}
               >
@@ -997,7 +1002,7 @@ function SalesOrdersQueuePanel({
                 Quitar y elegir otra
               </Button>
             </div>
-            <p className="mt-2 text-xs text-[#9a3f05]">
+            <p className="mt-2 text-xs text-evc-700">
               Quita este ticket si no corresponde para poder seleccionar otro de la lista.
             </p>
           </div>
@@ -1053,12 +1058,12 @@ function SalesOrdersQueuePanel({
                       Creada por {order.createdBy.name}
                     </p>
                     {order.notes ? (
-                      <p className="mt-1 text-xs text-zinc-600 bg-amber-50 rounded-sm px-1.5 py-0.5 border border-amber-200 inline-block font-medium">
+                      <p className="mt-1 inline-block rounded-sm border border-evc-200 bg-evc-50 px-1.5 py-0.5 text-xs font-medium text-evc-800">
                         Nota: {order.notes}
                       </p>
                     ) : null}
                     {order.claimedBy ? (
-                      <p className="mt-1 text-xs text-warning">
+                      <p className="mt-1 text-xs text-evc-700">
                         Tomada por {order.claimedBy.name}
                         {order.claimedCashSession?.cashRegister.name
                           ? ` en ${order.claimedCashSession.cashRegister.name}`
@@ -1142,7 +1147,7 @@ function CashStatusHeader({
   return (
     <div className="grid gap-3 rounded-lg border border-zinc-200 bg-white p-4 shadow-sm lg:grid-cols-4">
       <div className="flex items-center gap-3">
-        <div className="flex h-10 w-10 items-center justify-center rounded-md bg-[#f36c10]/10 text-[#f36c10]">
+        <div className="flex h-10 w-10 items-center justify-center rounded-md bg-evc-100 text-evc-700">
           <Store className="h-5 w-5" />
         </div>
         <div>
@@ -1201,7 +1206,9 @@ function ClosedCashPanel({
     <Card className="overflow-hidden border-zinc-200">
       <div className="grid lg:grid-cols-[0.85fr_1.15fr]">
         <div className="bg-zinc-950 p-6 text-white">
-          <Badge variant="warning">Caja cerrada</Badge>
+          <Badge variant="outline" className="border-evc-300 bg-evc-50 text-evc-700">
+            Caja cerrada
+          </Badge>
           <h2 className="mt-4 text-2xl font-bold">
             Para iniciar ventas debes abrir una sesion de caja.
           </h2>
@@ -1271,7 +1278,7 @@ function ClosedCashPanel({
             <p className="mt-3 text-sm text-danger">Tu usuario no tiene permiso para abrir caja.</p>
           ) : null}
           {occupiedBy ? (
-            <p className="mt-3 rounded-md bg-warning/10 px-3 py-2 text-sm text-warning">
+            <p className="mt-3 rounded-md bg-danger/10 px-3 py-2 text-sm text-danger">
               Esta caja ya esta abierta por {occupiedBy}. Cierra esa sesion o selecciona otra caja.
             </p>
           ) : null}
@@ -1345,10 +1352,6 @@ function getWaitingVariant(order: SalesOrder) {
     return 'danger' as const;
   }
 
-  if (minutes >= 10) {
-    return 'warning' as const;
-  }
-
   return 'outline' as const;
 }
 
@@ -1360,7 +1363,7 @@ function getWaitingCardClass(order: SalesOrder) {
   }
 
   if (minutes >= 10) {
-    return 'rounded-md border border-warning/40 bg-warning/10 p-3';
+    return 'rounded-md border border-evc-300 bg-evc-50 p-3';
   }
 
   return 'rounded-md border border-zinc-200 bg-zinc-50 p-3';

@@ -88,7 +88,7 @@ export function PosProductGrid({
                   <p className="text-lg font-bold text-zinc-950">{formatCurrency(getProductPrice(product))}</p>
                   <p className="text-xs text-muted-foreground">{product.sku ?? product.barcode ?? 'Sin SKU'}</p>
                 </div>
-                <span className="inline-flex h-9 w-9 items-center justify-center rounded-md bg-[#f36c10] text-white transition group-hover:bg-[#d85f0e]">
+                <span className="inline-flex h-9 w-9 items-center justify-center rounded-md bg-evc-600 text-white transition group-hover:bg-evc-700">
                   <PackagePlus className="h-4 w-4" />
                 </span>
               </div>

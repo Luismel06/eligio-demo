@@ -1,6 +1,7 @@
 'use client';
 
 import { ActionDialog } from '@/components/ui/action-dialog';
+import type { ActionDialogTone } from '@/components/ui/action-dialog';
 
 type WarningConfirmModalProps = {
   open: boolean;
@@ -9,6 +10,7 @@ type WarningConfirmModalProps = {
   confirmLabel: string;
   cancelLabel?: string;
   isPending?: boolean;
+  tone?: ActionDialogTone;
   onClose: () => void;
   onConfirm: () => void;
 };
@@ -20,6 +22,7 @@ export function WarningConfirmModal({
   confirmLabel,
   cancelLabel = 'Revisar monto',
   isPending = false,
+  tone = 'warning',
   onClose,
   onConfirm,
 }: WarningConfirmModalProps) {
@@ -28,7 +31,7 @@ export function WarningConfirmModal({
       open={open}
       title={title}
       description={description}
-      tone="warning"
+      tone={tone}
       confirmLabel={confirmLabel}
       cancelLabel={cancelLabel}
       isPending={isPending}
