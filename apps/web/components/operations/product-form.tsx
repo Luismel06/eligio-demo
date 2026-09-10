@@ -228,7 +228,7 @@ export function ProductForm({ productId }: { productId?: string }) {
         <CardHeader>
           <CardTitle>Ficha del producto</CardTitle>
           <CardDescription>
-            La plataforma valida duplicados de SKU y codigo de barras dentro del tenant EligioValdez Comercial.
+            CoreStack valida duplicados de SKU y codigo de barras dentro del tenant EligioValdez Comercial.
           </CardDescription>
         </CardHeader>
         <CardContent>

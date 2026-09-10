@@ -30,7 +30,7 @@ function assertSeedAllowed() {
     throw new Error(
       [
         'Refusing to run the development seed in production.',
-        'This seed deletes existing data before recreating the EligioValdez Comercial demo dataset.',
+        'This seed deletes existing data before recreating the CoreStack/EligioValdez Comercial demo dataset.',
         'Set ALLOW_PRODUCTION_SEED=true only for an intentional staging/demo reseed.',
       ].join(' '),
     );
@@ -160,8 +160,8 @@ async function main() {
 
   const superAdmin = await prisma.user.create({
     data: {
-      email: 'plataforma@eligiovaldez.local',
-      name: 'Soporte de plataforma',
+      email: 'superadmin@corestack.local',
+      name: 'Soporte CoreStack',
       phone: '809-555-9001',
       passwordHash,
       memberships: {
@@ -1100,7 +1100,7 @@ async function main() {
         entityId: coreStackTenant.id,
         metadata: {
           source: 'development-seed',
-          note: 'El tenant de plataforma es interno; EligioValdez Comercial es el tenant operativo de demo.',
+          note: 'CoreStack es proveedor/core; EligioValdez Comercial es el tenant operativo de demo.',
         },
       },
     ],
@@ -1110,7 +1110,7 @@ async function main() {
   console.log(`EligioValdez admin login: admin@eligiovaldez.local / ${demoPassword}`);
   console.log(`EligioValdez cashier login: cajero@eligiovaldez.local / ${demoPassword}`);
   console.log(`EligioValdez almacen login: almacen@eligiovaldez.local / ${demoPassword}`);
-  console.log(`Platform admin login: plataforma@eligiovaldez.local / ${demoPassword}`);
+  console.log(`CoreStack platform login: superadmin@corestack.local / ${demoPassword}`);
 }
 
 main()

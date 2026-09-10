@@ -186,7 +186,7 @@ export function SidebarContent({
         </div>
         <div className={cn('min-w-0', collapsed && 'hidden')}>
             <p className="truncate text-sm font-semibold">EligioValdez Comercial</p>
-            <p className="truncate text-xs text-slate-400">Operación comercial</p>
+            <p className="truncate text-xs text-slate-400">Powered by CoreStack</p>
         </div>
       </div>
 
@@ -271,10 +271,10 @@ export function SidebarContent({
             )}
           >
             <Boxes className="h-4 w-4 text-[#f36c10]" />
-            <span className={cn(collapsed && 'hidden')}>Centro de control</span>
+            <span className={cn(collapsed && 'hidden')}>CoreStack Core</span>
           </div>
           <p className={cn('mt-2 text-xs leading-5 text-slate-400', collapsed && 'hidden')}>
-            Datos aislados por tenant.
+            Plataforma provista por CoreStack. Datos aislados por tenant.
           </p>
         </div>
       </div>

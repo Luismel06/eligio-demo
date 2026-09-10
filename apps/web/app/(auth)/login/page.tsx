@@ -104,7 +104,7 @@ export default function LoginPage() {
             </p>
           </div>
 
-          <p className="text-center text-xs text-zinc-500 sm:text-left">EligioValdez Comercial</p>
+          <p className="text-center text-xs text-zinc-500 sm:text-left">Powered by CoreStack</p>
         </div>
       </section>
 
@@ -123,7 +123,7 @@ export default function LoginPage() {
             className={`${styles.coreStackWordmark} absolute inset-x-0 bottom-[max(1rem,env(safe-area-inset-bottom))] flex justify-center px-4`}
           >
             <span className="select-none text-center text-[clamp(2.25rem,8vw,5.5rem)] font-black leading-none tracking-[-0.055em] text-[#0b4cae]/[0.12]">
-              EligioValdez
+              CoreStack
             </span>
           </div>
         </div>

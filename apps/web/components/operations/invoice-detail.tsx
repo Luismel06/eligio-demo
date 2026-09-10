@@ -452,7 +452,7 @@ function Receipt({
 
       <div className="pt-2 text-center text-xs">
         <p className="font-bold">{destination}</p>
-        <p className="text-zinc-500">EligioValdez Comercial</p>
+        <p className="text-zinc-500">Powered by CoreStack</p>
       </div>
     </section>
   );

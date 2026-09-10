@@ -158,7 +158,7 @@ export function EmployeeForm({ employeeId }: { employeeId?: string }) {
     <div className="space-y-6">
       <ModuleHeader
         title={employeeId ? 'Editar empleado' : 'Nuevo empleado'}
-        description="Controla accesos operativos de EligioValdez Comercial sin mezclar usuarios de otros tenants."
+        description="Controla accesos operativos de EligioValdez Comercial sin mezclar usuarios internos de CoreStack."
       />
 
       <Card>

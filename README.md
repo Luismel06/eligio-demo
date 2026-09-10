@@ -1,6 +1,6 @@
-# EligioValdez Comercial
+# CoreStack
 
-EligioValdez Comercial is an independent demo built on the existing multi-tenant SaaS/ERP foundation for business management in the Dominican Republic. This repository intentionally does not use Odoo, Supabase Auth, fake DGII logic, microservices, or premature infrastructure complexity.
+CoreStack is the SaaS/ERP foundation used by the independent EligioValdez Comercial demo for business management in the Dominican Republic. This repository intentionally does not use Odoo, Supabase Auth, fake DGII logic, microservices, or premature infrastructure complexity.
 
 ## Stack
 
@@ -113,11 +113,11 @@ Tenant-scoped business endpoints require both `Authorization: Bearer <token>` an
 - The dashboard stores the demo JWT in local storage and fetches real summary data from the API.
 - Operational modules for dashboard, POS, products, customers, invoices, employees, cash logs, cash sessions, imports and fiscal sequences read/write through the API using PostgreSQL data.
 
-## Demo Data And Platform Core
+## EligioValdez Demo Data And CoreStack Platform
 
-The current seed creates the operational tenant `EligioValdez Comercial` and a separate internal platform tenant.
+The current seed creates the operational tenant `EligioValdez Comercial` and a separate internal provider tenant `CoreStack`.
 
-EligioValdez users only operate their tenant data: POS, invoices, customers, products, inventory, employees, cash sessions, cash movements and fiscal sequences all require tenant context. The platform tenant remains internal and is not part of the customer branding.
+EligioValdez users only operate their tenant data: POS, invoices, customers, products, inventory, employees, cash sessions, cash movements and fiscal sequences all require tenant context. CoreStack is the platform/core provider and remains separate from the customer branding.
 
 The seed data is persisted in PostgreSQL and is not hardcoded in the frontend. It is a fictional development starting dataset for EligioValdez operations: hardware-store products, barcodes, opening stock, customers, cash session, fiscal sequences, paid/pending/cancelled invoices, payments and employee logs. It is not production data. When the client provides real catalog/customers/opening inventory, it should be loaded through the API or the prepared import module.
 

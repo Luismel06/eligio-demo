@@ -2,7 +2,7 @@
 
 Fecha de corte: 2026-06-21
 
-Esta guia explica como ejecutar EligioValdez Comercial usando un proyecto Supabase independiente solo como PostgreSQL gestionado y dos proyectos Vercel separados para web/API. La logica de negocio debe seguir en NestJS. El frontend debe seguir hablando con la API NestJS. No se usa Supabase Auth, Supabase REST ni acceso directo a tablas desde el frontend.
+Esta guia explica como ejecutar CoreStack para la demo independiente EligioValdez Comercial usando un proyecto Supabase separado solo como PostgreSQL gestionado y dos proyectos Vercel separados para web/API. La logica de negocio debe seguir en NestJS. El frontend debe seguir hablando con la API NestJS. No se usa Supabase Auth, Supabase REST ni acceso directo a tablas desde el frontend.
 
 ## 1. Arquitectura temporal
 
@@ -24,8 +24,8 @@ Supabase se usa solo como Postgres porque el sistema ya tiene auth, permisos, ai
 
 Regla de mantenimiento:
 
-- `eligio-demo-api`: Prisma, JWT, CORS, backend y logica de negocio; la base sigue siendo Supabase PostgreSQL.
-- `eligio-demo-web`: UI, login page, dashboard, POS, formularios y `NEXT_PUBLIC_API_URL`.
+- `corestack-api`: Prisma, JWT, CORS, backend y logica de negocio; la base sigue siendo Supabase PostgreSQL.
+- `corestack-web`: UI, login page, dashboard, POS, formularios y `NEXT_PUBLIC_API_URL`.
 - Cambios de codigo: push/merge a `main` redeploya los proyectos configurados en Vercel.
 - Cambios de variables: actualizar Vercel Settings > Environment Variables y redeploy manual.
 - Cambios de Prisma schema: crear migracion local, revisar SQL, aplicar con `db:migrate:deploy` en Supabase y redeployar API si hace falta.
@@ -52,7 +52,7 @@ Configurar en `.env`, `.env.local`, `.env.production.local` o en Vercel Environm
 ```env
 DATABASE_URL="postgresql://postgres.YOUR_INDEPENDENT_PROJECT_REF:YOUR_URL_ENCODED_PASSWORD@YOUR_SUPABASE_POOLER_HOST:6543/postgres?pgbouncer=true&sslmode=require"
 DIRECT_URL="postgresql://postgres.YOUR_INDEPENDENT_PROJECT_REF:YOUR_URL_ENCODED_PASSWORD@YOUR_SUPABASE_DB_HOST:5432/postgres?sslmode=require"
-JWT_SECRET="replace-with-independent-demo-secret"
+JWT_SECRET="replace-with-corestack-secret"
 JWT_EXPIRES_IN="8h"
 CORS_ORIGIN="http://localhost:3000,https://YOUR_FRONTEND_VERCEL_URL"
 NODE_ENV="production"
@@ -186,7 +186,7 @@ NODE_ENV="development"
 ### Proyecto web
 
 ```text
-Name: eligio-demo-web
+Name: corestack-web
 Root Directory: apps/web
 Framework: Next.js
 Install Command: cd ../.. && corepack pnpm install --frozen-lockfile
@@ -204,7 +204,7 @@ NODE_ENV=production
 ### Proyecto API
 
 ```text
-Name: eligio-demo-api
+Name: corestack-api
 Root Directory: apps/api
 Runtime: Node.js / Vercel Functions
 Install Command: cd ../.. && corepack enable && corepack pnpm install --frozen-lockfile

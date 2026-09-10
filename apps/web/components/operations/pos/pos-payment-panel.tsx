@@ -727,7 +727,7 @@ export function PosPaymentPanel({
               ) : null}
 
               <p className="rounded-md border border-sky-200 bg-sky-50 px-3 py-2 text-xs text-sky-950">
-                Al confirmar, EligioValdez Comercial comprobará que exista una secuencia {fiscalDocument.code}{' '}
+                Al confirmar, CoreStack comprobará que exista una secuencia {fiscalDocument.code}{' '}
                 disponible. El NCF se reservará solo al facturar.
               </p>
             </div>
