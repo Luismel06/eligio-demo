@@ -3,22 +3,28 @@
 @tailwind utilities;
 
 :root {
-  --background: 220 20% 96%;
-  --foreground: 222 30% 14%;
+  --evc-primary: #0349a9;
+  --evc-primary-dark: #02367f;
+  --evc-primary-light: #075cc4;
+  --evc-secondary: #3cb5fc;
+  --evc-accent: #acdffc;
+  --evc-accent-soft: #e8f7ff;
+  --background: 210 33% 97%;
+  --foreground: 222 39% 15%;
   --card: 0 0% 100%;
-  --card-foreground: 222 30% 14%;
-  --muted: 210 20% 92%;
-  --muted-foreground: 217 12% 42%;
-  --primary: 219 54% 18%;
-  --primary-foreground: 210 40% 98%;
-  --accent: 190 93% 35%;
-  --accent-foreground: 210 40% 98%;
-  --border: 214 18% 84%;
-  --input: 214 18% 84%;
-  --ring: 190 93% 35%;
-  --success: 151 55% 34%;
-  --warning: 36 92% 44%;
-  --danger: 0 70% 45%;
+  --card-foreground: 222 39% 15%;
+  --muted: 210 29% 95%;
+  --muted-foreground: 215 16% 47%;
+  --primary: 215 96% 34%;
+  --primary-foreground: 0 0% 100%;
+  --accent: 201 96% 61%;
+  --accent-foreground: 215 96% 20%;
+  --border: 210 24% 89%;
+  --input: 210 24% 89%;
+  --ring: 201 96% 61%;
+  --success: 142 71% 36%;
+  --warning: 38 92% 50%;
+  --danger: 0 72% 51%;
 }
 
 * {
@@ -44,7 +50,7 @@
 }
 
 *::-webkit-scrollbar-thumb:hover {
-  background-color: #f36c10;
+  background-color: var(--evc-secondary);
 }
 
 *::-webkit-scrollbar-corner {
@@ -84,7 +90,7 @@ a {
   }
 
   .sidebar-scrollbar::-webkit-scrollbar-thumb:hover {
-    background-color: #f36c10;
+    background-color: var(--evc-secondary);
   }
 
   .surface-scrollbar {
@@ -109,6 +115,6 @@ a {
   }
 
   .surface-scrollbar::-webkit-scrollbar-thumb:hover {
-    background-color: #f36c10;
+    background-color: var(--evc-secondary);
   }
 }

@@ -125,7 +125,7 @@ export function Sidebar({
   return (
     <aside
       className={cn(
-        'fixed inset-y-0 left-0 z-30 hidden border-r border-slate-800 bg-slate-950 text-slate-100 transition-[width] duration-200 print:hidden lg:block',
+        'fixed inset-y-0 left-0 z-30 hidden border-r border-evc-900/70 bg-evc-800 text-white transition-[width] duration-200 print:hidden lg:block',
         collapsed ? 'w-[4.5rem]' : 'w-72',
       )}
     >
@@ -173,21 +173,18 @@ export function SidebarContent({
     <div className="flex h-full flex-col">
       <div
         className={cn(
-          'flex h-16 items-center gap-3 border-b border-slate-800 px-4',
-          collapsed && 'justify-center px-2',
+          'flex min-h-24 flex-col items-center justify-center gap-1 border-b border-evc-700 px-3 py-3',
+          collapsed && 'min-h-16 px-2',
         )}
       >
-        <div className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-white shadow-sm">
+        <div className={cn('flex h-14 w-full max-w-44 items-center justify-center', collapsed && 'h-10')}>
           <img
-              src="/logo.png"
-              alt="Logo EligioValdez Comercial"
-            className="h-full w-full object-cover"
+            src="/logo.png"
+            alt="Logo EligioValdez Comercial"
+            className="h-full w-full object-contain"
           />
         </div>
-        <div className={cn('min-w-0', collapsed && 'hidden')}>
-            <p className="truncate text-sm font-semibold">EligioValdez Comercial</p>
-            <p className="truncate text-xs text-slate-400">Powered by CoreStack</p>
-        </div>
+        <p className={cn('text-[0.65rem] text-evc-300', collapsed && 'hidden')}>Powered by CoreStack</p>
       </div>
 
       {onToggle ? (
@@ -257,10 +254,10 @@ export function SidebarContent({
         })}
       </nav>
 
-      <div className={cn('shrink-0 border-t border-slate-800 p-4', collapsed && 'px-3')}>
+      <div className={cn('shrink-0 border-t border-evc-700 p-4', collapsed && 'px-3')}>
         <div
           className={cn(
-            'rounded-lg border border-slate-800 bg-slate-900/80 p-3',
+            'rounded-lg border border-evc-600 bg-evc-900/45 p-3',
             collapsed && 'px-2.5',
           )}
         >
@@ -270,10 +267,10 @@ export function SidebarContent({
               collapsed && 'justify-center',
             )}
           >
-            <Boxes className="h-4 w-4 text-[#f36c10]" />
+            <Boxes className="h-4 w-4 text-evc-300" />
             <span className={cn(collapsed && 'hidden')}>CoreStack Core</span>
           </div>
-          <p className={cn('mt-2 text-xs leading-5 text-slate-400', collapsed && 'hidden')}>
+          <p className={cn('mt-2 text-xs leading-5 text-evc-200', collapsed && 'hidden')}>
             Plataforma provista por CoreStack. Datos aislados por tenant.
           </p>
         </div>
@@ -311,13 +308,13 @@ function SidebarNavigationGroup({
           type="button"
           onClick={() => onExpandedChange(!isExpanded)}
           className={cn(
-            'flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-slate-300 transition-colors hover:bg-white/[0.08] hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400',
-            (isActive || isExpanded) && 'bg-white/[0.08] text-white',
+            'flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-evc-100 transition-colors hover:bg-evc-700 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-evc-300',
+            (isActive || isExpanded) && 'bg-evc-700 text-white',
           )}
           aria-expanded={isExpanded}
           aria-controls={`sidebar-section-${section.id}`}
         >
-          <Icon className={cn('h-5 w-5', isActive && 'text-[#f36c10]')} />
+          <Icon className={cn('h-5 w-5', isActive && 'text-evc-300')} />
           <span className="flex-1 text-left">{section.label}</span>
           <ChevronDown
             className={cn('h-4 w-4 transition-transform duration-200', !isExpanded && '-rotate-90')}
@@ -369,21 +366,21 @@ function SidebarNavigationGroup({
         type="button"
         onClick={() => onOpenChange(!isOpen)}
         className={cn(
-          'flex w-full items-center justify-center rounded-lg p-2.5 text-slate-300 transition-colors hover:bg-white/[0.08] hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400',
-          isActive && 'bg-white/[0.12] text-white shadow-sm',
+          'flex w-full items-center justify-center rounded-lg p-2.5 text-evc-100 transition-colors hover:bg-evc-700 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-evc-300',
+          isActive && 'bg-evc-700 text-white shadow-sm',
         )}
         aria-expanded={isOpen}
         aria-label={`${section.label}: mostrar opciones`}
         title={section.label}
       >
-        <Icon className={cn('h-5 w-5', isActive && 'text-[#f36c10]')} />
+        <Icon className={cn('h-5 w-5', isActive && 'text-evc-300')} />
       </button>
 
       {isOpen ? (
-        <div className="absolute left-[calc(100%+0.75rem)] top-0 z-50 w-60 overflow-hidden rounded-xl border border-slate-700 bg-slate-950 p-2 shadow-[0_18px_40px_-16px_rgb(0_0_0_/_0.8)]">
-          <div className="mb-1 flex items-center justify-between px-3 py-2 text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">
+        <div className="absolute left-[calc(100%+0.75rem)] top-0 z-50 w-60 overflow-hidden rounded-xl border border-evc-600 bg-evc-900 p-2 shadow-[0_18px_40px_-16px_rgb(0_0_0_/_0.8)]">
+          <div className="mb-1 flex items-center justify-between px-3 py-2 text-xs font-semibold uppercase tracking-[0.14em] text-evc-200">
             <span>{section.label}</span>
-            <ChevronRight className="h-3.5 w-3.5 text-slate-500" />
+            <ChevronRight className="h-3.5 w-3.5 text-evc-300" />
           </div>
           <div className="space-y-1">
             {section.items.map((item) => (
@@ -422,16 +419,16 @@ function SidebarNavigationLink({
       href={item.href}
       onClick={onNavigate}
       className={cn(
-        'flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400',
+        'flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-evc-300',
         collapsed && 'justify-center px-2.5',
         isActive
-          ? 'bg-white/[0.13] text-white shadow-sm'
-          : 'text-slate-300 hover:bg-white/[0.08] hover:text-white',
+          ? 'bg-evc-secondary text-evc-900 shadow-sm'
+          : 'text-evc-100 hover:bg-evc-700 hover:text-white',
       )}
       title={collapsed ? item.name : undefined}
       aria-current={isActive ? 'page' : undefined}
     >
-      <Icon className={cn('h-5 w-5 shrink-0', isActive && 'text-[#f36c10]')} />
+      <Icon className={cn('h-5 w-5 shrink-0', isActive && 'text-evc-900')} />
       <span className={cn('min-w-0 truncate', collapsed && 'hidden')}>{item.name}</span>
     </Link>
   );

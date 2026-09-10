@@ -6,6 +6,18 @@ const config: Config = {
   theme: {
     extend: {
       colors: {
+        evc: {
+          900: '#02367F',
+          800: '#0349A9',
+          700: '#075CC4',
+          600: '#1474D4',
+          500: '#258DE5',
+          400: '#67C5FC',
+          300: '#ACDFFC',
+          200: '#C9EBFD',
+          100: '#E8F7FF',
+          50: '#F4FBFF',
+        },
         border: 'hsl(var(--border))',
         input: 'hsl(var(--input))',
         ring: 'hsl(var(--ring))',
